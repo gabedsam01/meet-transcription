@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app import db
 from app.deepgram_client import DeepgramClient
-from app.drive_client import DriveClient, DRIVE_SCOPES
+from app.drive_client import DriveClient
+from app.google_auth import build_oauth_credentials  # noqa: F401
 from app.processor import DriveFile, format_transcript, sanitize_filename
 from app.web.config import WebSettings
 from app.web.security import fernet_from_secret
@@ -143,29 +143,6 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
             status="failed",
             error_message=str(exc),
         )
-
-
-def build_oauth_credentials(token: dict):
-    from google.oauth2.credentials import Credentials
-
-    scopes = token.get("scopes") or DRIVE_SCOPES
-    if isinstance(scopes, str):
-        scopes = scopes.split()
-    info = dict(token)
-    if "access_token" in info and "token" not in info:
-        info["token"] = info["access_token"]
-    if info.get("expiry"):
-        info["expiry"] = _google_expiry(info["expiry"])
-    return Credentials.from_authorized_user_info(info, scopes=scopes)
-
-
-def _google_expiry(value: str) -> str:
-    if value.endswith("Z"):
-        return value.removesuffix("Z")
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return parsed.replace(microsecond=0).isoformat()
 
 
 def _process_file(
