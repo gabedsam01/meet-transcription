@@ -173,6 +173,41 @@ The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `AD
 
 Multi-user support is planned but not complete. Future work should add user provisioning, per-user authorization boundaries, background job isolation, and operational controls before exposing this to multiple independent users.
 
+## PostgreSQL Multiuser Worker
+
+`python -m app.worker.main` runs a standalone worker that processes transcription
+jobs created by the web UI. The UI creates a `pending` job; the worker claims it
+safely (`FOR UPDATE SKIP LOCKED`), transcribes with the user's own Deepgram key,
+stores the transcript in PostgreSQL, and optionally uploads a copy to Drive. The
+UI offers a TXT download for completed jobs.
+
+### Backend selection
+
+- `WORKER_REPOSITORY_BACKEND` defaults to `postgres` (production).
+- `WORKER_REPOSITORY_BACKEND=memory` is for local development and tests ONLY and
+  is **forbidden in production** — it is in-memory and non-persistent.
+- Selecting `postgres` before the PostgreSQL adapter (feat/postgres-core) is
+  integrated fails fast with a clear error.
+
+### Worker configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKER_REPOSITORY_BACKEND` | `postgres` | `postgres` (prod) or `memory` (dev/test only) |
+| `WORKER_POLL_INTERVAL_SECONDS` | `10` | Idle poll interval |
+| `WORKER_CONCURRENCY` | `1` | Parallel job workers (safe via SKIP LOCKED) |
+| `STALE_JOB_TIMEOUT_MINUTES` | `60` | `processing` jobs older than this are failed at startup |
+| `DATABASE_URL` | — | PostgreSQL DSN (used by the postgres adapter) |
+
+### Integration status
+
+This branch (`feat/postgres-worker`) delivers the worker, job/download services,
+repository ports, and in-memory fakes. The real PostgreSQL repositories, schema,
+`db` service, and `SQLAlchemy`/`psycopg` dependencies are delivered by
+`feat/postgres-core`; per-user settings (incl. the encrypted Deepgram key and
+`save_copy_to_drive`) and OAuth-to-PostgreSQL repointing by
+`feat/auth-users-settings`.
+
 ## Google OAuth Setup
 
 Simple Worker Mode can use the existing Desktop OAuth flow with mounted `secrets/oauth-client.json` and `secrets/token.json`, or a Service Account for compatible Workspace setups.

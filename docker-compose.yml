@@ -22,3 +22,14 @@ services:
       - ./data:/app/data
       - ./tmp:/app/tmp
       - ./secrets:/app/secrets:ro
+
+  transcription-worker:
+    <<: *app
+    command: ["python", "-m", "app.worker.main"]
+    volumes:
+      - ./data:/app/data
+      - ./tmp:/app/tmp
+      - ./secrets:/app/secrets:ro
+    # NOTE: requires PostgreSQL. The `db` service, `depends_on: [db]`, and the
+    # SQLAlchemy/psycopg dependencies are delivered by feat/postgres-core. This
+    # branch intentionally does not add them.
