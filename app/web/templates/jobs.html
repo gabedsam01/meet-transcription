@@ -26,15 +26,15 @@
     <tbody>
     {% for job in jobs %}
       <tr>
-        <td>{{ job['source_file_name'] or '-' }}</td>
-        <td>{{ job['source_file_id'] or '-' }}</td>
-        <td>{{ job['status'] }}</td>
-        <td>{{ job['attempts'] }}</td>
-        <td>{{ job['transcript_drive_file_id'] or '-' }}</td>
-        <td>{{ job['error_message'] or '' }}</td>
-        <td>{{ job['created_at'] or '-' }}</td>
-        <td>{{ job['updated_at'] or '-' }}</td>
-        <td>{{ job['processed_at'] or '-' }}</td>
+        <td>{{ job.source_file_name or '-' }}</td>
+        <td>{{ job.source_file_id or '-' }}</td>
+        <td>{{ job.status }}</td>
+        <td>{{ job.attempts }}</td>
+        <td>{{ job.transcript_drive_file_id or '-' }}</td>
+        <td>{{ job.error_message or '' }}</td>
+        <td>{{ job.created_at or '-' }}</td>
+        <td>{{ job.updated_at or '-' }}</td>
+        <td>{{ job.processed_at or '-' }}</td>
       </tr>
     {% endfor %}
     </tbody>

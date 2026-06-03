@@ -12,8 +12,10 @@
       {% if user %}
       <nav>
         <a href="/">Dashboard</a>
-        <a href="/settings">Settings</a>
         <a href="/jobs">Jobs</a>
+        <a href="/settings/drive">Drive Settings</a>
+        <a href="/settings/deepgram">Deepgram</a>
+        {% if user.role == "admin" %}<a href="/admin/users">Admin Users</a>{% endif %}
         <form action="/logout" method="post"><button type="submit">Logout</button></form>
       </nav>
       {% endif %}

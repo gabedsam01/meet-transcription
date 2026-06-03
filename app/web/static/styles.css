@@ -32,4 +32,6 @@ button, .button { border: 0; border-radius: 999px; padding: .75rem 1rem; backgro
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .75rem; vertical-align: top; white-space: nowrap; }
+label.checkbox { grid-auto-flow: column; justify-content: start; align-items: center; gap: .5rem; color: var(--ink); }
+label.checkbox input { width: auto; }
 @media (max-width: 760px) { .hero, .row-between { align-items: flex-start; flex-direction: column; } .grid { grid-template-columns: 1fr; } }
