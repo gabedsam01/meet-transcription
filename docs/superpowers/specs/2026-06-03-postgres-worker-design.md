@@ -75,7 +75,7 @@ Plain dataclasses, the boundary between the worker and any database.
   `error_message`, `attempts`, `created_at`, `updated_at`, `started_at`,
   `processed_at`, `transcript_drive_file_id`.
 - `Settings`: `user_id`, `source_drive_folder_id`, `destination_drive_folder_id`,
-  `poll_interval_seconds`, `save_copy_to_drive` (bool), `deepgram_api_key`.
+  `save_copy_to_drive` (bool), `deepgram_api_key`.
 - `GoogleToken`: `access_token`, `refresh_token`, `token_uri`, `client_id`,
   `client_secret`, `scopes`, `expiry`.
 - `Transcript`: `id`, `job_id`, `user_id`, `text`, `json_payload` (JSONB-ready

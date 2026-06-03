@@ -87,7 +87,7 @@ def test_job_defaults():
 def test_settings_and_token_and_transcript_construct():
     settings = Settings(
         user_id=7, source_drive_folder_id="src", destination_drive_folder_id="dst",
-        poll_interval_seconds=300, save_copy_to_drive=True, deepgram_api_key="dg",
+        save_copy_to_drive=True, deepgram_api_key="dg",
     )
     token = GoogleToken(access_token="a", token_uri="u", client_id="c")
     now = datetime.now(timezone.utc)
@@ -149,7 +149,6 @@ class Settings:
     user_id: int
     source_drive_folder_id: str
     destination_drive_folder_id: str
-    poll_interval_seconds: int
     save_copy_to_drive: bool = False
     deepgram_api_key: str | None = None
 
@@ -479,7 +478,7 @@ def test_transcript_create_and_get_by_job():
 
 def test_settings_and_token_seed_and_get():
     repos = build_memory_repositories()
-    repos.settings.set(Settings(7, "src", "dst", 300, True, "dg-key"))
+    repos.settings.set(Settings(7, "src", "dst", True, "dg-key"))
     repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
     assert repos.settings.get(7).deepgram_api_key == "dg-key"
     assert repos.google_tokens.get(7).access_token == "a"
@@ -1458,7 +1457,7 @@ def _now():
 def _seed(repos, *, save_copy=False, deepgram_key="user-dg-key"):
     repos.settings.set(Settings(
         user_id=7, source_drive_folder_id="src", destination_drive_folder_id="dst",
-        poll_interval_seconds=300, save_copy_to_drive=save_copy, deepgram_api_key=deepgram_key,
+        save_copy_to_drive=save_copy, deepgram_api_key=deepgram_key,
     ))
     repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
 
@@ -1948,7 +1947,7 @@ def _now():
 def _build(files, *, with_settings=True, with_token=True):
     repos = build_memory_repositories()
     if with_settings:
-        repos.settings.set(Settings(7, "src", "dst", 300, False, "dg"))
+        repos.settings.set(Settings(7, "src", "dst", False, "dg"))
     if with_token:
         repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
     drive = FakeDriveClient(files=files)
@@ -1972,7 +1971,7 @@ def test_reports_no_settings():
 
 def test_reports_not_connected():
     repos = build_memory_repositories()
-    repos.settings.set(Settings(7, "src", "dst", 300, False, "dg"))
+    repos.settings.set(Settings(7, "src", "dst", False, "dg"))
     result = _call(repos, FakeDriveClient())
     assert result.status == "not_connected"
 
@@ -2306,7 +2305,7 @@ def _login(client):
 
 def _seed_user1(repos):
     # Admin login creates user id=1 in SQLite; seed the PG-side ports for that id.
-    repos.settings.set(Settings(1, "src", "dst", 300, False, "user-dg-key"))
+    repos.settings.set(Settings(1, "src", "dst", False, "user-dg-key"))
     repos.google_tokens.set(1, GoogleToken(access_token="a", token_uri="u", client_id="c"))
 
 
