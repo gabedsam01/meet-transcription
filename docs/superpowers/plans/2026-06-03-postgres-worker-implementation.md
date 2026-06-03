@@ -2499,9 +2499,12 @@ After `app.state.token_store = ...` add:
         repositories, error = _resolve_repositories()
         if repositories is None:
             raise HTTPException(status_code=503, detail=error)
-        is_admin = request.session.get("user_email") == web_settings.admin_username
+        # Single-admin MVP: the logged-in user is always the admin, so there is no
+        # per-user role distinction to key an admin override off of. Enforce ownership
+        # strictly here. download_service keeps its is_admin capability for when a real
+        # role model is delivered (feat/auth-users-settings).
         try:
-            result = get_downloadable_transcript(repositories, job_id, user["id"], is_admin)
+            result = get_downloadable_transcript(repositories, job_id, user["id"], is_admin=False)
         except DownloadError as exc:
             status = {"not_found": 404, "not_completed": 409, "no_transcript": 404}.get(
                 exc.code, 400

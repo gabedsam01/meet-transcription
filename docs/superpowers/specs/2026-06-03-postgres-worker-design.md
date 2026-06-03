@@ -217,8 +217,12 @@ returns; the standalone worker performs the heavy work. The previous in-process
 - returns `(filename, text)` with `filename = f"{sanitize_filename(name)}_Transcricao.txt"`.
 
 `GET /jobs/{job_id}/download` returns `text/plain` as an attachment with the
-sanitized filename. Admin status is derived in the route from the session
-(`session_email == ADMIN_USERNAME`) and passed in. Distinct failures map to
+sanitized filename. The service keeps an `is_admin` capability, but the
+single-admin MVP web route passes `is_admin=False` and enforces ownership strictly:
+the only logged-in identity is the admin, so `session_email == ADMIN_USERNAME` would
+make every session all-powerful and defeat the ownership check. Real admin detection
+(and any cross-user download right) is wired by `feat/auth-users-settings` when a
+per-user role model exists. Distinct failures map to
 `404` (no job / not found for user) and `409`/`400` (not completed / no
 transcript) as appropriate; a stranger requesting another user's job is treated
 as not found.
