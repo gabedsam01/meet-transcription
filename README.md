@@ -1,81 +1,67 @@
-# Google Meet Drive Deepgram Transcriber
+# Meet Transcription
 
-Worker Python containerizado para monitorar uma pasta compartilhada do Google Drive, baixar gravações MP4 do Google Meet, enviar o vídeo diretamente para a Deepgram e subir um TXT com a transcrição para outra pasta do Drive.
+Python Docker worker that watches a Google Drive folder for Google Meet recordings, sends MP4 files to Deepgram, and uploads plain text transcripts back to Google Drive.
 
-O MVP roda como um único container, sem UI, sem banco de dados, sem fila, sem N8N, sem FFmpeg e sem OAuth por navegador.
+## Features
 
-## Fluxo
+- Google Drive polling worker
+- Service Account authentication
+- MP4 download from Drive
+- Direct MP4 transcription with Deepgram
+- TXT transcript generation
+- Upload transcript to Google Drive
+- Persistent processed-file state
+- Docker Compose support
+- No FFmpeg required
+- No database required
+- No web UI required
 
-1. A reunião é gravada no Google Meet.
-2. O Google processa e salva o MP4 no Drive do organizador.
-3. Um membro da equipe move ou copia o MP4 para a pasta compartilhada de entrada.
-4. O worker detecta o vídeo por polling.
-5. O MP4 é baixado temporariamente no container.
-6. O MP4 é enviado diretamente para a Deepgram via HTTP.
-7. Um TXT legível é gerado.
-8. O TXT é enviado para a pasta compartilhada de saída.
-9. Arquivos temporários locais são removidos.
-10. O ID do vídeo é registrado em `data/processed_files.json`.
+## How It Works
 
-## Pastas Google Drive
+1. Record a Google Meet meeting.
+2. Wait for Google to process the MP4.
+3. Move or copy the MP4 to a shared Google Drive input folder.
+4. The worker detects the video.
+5. The worker downloads the MP4 temporarily.
+6. The worker sends it to Deepgram.
+7. A readable TXT transcript is generated.
+8. The TXT is uploaded to a Google Drive output folder.
+9. Temporary local files are removed.
+10. The file is marked as processed.
 
-Pasta de entrada:
+## Requirements
 
-```txt
-1zS39e71BqRinq2HXpdK81dU7bTgIGdoW
-```
+- Docker and Docker Compose
+- Deepgram API key
+- Google Cloud project
+- Google Drive API enabled
+- Google Service Account JSON key
+- Two Google Drive folders shared with the Service Account
 
-Pasta de saída:
-
-```txt
-1W7Sq-VoNNnAiUes1wZEO9MK_eIt58Uxs
-```
-
-As duas pastas precisam ser compartilhadas com o e-mail da Service Account.
-
-## Criar Credenciais Google
-
-1. Acesse `https://console.cloud.google.com/`.
-2. Crie ou selecione um projeto.
-3. Ative a API `Google Drive API` em `APIs & Services`.
-4. Vá em `IAM & Admin` > `Service Accounts`.
-5. Crie uma Service Account.
-6. Abra a Service Account criada e vá em `Keys`.
-7. Crie uma chave JSON.
-8. Salve o arquivo como `service-account.json`.
-9. Coloque o arquivo em `./secrets/service-account.json`.
-10. Compartilhe a pasta de entrada e a pasta de saída com o e-mail da Service Account.
-
-Não torne os arquivos públicos. O worker usa a Google Drive API para baixar o binário e não envia links públicos para a Deepgram.
-
-## Configuração
-
-Copie o exemplo de ambiente:
+## Quick Start
 
 ```bash
+git clone https://github.com/gabedsam01/meet-transcription.git
+cd meet-transcription
+
 cp .env.example .env
 mkdir -p secrets data tmp
 ```
 
-Coloque o JSON da Service Account em:
+Place your Service Account JSON file at:
 
-```txt
-./secrets/service-account.json
+```bash
+secrets/service-account.json
 ```
 
-Edite `.env` e preencha:
+Edit `.env`:
 
 ```env
-DEEPGRAM_API_KEY=sua_chave_deepgram
-```
-
-As demais variáveis já vêm com os IDs das pastas aprovadas:
-
-```env
+DEEPGRAM_API_KEY=your_deepgram_api_key
 GOOGLE_AUTH_MODE=service_account
 GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
-SOURCE_DRIVE_FOLDER_ID=1zS39e71BqRinq2HXpdK81dU7bTgIGdoW
-DESTINATION_DRIVE_FOLDER_ID=1W7Sq-VoNNnAiUes1wZEO9MK_eIt58Uxs
+SOURCE_DRIVE_FOLDER_ID=your_source_drive_folder_id
+DESTINATION_DRIVE_FOLDER_ID=your_destination_drive_folder_id
 POLL_INTERVAL_SECONDS=300
 TMP_DIR=/app/tmp
 STATE_FILE=/app/data/processed_files.json
@@ -87,102 +73,38 @@ DEEPGRAM_DIARIZE=true
 DEEPGRAM_UTTERANCES=true
 ```
 
-## Rodar Com Docker Compose
-
-Build da imagem:
+## Run Once
 
 ```bash
 docker compose build
-```
-
-Rodar uma vez:
-
-```bash
 docker compose run --rm meet-transcriber python -m app.main --once
 ```
 
-Rodar continuamente:
+## Run Continuously
 
 ```bash
 docker compose up -d
-```
-
-Ver logs:
-
-```bash
 docker logs -f meet-drive-deepgram
 ```
 
-## Reprocessar Um Arquivo
-
-Para forçar o reprocessamento de um arquivo específico do Google Drive:
+## Reprocess A File
 
 ```bash
 docker compose run --rm meet-transcriber python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
 ```
 
-O estado anterior só é sobrescrito se a nova transcrição for enviada com sucesso.
+## Google Drive Setup
 
-## Estado Persistente
+1. Create a Google Cloud project.
+2. Enable Google Drive API.
+3. Create a Service Account.
+4. Create and download a JSON key.
+5. Save it as `secrets/service-account.json`.
+6. Share your input and output Drive folders with the Service Account email.
 
-O arquivo `data/processed_files.json` é criado em runtime e fica persistido pelo volume Docker.
+## Security
 
-Exemplo:
-
-```json
-{
-  "google_drive_file_id": {
-    "name": "arquivo.mp4",
-    "processed_at": "2026-06-03T10:45:00+00:00",
-    "transcript_drive_file_id": "id_do_txt_no_drive"
-  }
-}
-```
-
-Se um vídeo já estiver nesse JSON, ele não será processado novamente, exceto usando `--reprocess`.
-
-## Desenvolvimento Local
-
-Instale dependências:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Rodar testes:
-
-```bash
-python -m pytest -v
-```
-
-Validar imports/compilação:
-
-```bash
-python -m compileall app
-```
-
-Validar Compose:
-
-```bash
-docker compose config
-```
-
-Esse comando exige que `.env` já exista. Use `cp .env.example .env` antes da validação.
-
-## Operação Em VPS
-
-1. Clone o repositório na VPS.
-2. Crie `.env` a partir de `.env.example`.
-3. Crie `secrets/`, `data/` e `tmp/`.
-4. Coloque `service-account.json` em `secrets/`.
-5. Confirme que as pastas do Drive foram compartilhadas com a Service Account.
-6. Execute `docker compose build`.
-7. Execute `docker compose up -d`.
-8. Acompanhe com `docker logs -f meet-drive-deepgram`.
-
-## Segurança
-
-Nunca commitar:
+Never commit:
 
 ```txt
 .env
@@ -192,27 +114,33 @@ tmp/
 data/processed_files.json
 ```
 
-O diretório `secrets/` é montado como volume somente leitura no container.
+The app does not make Drive files public. It downloads files through the Google Drive API and sends the MP4 binary directly to Deepgram.
 
-## Saída TXT
+## Privacy Notice
 
-Quando a Deepgram retorna utterances, o TXT usa timestamps e speakers:
+Make sure all meeting participants know that the meeting is being recorded and transcribed. You are responsible for complying with privacy laws and internal policies.
 
-```txt
-TRANSCRIÇÃO DA REUNIÃO
+## Development
 
-Arquivo original: nome-do-video.mp4
-Data de processamento: 2026-06-03 10:45
-ID Google Drive: abc123
-
-==================================================
-
-[00:00:01] Speaker 0:
-Texto da fala...
-
-==================================================
-
-Fim da transcrição.
+```bash
+python -m pip install -r requirements.txt
+python -m pytest -v
+python -m compileall app
+docker compose config
 ```
 
-Se utterances não vierem na resposta, o worker salva o texto corrido retornado pela Deepgram.
+`docker compose config` requires a local `.env` file. Create it first with `cp .env.example .env`.
+
+## Roadmap
+
+- Google Docs output
+- AI summary generation
+- Meeting minutes
+- Email delivery
+- Webhook mode
+- Queue support
+- Multi-user dashboard
+
+## License
+
+MIT

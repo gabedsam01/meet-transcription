@@ -56,8 +56,8 @@ Required variables:
 DEEPGRAM_API_KEY=
 GOOGLE_AUTH_MODE=service_account
 GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
-SOURCE_DRIVE_FOLDER_ID=1zS39e71BqRinq2HXpdK81dU7bTgIGdoW
-DESTINATION_DRIVE_FOLDER_ID=1W7Sq-VoNNnAiUes1wZEO9MK_eIt58Uxs
+SOURCE_DRIVE_FOLDER_ID=your_source_drive_folder_id
+DESTINATION_DRIVE_FOLDER_ID=your_destination_drive_folder_id
 POLL_INTERVAL_SECONDS=300
 TMP_DIR=/app/tmp
 STATE_FILE=/app/data/processed_files.json
