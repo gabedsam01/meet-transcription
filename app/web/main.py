@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -8,14 +7,17 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
+from app.drive_client import DriveClient
+from app.google_auth import credentials_from_token
 from app.logger import setup_logging
+from app.repositories import RepositoryBackendError, build_repositories
 from app.web.config import WebSettings
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
@@ -26,7 +28,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 
-def create_app(settings: WebSettings | None = None) -> FastAPI:
+def create_app(settings: WebSettings | None = None, repositories=None) -> FastAPI:
     setup_logging()
     web_settings = settings or WebSettings.from_env()
 
@@ -40,6 +42,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     app.state.token_store = TokenStore(
         web_settings.database_path, fernet_from_secret(web_settings.app_secret_key)
     )
+    app.state.repositories = repositories
+    app.state.build_drive_client = (
+        lambda credentials, src, dst: DriveClient.from_credentials(credentials, src, dst)
+    )
+    app.state.credentials_from_token = credentials_from_token
     app.add_middleware(
         SessionMiddleware,
         secret_key=web_settings.app_secret_key,
@@ -47,6 +54,16 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         same_site="lax",
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    def _resolve_repositories():
+        if app.state.repositories is not None:
+            return app.state.repositories, None
+        import os
+
+        try:
+            return build_repositories(os.environ.get("WORKER_REPOSITORY_BACKEND")), None
+        except RepositoryBackendError as exc:
+            return None, str(exc)
 
     @app.get("/health")
     def health():
@@ -132,40 +149,53 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         )
 
     @app.post("/jobs/run-once")
-    def run_once(
-        request: Request,
-        background_tasks: BackgroundTasks,
-        user=Depends(require_user),
-    ):
-        from app.web import services
+    def run_once(request: Request, user=Depends(require_user)):
+        from app.services.job_service import create_next_pending_job
 
-        logging.info("POST /jobs/run-once received user_id=%s", user["id"])
-        result = services.enqueue_run_once_job(web_settings, user["id"])
+        repositories, error = _resolve_repositories()
+        if repositories is None:
+            _set_flash(request, error)
+            return RedirectResponse("/jobs", status_code=303)
 
-        if result.status == "missing_settings":
-            _set_flash(
-                request, "Configure source and destination folders in Settings first."
-            )
-        elif result.status == "not_connected":
-            _set_flash(request, "Connect Google before running a transcription.")
-        elif result.status == "already_running":
-            _set_flash(request, "There is already a job running.")
-        else:  # created
-            job_id = result.job["id"]
-            background_tasks.add_task(
-                services.run_user_job_background, web_settings, job_id, user["id"]
-            )
-            logging.info(
-                "Background job scheduled job_id=%s user_id=%s", job_id, user["id"]
-            )
-            _set_flash(request, "Job started. Refresh this page to follow progress.")
-
-        logging.info(
-            "POST /jobs/run-once responding redirect to /jobs user_id=%s status=%s",
-            user["id"],
-            result.status,
+        result = create_next_pending_job(
+            repositories,
+            build_drive_client=app.state.build_drive_client,
+            credentials_from_token=app.state.credentials_from_token,
+            user_id=user["id"],
         )
+        messages = {
+            "no_settings": "Configure source and destination folders in Settings first.",
+            "not_connected": "Connect Google before running a transcription.",
+            "no_new_videos": "No new videos to transcribe.",
+            "created": "Job created. The worker will process it shortly.",
+        }
+        _set_flash(request, messages.get(result.status, "Run-once finished."))
         return RedirectResponse("/jobs", status_code=303)
+
+    @app.get("/jobs/{job_id}/download")
+    def download_transcript(job_id: int, request: Request, user=Depends(require_user)):
+        from app.services.download_service import DownloadError, get_downloadable_transcript
+
+        repositories, error = _resolve_repositories()
+        if repositories is None:
+            raise HTTPException(status_code=503, detail=error)
+        # Single-admin MVP: the logged-in user is always the admin, so there is no
+        # per-user role distinction to key an admin override off of. Enforce ownership
+        # strictly here. download_service keeps its is_admin capability for when a real
+        # role model is delivered (feat/auth-users-settings).
+        try:
+            result = get_downloadable_transcript(repositories, job_id, user["id"], is_admin=False)
+        except DownloadError as exc:
+            status = {"not_found": 404, "not_completed": 409, "no_transcript": 404}.get(
+                exc.code, 400
+            )
+            raise HTTPException(status_code=status, detail=str(exc))
+        return PlainTextResponse(
+            result.text,
+            headers={
+                "Content-Disposition": f'attachment; filename="{result.filename}"'
+            },
+        )
 
     @app.get("/connect-google")
     def connect_google(request: Request, user=Depends(require_user)):
