@@ -126,7 +126,7 @@ def test_jobs_page_lists_jobs_and_shows_download_and_drive_links(tmp_path):
     done = repos.jobs.create_job(1, "file-1", "meet.mp4", _now())
     repos.transcripts.create(done.id, 1, "body", None, None, _now())
     repos.jobs.mark_completed(done.id, _now(), transcript_drive_file_id="drive-xyz")
-    repos.jobs.create_job(1, "file-2", "pending.mp4", _now())
+    pending = repos.jobs.create_job(1, "file-2", "pending.mp4", _now())
     app = create_app(_web_settings(tmp_path), repositories=repos)
 
     with TestClient(app) as client:
@@ -138,6 +138,8 @@ def test_jobs_page_lists_jobs_and_shows_download_and_drive_links(tmp_path):
     assert "pending.mp4" in text
     assert f"/jobs/{done.id}/download" in text        # Download button for completed job
     assert "drive.google.com/file/d/drive-xyz" in text  # Drive link when present
+    # A non-completed job must NOT expose a download link (requirement 8).
+    assert f"/jobs/{pending.id}/download" not in text
 
 
 def test_jobs_page_handles_backend_unavailable_gracefully(tmp_path):
