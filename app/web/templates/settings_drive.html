@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Drive Settings</h1>
+  <p class="hint">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  <form method="post" action="/settings/drive" class="form-stack">
+    <label>Source Drive Folder URL
+      <input name="source_drive_folder_url" value="{{ settings.source_drive_folder_url if settings else '' }}" required></label>
+    <label>Destination Drive Folder URL (opcional)
+      <input name="destination_drive_folder_url" value="{{ settings.destination_drive_folder_url if settings and settings.destination_drive_folder_url else '' }}"></label>
+    <label class="checkbox">
+      <input type="checkbox" name="save_copy_to_drive" value="true" {{ "checked" if settings and settings.save_copy_to_drive else "" }}>
+      Salvar cópia da transcrição no Drive (backup)
+    </label>
+    <button type="submit">Save Drive settings</button>
+  </form>
+  {% if settings %}
+  <p class="hint">Source folder ID: {{ settings.source_drive_folder_id }}{% if settings.destination_drive_folder_id %} · Destination folder ID: {{ settings.destination_drive_folder_id }}{% endif %}</p>
+  {% endif %}
+</section>
+{% endblock %}
