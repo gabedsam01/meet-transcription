@@ -5,12 +5,16 @@ satisfy the Protocols in that branch's ``app/core/ports.py``. Adapters over the
 canonical ``app/database/`` layer; they return the worker's domain dataclasses
 (timestamps as ``datetime``). Persistence only — no download/transcription.
 
-Sensitive token/key fields cross this boundary as ciphertext (the worker
-decrypts before use), matching the auth branch's convention.
+At-rest encryption is this layer's responsibility. The worker receives
+ready-to-use domain objects: ``GoogleTokenRepository.get`` and
+``SettingsRepository.get`` decrypt the Google token and Deepgram key here, using
+APP_SECRET_KEY (the same Fernet derivation the web layer used to encrypt them).
+The worker never sees ciphertext and never decrypts. Secrets are never logged.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -28,6 +32,7 @@ from app.database.repositories import (
     GoogleTokenRepository as CoreTokens,
     UserDriveSettingsRepository as CoreSettings,
 )
+from app.web.security import decrypt_value, fernet_from_secret
 
 try:  # Prefer the real contract once the worker branch is merged.
     from app.core.models import (  # type: ignore
@@ -47,6 +52,35 @@ except ImportError:  # postgres-core standalone
     )
 
 _STALE_MESSAGE = "stale timeout: job exceeded processing window"
+
+
+class CredentialDecryptionError(RuntimeError):
+    """An encrypted credential is present but APP_SECRET_KEY is missing to decrypt it."""
+
+
+class _Decryptor:
+    """Turn at-rest ciphertext into plaintext for the worker's domain objects.
+
+    The Fernet key is derived from APP_SECRET_KEY with the same derivation the
+    web layer used to encrypt the values. The key is only required when there is
+    actually something to decrypt; secrets are never logged.
+    """
+
+    def __init__(self, app_secret_key: str | None) -> None:
+        self._key = app_secret_key
+        self._fernet = None
+
+    def decrypt(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if self._fernet is None:
+            if not (self._key or "").strip():
+                raise CredentialDecryptionError(
+                    "APP_SECRET_KEY is required to decrypt stored credentials "
+                    "(Google token / Deepgram key) but is not set."
+                )
+            self._fernet = fernet_from_secret(self._key)
+        return decrypt_value(self._fernet, value)
 
 
 def _scopes_to_str(scopes: Any) -> str | None:
@@ -236,6 +270,10 @@ class PgTranscriptRepository(_Bound):
 
 
 class PgSettingsRepository(_Bound):
+    def __init__(self, session_factory: sessionmaker, decryptor: _Decryptor) -> None:
+        super().__init__(session_factory)
+        self._dec = decryptor
+
     def get(self, user_id: int) -> Settings | None:
         with self._sf.begin() as s:
             st = CoreSettings(s).get_for_user(user_id)
@@ -247,32 +285,40 @@ class PgSettingsRepository(_Bound):
                 source_drive_folder_id=st.source_drive_folder_id or "",
                 destination_drive_folder_id=st.destination_drive_folder_id or "",
                 save_copy_to_drive=st.save_copy_to_drive,
-                deepgram_api_key=cred.encrypted_api_key if cred else None,
+                deepgram_api_key=self._dec.decrypt(cred.encrypted_api_key) if cred else None,
             )
 
 
 class PgGoogleTokenRepository(_Bound):
+    def __init__(self, session_factory: sessionmaker, decryptor: _Decryptor) -> None:
+        super().__init__(session_factory)
+        self._dec = decryptor
+
     def get(self, user_id: int) -> GoogleToken | None:
         with self._sf.begin() as s:
             t = CoreTokens(s).get_for_user(user_id)
             if t is None:
                 return None
             return GoogleToken(
-                access_token=t.encrypted_access_token,
+                access_token=self._dec.decrypt(t.encrypted_access_token),
                 token_uri=t.token_uri,
                 client_id=t.client_id,
-                refresh_token=t.encrypted_refresh_token,
-                client_secret=t.client_secret,
+                refresh_token=self._dec.decrypt(t.encrypted_refresh_token),
+                client_secret=self._dec.decrypt(t.client_secret),
                 scopes=_scopes_to_str(t.scopes),
                 expiry=t.expiry.isoformat() if t.expiry else None,
             )
 
 
-def build_postgres_repositories(database_url: Any = None, *, engine=None) -> Repositories:
+def build_postgres_repositories(
+    database_url: Any = None, *, engine=None, app_secret_key: str | None = None
+) -> Repositories:
     """Build the worker's Postgres repository bundle.
 
-    The worker factory calls this with no arguments, reading ``DATABASE_URL`` from
-    the environment. Tests may pass a pre-built ``engine``.
+    The worker factory calls this with no arguments, reading ``DATABASE_URL`` and
+    ``APP_SECRET_KEY`` from the environment. ``APP_SECRET_KEY`` is used to decrypt
+    stored credentials so the worker receives plaintext domain objects. Tests may
+    pass a pre-built ``engine`` and an explicit ``app_secret_key``.
     """
     if engine is not None:
         eng = engine
@@ -282,9 +328,11 @@ def build_postgres_repositories(database_url: Any = None, *, engine=None) -> Rep
     factory = sessionmaker(
         bind=eng, autoflush=False, expire_on_commit=False, future=True
     )
+    secret = app_secret_key if app_secret_key is not None else os.environ.get("APP_SECRET_KEY")
+    decryptor = _Decryptor(secret)
     return Repositories(
         jobs=PgJobRepository(factory),
         transcripts=PgTranscriptRepository(factory),
-        settings=PgSettingsRepository(factory),
-        google_tokens=PgGoogleTokenRepository(factory),
+        settings=PgSettingsRepository(factory, decryptor),
+        google_tokens=PgGoogleTokenRepository(factory, decryptor),
     )

@@ -1,10 +1,16 @@
 """Integration tests for the worker-branch bridge (app/repositories/postgres.py)."""
 
+import logging
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from app.db._auth_contract import DriveSettings, GoogleToken
 from app.db.postgres import build_repositories as build_auth
-from app.repositories.postgres import build_postgres_repositories
+from app.repositories.postgres import CredentialDecryptionError, build_postgres_repositories
+from app.web.security import encrypt_value, fernet_from_secret
+
+_SECRET = "a-long-secret-for-tests"
 
 
 def _now() -> datetime:
@@ -128,7 +134,23 @@ def test_transcript_create_and_get_by_job(pg):
     assert repos.transcripts.get_by_job(999999) is None
 
 
-def test_settings_get_returns_worker_settings_shape(pg):
+def _seed_encrypted_token(auth, uid, fernet):
+    auth.google_tokens.save_for_user(
+        uid,
+        GoogleToken(
+            access_token=encrypt_value(fernet, "PLAIN_at"),
+            refresh_token=encrypt_value(fernet, "PLAIN_rt"),
+            token_uri="uri",
+            client_id="cid",
+            client_secret=encrypt_value(fernet, "PLAIN_cs"),
+            scopes="scope-a scope-b",
+            expiry="2026-06-03T10:00:00Z",
+        ),
+    )
+
+
+def test_settings_get_returns_decrypted_deepgram_key(pg):
+    fernet = fernet_from_secret(_SECRET)
     auth = build_auth(engine=pg)
     uid = auth.users.create(email="s@example.com", password_hash="h", role="user").id
     auth.drive_settings.save_for_user(
@@ -141,36 +163,99 @@ def test_settings_get_returns_worker_settings_shape(pg):
             save_copy_to_drive=True,
         ),
     )
-    auth.deepgram_credentials.save_for_user(uid, "ENC")
+    auth.deepgram_credentials.save_for_user(uid, encrypt_value(fernet, "PLAIN_dg"))
 
-    settings = build_postgres_repositories(engine=pg).settings.get(uid)
+    repos = build_postgres_repositories(engine=pg, app_secret_key=_SECRET)
+    settings = repos.settings.get(uid)
     assert settings.user_id == uid
     assert settings.source_drive_folder_id == "sid"
     assert settings.destination_drive_folder_id == "did"
     assert settings.save_copy_to_drive is True
-    assert settings.deepgram_api_key == "ENC"  # ciphertext at the boundary
-    assert build_postgres_repositories(engine=pg).settings.get(999999) is None
+    assert settings.deepgram_api_key == "PLAIN_dg"  # decrypted, ready to use
+    assert repos.settings.get(999999) is None
 
 
-def test_google_token_get_returns_worker_token_shape(pg):
+def test_google_token_get_returns_decrypted_token(pg):
+    fernet = fernet_from_secret(_SECRET)
     auth = build_auth(engine=pg)
     uid = auth.users.create(email="gt@example.com", password_hash="h", role="user").id
-    auth.google_tokens.save_for_user(
+    _seed_encrypted_token(auth, uid, fernet)
+
+    repos = build_postgres_repositories(engine=pg, app_secret_key=_SECRET)
+    tok = repos.google_tokens.get(uid)
+    assert tok.access_token == "PLAIN_at"  # decrypted
+    assert tok.refresh_token == "PLAIN_rt"  # decrypted
+    assert tok.client_secret == "PLAIN_cs"  # decrypted
+    assert tok.client_id == "cid"  # never encrypted
+    assert isinstance(tok.scopes, str)
+    assert tok.scopes == "scope-a scope-b"
+    assert repos.google_tokens.get(999999) is None
+
+
+def test_decryption_fails_clearly_without_app_secret_key(pg):
+    fernet = fernet_from_secret(_SECRET)
+    auth = build_auth(engine=pg)
+    uid = auth.users.create(email="nokey@example.com", password_hash="h", role="user").id
+    _seed_encrypted_token(auth, uid, fernet)
+    auth.deepgram_credentials.save_for_user(uid, encrypt_value(fernet, "PLAIN_dg"))
+    auth.drive_settings.save_for_user(
         uid,
-        GoogleToken(
-            access_token="CT",
-            refresh_token="RT",
-            token_uri="uri",
-            client_id="cid",
-            client_secret="CS",
-            scopes="scope-a scope-b",
-            expiry="2026-06-03T10:00:00Z",
+        DriveSettings(
+            source_drive_folder_url="su",
+            source_drive_folder_id="sid",
+            destination_drive_folder_url=None,
+            destination_drive_folder_id="did",
+            save_copy_to_drive=False,
         ),
     )
 
-    tok = build_postgres_repositories(engine=pg).google_tokens.get(uid)
-    assert tok.access_token == "CT"  # ciphertext at the boundary
-    assert tok.client_id == "cid"
-    assert isinstance(tok.scopes, str)
-    assert tok.scopes == "scope-a scope-b"
-    assert build_postgres_repositories(engine=pg).google_tokens.get(999999) is None
+    nokey = build_postgres_repositories(engine=pg, app_secret_key=None)
+    with pytest.raises(CredentialDecryptionError):
+        nokey.google_tokens.get(uid)
+    with pytest.raises(CredentialDecryptionError):
+        nokey.settings.get(uid)
+
+
+def test_settings_without_deepgram_credential_needs_no_key(pg):
+    auth = build_auth(engine=pg)
+    uid = auth.users.create(email="nodg@example.com", password_hash="h", role="user").id
+    auth.drive_settings.save_for_user(
+        uid,
+        DriveSettings(
+            source_drive_folder_url="su",
+            source_drive_folder_id="sid",
+            destination_drive_folder_url=None,
+            destination_drive_folder_id="did",
+            save_copy_to_drive=False,
+        ),
+    )
+
+    # No Deepgram credential: nothing to decrypt, so no APP_SECRET_KEY is needed.
+    settings = build_postgres_repositories(engine=pg, app_secret_key=None).settings.get(uid)
+    assert settings.deepgram_api_key is None
+
+
+def test_worker_adapter_does_not_log_secrets(pg, caplog):
+    fernet = fernet_from_secret(_SECRET)
+    auth = build_auth(engine=pg)
+    uid = auth.users.create(email="log@example.com", password_hash="h", role="user").id
+    auth.google_tokens.save_for_user(
+        uid,
+        GoogleToken(
+            access_token=encrypt_value(fernet, "SECRET_AT"),
+            refresh_token=encrypt_value(fernet, "SECRET_RT"),
+            token_uri="uri",
+            client_id="cid",
+            client_secret=encrypt_value(fernet, "SECRET_CS"),
+            scopes="s",
+            expiry=None,
+        ),
+    )
+
+    repos = build_postgres_repositories(engine=pg, app_secret_key=_SECRET)
+    with caplog.at_level(logging.DEBUG):
+        tok = repos.google_tokens.get(uid)
+
+    assert tok.access_token == "SECRET_AT"
+    for secret in ("SECRET_AT", "SECRET_RT", "SECRET_CS"):
+        assert secret not in caplog.text
