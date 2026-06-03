@@ -42,8 +42,9 @@ def main() -> int:
     container = build_container()
     stop_event = threading.Event()
 
-    def _handle_signal(signum, _frame):
-        LOGGER.info("Received signal %s, shutting down", signum)
+    def _handle_signal(_signum, _frame):
+        # Keep the handler async-signal-safe: only set the event. Logging acquires a
+        # lock and is not safe to call from a signal handler.
         stop_event.set()
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -54,6 +55,7 @@ def main() -> int:
         container.settings.concurrency,
     )
     run(container, stop_event)
+    LOGGER.info("Worker stopped")
     return 0
 
 
