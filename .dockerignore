@@ -1,0 +1,13 @@
+.git
+.pytest_cache
+__pycache__
+*.pyc
+.env
+.env.*
+secrets
+tmp
+data/processed_files.json
+docs/superpowers/plans
+tests
+.venv
+venv

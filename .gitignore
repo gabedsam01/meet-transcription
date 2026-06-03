@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+**/service-account.json
+**/token.json
+secrets/*
+!secrets/.gitkeep
+
+# Runtime data
+tmp/*
+!tmp/.gitkeep
+data/processed_files.json
+data/*.tmp
+!data/.gitkeep
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

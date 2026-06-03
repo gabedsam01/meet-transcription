@@ -1,0 +1,11 @@
+services:
+  meet-transcriber:
+    build: .
+    container_name: meet-drive-deepgram
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./tmp:/app/tmp
+      - ./secrets:/app/secrets:ro
+    restart: unless-stopped
