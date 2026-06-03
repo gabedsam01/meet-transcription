@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app import db
+from sqlalchemy.orm import Session
+
+from app.database.repositories import (
+    TranscriptionJobRepository,
+    UserDriveSettingsRepository,
+)
+from app.database.session import get_sessionmaker
 from app.deepgram_client import DeepgramClient
 from app.drive_client import DriveClient, DRIVE_SCOPES
 from app.processor import DriveFile, format_transcript, sanitize_filename
@@ -20,41 +26,45 @@ class EnqueueResult:
     """Outcome of trying to start a run-once job from the request path.
 
     status is one of: "missing_settings", "not_connected", "already_running",
-    "created". job carries the created pending job row when status == "created".
+    "created". job carries the created pending job when status == "created".
     """
 
     status: str
     job: Any | None = None
 
 
-def enqueue_run_once_job(settings: WebSettings, user_id: int) -> EnqueueResult:
+def enqueue_run_once_job(
+    settings: WebSettings, session: Session, user_id: int
+) -> EnqueueResult:
     """Validate and create a pending job. Fast and free of network I/O.
 
     This runs inside the HTTP request, so it must never download, transcribe,
-    or upload. The actual work happens later in run_user_job_background.
+    or upload. The actual work happens later in run_user_job_background. The
+    caller is responsible for committing the session.
     """
-    user_settings = db.get_settings(settings.database_path, user_id)
+    user_settings = UserDriveSettingsRepository(session).get_for_user(user_id)
     if (
         user_settings is None
-        or not user_settings["source_drive_folder_id"]
-        or not user_settings["destination_drive_folder_id"]
+        or not user_settings.source_drive_folder_id
+        or not user_settings.destination_drive_folder_id
     ):
         logging.info("Run once rejected: missing settings user_id=%s", user_id)
         return EnqueueResult("missing_settings")
 
-    token = TokenStore(
-        settings.database_path, fernet_from_secret(settings.app_secret_key)
-    ).get_for_user(user_id)
+    token = TokenStore(fernet_from_secret(settings.app_secret_key)).get_for_user(
+        session, user_id
+    )
     if token is None:
         logging.info("Run once rejected: Google not connected user_id=%s", user_id)
         return EnqueueResult("not_connected")
 
-    if db.get_active_job(settings.database_path, user_id) is not None:
+    jobs = TranscriptionJobRepository(session)
+    if jobs.get_active_for_user(user_id) is not None:
         logging.info("Run once rejected: a job is already running user_id=%s", user_id)
         return EnqueueResult("already_running")
 
-    job = db.create_job(settings.database_path, user_id=user_id, status="pending")
-    logging.info("Run once job created job_id=%s user_id=%s", job["id"], user_id)
+    job = jobs.create(user_id=user_id, status="pending")
+    logging.info("Run once job created job_id=%s user_id=%s", job.id, user_id)
     return EnqueueResult("created", job)
 
 
@@ -62,19 +72,23 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
     """Run the heavy transcription work for one pending job.
 
     Designed to run after the HTTP response is sent (FastAPI BackgroundTasks).
-    It always leaves the job in a terminal state: "completed" on success or
-    "failed" with an error_message on any failure, never stuck in "processing".
+    It opens its own database session and always leaves the job in a terminal
+    state: "completed" on success or "failed" with an error_message on any
+    failure, never stuck in "processing". Intermediate states are committed as
+    they happen so progress is visible.
     """
     logging.info("Background job started job_id=%s user_id=%s", job_id, user_id)
+    session = get_sessionmaker()()
+    jobs = TranscriptionJobRepository(session)
     try:
-        user_settings = db.get_settings(settings.database_path, user_id)
+        user_settings = UserDriveSettingsRepository(session).get_for_user(user_id)
         if user_settings is None:
             raise RuntimeError("User settings are required before running transcription")
         logging.info("Background job settings loaded job_id=%s", job_id)
 
-        token = TokenStore(
-            settings.database_path, fernet_from_secret(settings.app_secret_key)
-        ).get_for_user(user_id)
+        token = TokenStore(fernet_from_secret(settings.app_secret_key)).get_for_user(
+            session, user_id
+        )
         if token is None:
             raise RuntimeError("Google token is required before running transcription")
         logging.info("Background job token loaded job_id=%s", job_id)
@@ -82,9 +96,50 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
         credentials = build_oauth_credentials(token)
         drive_client = DriveClient.from_credentials(
             credentials,
-            user_settings["source_drive_folder_id"],
-            user_settings["destination_drive_folder_id"],
+            user_settings.source_drive_folder_id,
+            user_settings.destination_drive_folder_id,
         )
+
+        jobs.update(job_id, status="processing", attempts=1)
+        session.commit()
+        logging.info("Background job processing started job_id=%s", job_id)
+
+        settings.tmp_dir.mkdir(parents=True, exist_ok=True)
+        files = drive_client.list_video_files()
+        if not files:
+            logging.info("Background job found no video files job_id=%s", job_id)
+            jobs.update(
+                job_id,
+                status="failed",
+                error_message="No video files found in the source folder.",
+            )
+            session.commit()
+            return
+
+        file = files[0]
+        jobs.update(job_id, source_file_id=file.id, source_file_name=file.name)
+        session.commit()
+
+        # Skip BEFORE any heavy work (download / Deepgram / upload) when this
+        # user already has a completed job for this source file. Without this
+        # check the run would waste a Deepgram transcription, upload a duplicate
+        # transcript to Drive, and only then hit the completed-dedupe partial
+        # unique index at commit — recording a "failed" job for work that
+        # actually succeeded.
+        if jobs.has_completed_for_source(user_id, file.id):
+            logging.info(
+                "Background job skipped (source already completed) job_id=%s source_file_id=%s",
+                job_id,
+                file.id,
+            )
+            jobs.update(
+                job_id,
+                status="skipped",
+                error_message="Source file already completed for this user.",
+            )
+            session.commit()
+            return
+
         deepgram_client = DeepgramClient(
             api_key=settings.deepgram_api_key,
             model="nova-2",
@@ -94,29 +149,6 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
             diarize=True,
             utterances=True,
         )
-
-        db.update_job(settings.database_path, job_id, status="processing", attempts=1)
-        logging.info("Background job processing started job_id=%s", job_id)
-
-        settings.tmp_dir.mkdir(parents=True, exist_ok=True)
-        files = drive_client.list_video_files()
-        if not files:
-            logging.info("Background job found no video files job_id=%s", job_id)
-            db.update_job(
-                settings.database_path,
-                job_id,
-                status="failed",
-                error_message="No video files found in the source folder.",
-            )
-            return
-
-        file = files[0]
-        db.update_job(
-            settings.database_path,
-            job_id,
-            source_file_id=file.id,
-            source_file_name=file.name,
-        )
         transcript_drive_file_id = _process_file(
             drive_client, deepgram_client, settings.tmp_dir, file
         )
@@ -125,24 +157,29 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
             job_id,
             transcript_drive_file_id,
         )
-        db.update_job(
-            settings.database_path,
+        jobs.update(
             job_id,
             status="completed",
             transcript_drive_file_id=transcript_drive_file_id,
             error_message=None,
         )
+        session.commit()
         logging.info("Background job completed job_id=%s", job_id)
     except Exception as exc:  # noqa: BLE001 - a failed job must record its error, never hang.
         logging.exception(
             "Background job failed job_id=%s user_id=%s: %s", job_id, user_id, exc
         )
-        db.update_job(
-            settings.database_path,
-            job_id,
-            status="failed",
-            error_message=str(exc),
-        )
+        session.rollback()
+        try:
+            TranscriptionJobRepository(session).update(
+                job_id, status="failed", error_message=str(exc)
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001 - never raise out of the background task.
+            session.rollback()
+            logging.exception("Failed to record job failure job_id=%s", job_id)
+    finally:
+        session.close()
 
 
 def build_oauth_credentials(token: dict):

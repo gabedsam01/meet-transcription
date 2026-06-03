@@ -10,14 +10,14 @@
 </section>
 <section class="grid">
   <article class="card"><h2>Google</h2><p>{{ "Connected" if google_connected else "Not connected" }}</p></article>
-  <article class="card"><h2>Source Folder</h2><p>{{ settings["source_drive_folder_id"] if settings else "Not configured" }}</p></article>
-  <article class="card"><h2>Destination Folder</h2><p>{{ settings["destination_drive_folder_id"] if settings else "Not configured" }}</p></article>
+  <article class="card"><h2>Source Folder</h2><p>{{ settings.source_drive_folder_id if settings else "Not configured" }}</p></article>
+  <article class="card"><h2>Destination Folder</h2><p>{{ settings.destination_drive_folder_id if settings else "Not configured" }}</p></article>
 </section>
 <section class="card">
   <h2>Recent jobs</h2>
   {% if jobs %}
   <ul class="list">
-    {% for job in jobs %}<li>{{ job["source_file_name"] or "Manual run" }} — {{ job["status"] }}</li>{% endfor %}
+    {% for job in jobs %}<li>{{ job.source_file_name or "Manual run" }} — {{ job.status }}</li>{% endfor %}
   </ul>
   {% else %}<p>No jobs yet.</p>{% endif %}
 </section>
