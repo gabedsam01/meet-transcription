@@ -29,7 +29,17 @@ class JobRepository(Protocol):
 
     def mark_completed(
         self, job_id: int, now: datetime, transcript_drive_file_id: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Mark a job completed.
+
+        Atomicity contract: the worker's success path persists the transcript
+        (TranscriptRepository.create) and then calls mark_completed. The PostgreSQL
+        adapter SHOULD perform both writes in a single transaction so that a failure
+        between them cannot leave a 'failed' job owning an orphan transcript. The
+        failure is recoverable either way (the source file is simply reprocessed by a
+        new job, since dedup only blocks pending/processing/completed), but atomic
+        completion is preferred.
+        """
 
     def mark_failed(self, job_id: int, error_message: str, now: datetime) -> None: ...
 

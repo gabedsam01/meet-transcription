@@ -305,7 +305,9 @@ docker compose build
 ## Integration points
 
 - **`feat/postgres-core`**: implement `app/repositories/postgres.py` honoring the
-  ports and the SKIP LOCKED / dedup / stale contracts; add the `db` service,
+  ports and the SKIP LOCKED / dedup / stale contracts; persist the transcript and the
+  job completion atomically (single transaction) so a mid-write failure cannot leave a
+  `failed` job owning an orphan transcript; add the `db` service,
   `depends_on`, `DATABASE_URL`, `SQLAlchemy`/`psycopg`, and DDL/migrations for the
   schema below.
 - **`feat/auth-users-settings`**: repoint OAuth/settings writes to PostgreSQL;
