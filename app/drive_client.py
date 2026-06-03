@@ -23,6 +23,18 @@ class DriveClient:
         credentials = build_drive_credentials(settings)
         self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
+    @classmethod
+    def from_credentials(
+        cls, credentials, source_folder_id: str, destination_folder_id: str
+    ) -> "DriveClient":
+        from googleapiclient.discovery import build
+
+        client = cls.__new__(cls)
+        client.source_folder_id = source_folder_id
+        client.destination_folder_id = destination_folder_id
+        client.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        return client
+
     def list_video_files(self) -> list[DriveFile]:
         files: list[DriveFile] = []
         page_token = None

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or "Meet Transcription" }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">Meet Transcription</a>
+      {% if user %}
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/settings">Settings</a>
+        <a href="/jobs">Jobs</a>
+        <form action="/logout" method="post"><button type="submit">Logout</button></form>
+      </nav>
+      {% endif %}
+    </header>
+    <main class="shell">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

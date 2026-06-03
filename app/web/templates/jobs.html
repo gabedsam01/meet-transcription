@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="row-between">
+    <div><h1>Jobs</h1><p>Manual and processed transcription jobs.</p></div>
+    <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
+  </div>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>File</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for job in jobs %}
+      <tr><td>{{ job['source_file_name'] or '-' }}</td><td>{{ job['status'] }}</td><td>{{ job['attempts'] }}</td><td>{{ job['error_message'] or '' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>No jobs yet.</p>{% endif %}
+</section>
+{% endblock %}

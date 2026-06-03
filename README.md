@@ -1,6 +1,6 @@
 # Meet Transcription
 
-Python Docker worker that watches a Google Drive folder for Google Meet recordings, sends MP4 files to Deepgram, and uploads plain text transcripts back to Google Drive.
+Python Docker worker and optional Web UI that watch a Google Drive folder for Google Meet recordings, send MP4 files to Deepgram, and upload plain text transcripts back to Google Drive.
 
 ## Features
 
@@ -13,9 +13,9 @@ Python Docker worker that watches a Google Drive folder for Google Meet recordin
 - Upload transcript to Google Drive
 - Persistent processed-file state
 - Docker Compose support
+- Worker mode does not require a database or Web UI
+- Web UI mode uses SQLite for users, settings, jobs, and encrypted Google tokens
 - No FFmpeg required
-- No database required
-- No web UI required
 
 ## How It Works
 
@@ -40,7 +40,13 @@ Python Docker worker that watches a Google Drive folder for Google Meet recordin
 - Google Service Account JSON key for compatible Workspace setups
 - Two Google Drive folders accessible by the chosen Google identity
 
-## Quick Start
+## Simple Worker Mode
+
+Simple Worker Mode is the existing CLI-compatible deployment. It uses the mounted `token.json` OAuth token or Service Account JSON exactly as before, reads worker settings from `.env`, stores processing state in `/app/data/processed_files.json`, and does not require the Web UI database variables.
+
+Use this mode when one Google identity and one pair of Drive folders is enough.
+
+### Quick Start
 
 ```bash
 git clone https://github.com/gabedsam01/meet-transcription.git
@@ -88,27 +94,89 @@ DEEPGRAM_DIARIZE=true
 DEEPGRAM_UTTERANCES=true
 ```
 
-## Run Once
+### Run Once
 
 ```bash
 docker compose build
-docker compose run --rm meet-transcriber python -m app.main --once
+docker compose run --rm worker python -m app.main --once
 ```
 
-## Run Continuously
+### Run Continuously
 
 ```bash
-docker compose up -d
-docker logs -f meet-drive-deepgram
+docker compose up -d worker
+docker compose logs -f worker
 ```
 
-## Reprocess A File
+### Reprocess A File
 
 ```bash
-docker compose run --rm meet-transcriber python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
+docker compose run --rm worker python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
 ```
 
-## Google Drive Authentication
+The same CLI commands still work outside Docker:
+
+```bash
+python -m app.main --once
+python -m app.main --watch
+python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
+```
+
+## Web UI Mode
+
+Web UI Mode runs FastAPI with Uvicorn and stores per-user settings, jobs, and Google OAuth tokens in SQLite at `DATABASE_URL`. Google tokens are encrypted before storage with a key derived from `APP_SECRET_KEY`.
+
+Start the Web UI service:
+
+```bash
+docker compose up -d web
+```
+
+Open `http://localhost:8000`, sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`, connect Google, and configure the Drive folders in the UI.
+
+The `worker` service is still the legacy env-driven worker. It does not read Web UI SQLite settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
+
+### Required Web Env Vars
+
+```env
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+APP_SECRET_KEY=
+SESSION_COOKIE_SECURE=false
+GOOGLE_WEB_CLIENT_ID=
+GOOGLE_WEB_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:8000/oauth/google/callback
+DATABASE_URL=/app/data/app.db
+```
+
+`DATABASE_URL` is a SQLite file path for this app, not a SQLAlchemy URL or Postgres connection string.
+
+`DEEPGRAM_API_KEY` remains global and is used by both worker and Web UI-triggered transcription flows.
+
+### Single User
+
+The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `ADMIN_PASSWORD` gate access, and the connected Google account is stored for that admin user in SQLite.
+
+### Multi User Roadmap
+
+Multi-user support is planned but not complete. Future work should add user provisioning, per-user authorization boundaries, background job isolation, and operational controls before exposing this to multiple independent users.
+
+## Google OAuth Setup
+
+Simple Worker Mode can use the existing Desktop OAuth flow with mounted `secrets/oauth-client.json` and `secrets/token.json`, or a Service Account for compatible Workspace setups.
+
+Web UI Mode requires Google OAuth **Web Application** credentials, not Desktop credentials. In Google Cloud:
+
+1. Create or open a Google Cloud project.
+2. Enable Google Drive API.
+3. Go to `APIs & Services` > `Credentials`.
+4. Create an OAuth client ID with application type `Web application`.
+5. Add an authorized redirect URI that exactly matches `GOOGLE_REDIRECT_URI`, for example `https://seu-dominio.com/oauth/google/callback`.
+6. Put the generated client ID and secret in `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`.
+
+The current scope requests full Drive access with `https://www.googleapis.com/auth/drive`. The narrower `drive.file` scope should be evaluated later; it is outside the current scope.
+
+## Google Drive Authentication For Worker Mode
 
 ### Recommended: OAuth For Personal Google Accounts
 
@@ -159,7 +227,9 @@ Then:
 5. Save it as `secrets/service-account.json`.
 6. Share your input and output Drive folders with the Service Account email.
 
-## Dokploy Setup
+## Dokploy Deployment
+
+### Worker Deployment
 
 For OAuth deployments, create two file mounts:
 
@@ -176,7 +246,34 @@ GOOGLE_OAUTH_CLIENT_SECRETS_FILE=/app/secrets/oauth-client.json
 GOOGLE_OAUTH_TOKEN_FILE=/app/secrets/token.json
 ```
 
-Keep the container volume mount for `/app/data` persistent so `processed_files.json` preserves successful processing and failure-attempt state.
+Keep the container volume mount for `/app/data` persistent so `processed_files.json` preserves successful processing and failure-attempt state. The worker OAuth token file should be writable by the container so refreshed Google tokens can be persisted.
+
+### Web UI Deployment
+
+Use the same Docker image and run the Web UI command:
+
+```bash
+uvicorn app.web.main:app --host 0.0.0.0 --port 8000
+```
+
+Publish port `8000`, keep `/app/data` and `/app/tmp` persistent/shared with the worker, and mount `./secrets:/app/secrets:ro` if the worker also needs local Google credential files.
+
+Dokploy Web UI deployments need these environment variables:
+
+```env
+GOOGLE_WEB_CLIENT_ID=
+GOOGLE_WEB_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=https://seu-dominio.com/oauth/google/callback
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+APP_SECRET_KEY=
+SESSION_COOKIE_SECURE=true
+DATABASE_URL=/app/data/app.db
+DEEPGRAM_API_KEY=
+```
+
+The Google Cloud authorized redirect URI must exactly match `GOOGLE_REDIRECT_URI`.
+`DATABASE_URL` must be a SQLite file path such as `/app/data/app.db`.
 
 ## Security
 
@@ -189,6 +286,7 @@ oauth-client.json
 token.json
 tmp/
 data/processed_files.json
+data/app.db
 ```
 
 The app does not make Drive files public. It downloads files through the Google Drive API and sends the MP4 binary directly to Deepgram.

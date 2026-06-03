@@ -1,11 +1,24 @@
+x-app: &app
+  build: .
+  env_file:
+    - .env
+  restart: unless-stopped
+
 services:
-  meet-transcriber:
-    build: .
-    container_name: meet-drive-deepgram
-    env_file:
-      - .env
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.main", "--watch"]
+    volumes:
+      - ./data:/app/data
+      - ./tmp:/app/tmp
+      - ./secrets:/app/secrets
+
+  web:
+    <<: *app
+    command: ["uvicorn", "app.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./tmp:/app/tmp
       - ./secrets:/app/secrets:ro
-    restart: unless-stopped
