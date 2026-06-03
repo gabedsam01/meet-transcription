@@ -6,6 +6,7 @@
     <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
   </div>
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  {% if backend_error %}<div class="notice">{{ backend_error }}</div>{% endif %}
   <p class="hint">After starting a job, refresh this page to see updates.</p>
   {% if jobs %}
   <div class="table-scroll">
@@ -26,15 +27,22 @@
     <tbody>
     {% for job in jobs %}
       <tr>
-        <td>{{ job['source_file_name'] or '-' }}</td>
-        <td>{{ job['source_file_id'] or '-' }}</td>
-        <td>{{ job['status'] }}</td>
-        <td>{{ job['attempts'] }}</td>
-        <td>{{ job['transcript_drive_file_id'] or '-' }}</td>
-        <td>{{ job['error_message'] or '' }}</td>
-        <td>{{ job['created_at'] or '-' }}</td>
-        <td>{{ job['updated_at'] or '-' }}</td>
-        <td>{{ job['processed_at'] or '-' }}</td>
+        <td>{{ job.source_file_name or '-' }}</td>
+        <td>{{ job.source_file_id or '-' }}</td>
+        <td>{{ job.status }}</td>
+        <td>{{ job.attempts }}</td>
+        <td>
+          {% if job.status == 'completed' %}
+            <a href="/jobs/{{ job.id }}/download">Download</a>
+            {% if job.transcript_drive_file_id %}
+              · <a href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Drive</a>
+            {% endif %}
+          {% else %}-{% endif %}
+        </td>
+        <td>{{ job.error_message or '' }}</td>
+        <td>{{ job.created_at or '-' }}</td>
+        <td>{{ job.updated_at or '-' }}</td>
+        <td>{{ job.processed_at or '-' }}</td>
       </tr>
     {% endfor %}
     </tbody>

@@ -118,3 +118,33 @@ def test_download_of_pending_job_is_409(tmp_path):
         response = client.get(f"/jobs/{job.id}/download")
 
     assert response.status_code == 409
+
+
+def test_jobs_page_lists_jobs_and_shows_download_and_drive_links(tmp_path):
+    repos = build_memory_repositories()
+    _seed_user1(repos)
+    done = repos.jobs.create_job(1, "file-1", "meet.mp4", _now())
+    repos.transcripts.create(done.id, 1, "body", None, None, _now())
+    repos.jobs.mark_completed(done.id, _now(), transcript_drive_file_id="drive-xyz")
+    repos.jobs.create_job(1, "file-2", "pending.mp4", _now())
+    app = create_app(_web_settings(tmp_path), repositories=repos)
+
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/jobs")
+
+    text = page.text
+    assert "meet.mp4" in text
+    assert "pending.mp4" in text
+    assert f"/jobs/{done.id}/download" in text        # Download button for completed job
+    assert "drive.google.com/file/d/drive-xyz" in text  # Drive link when present
+
+
+def test_jobs_page_handles_backend_unavailable_gracefully(tmp_path):
+    # No repositories injected -> default postgres backend is unavailable on this branch.
+    app = create_app(_web_settings(tmp_path), repositories=None)
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/jobs")
+    assert page.status_code == 200
+    assert "not available" in page.text.lower() or "postgres-core" in page.text

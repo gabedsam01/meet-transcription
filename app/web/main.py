@@ -102,7 +102,8 @@ def create_app(settings: WebSettings | None = None, repositories=None) -> FastAP
     def dashboard(request: Request, user=Depends(require_user)):
         settings_row = db.get_settings(web_settings.database_path, user["id"])
         token_row = db.get_google_token(web_settings.database_path, user["id"])
-        jobs = db.get_latest_jobs(web_settings.database_path, user["id"], limit=5)
+        repositories, _ = _resolve_repositories()
+        jobs = repositories.jobs.list_jobs_for_user(user["id"])[:5] if repositories else []
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -141,11 +142,17 @@ def create_app(settings: WebSettings | None = None, repositories=None) -> FastAP
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
-        jobs = db.list_jobs(web_settings.database_path, user["id"])
+        repositories, error = _resolve_repositories()
+        jobs = repositories.jobs.list_jobs_for_user(user["id"]) if repositories else []
         return templates.TemplateResponse(
             request,
             "jobs.html",
-            {"user": user, "jobs": jobs, "message": _pop_flash(request)},
+            {
+                "user": user,
+                "jobs": jobs,
+                "message": _pop_flash(request),
+                "backend_error": error,
+            },
         )
 
     @app.post("/jobs/run-once")

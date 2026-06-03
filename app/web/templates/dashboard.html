@@ -17,7 +17,7 @@
   <h2>Recent jobs</h2>
   {% if jobs %}
   <ul class="list">
-    {% for job in jobs %}<li>{{ job["source_file_name"] or "Manual run" }} — {{ job["status"] }}</li>{% endfor %}
+    {% for job in jobs %}<li>{{ job.source_file_name or "Manual run" }} — {{ job.status }}</li>{% endfor %}
   </ul>
   {% else %}<p>No jobs yet.</p>{% endif %}
 </section>
