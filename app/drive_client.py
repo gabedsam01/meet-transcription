@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from googleapiclient.http import MediaIoBaseDownload
+
 from app.processor import DriveFile
 
 
@@ -65,18 +67,18 @@ class DriveClient:
 
         return sort_drive_files(files)
 
-    def download_file(self, file: DriveFile, destination: str | Path) -> None:
-        from googleapiclient.http import MediaIoBaseDownload
-
+    def download_by_id(self, file_id: str, destination: str | Path) -> None:
         destination_path = Path(destination)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
-        request = self.service.files().get_media(fileId=file.id, supportsAllDrives=True)
-
+        request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
         with destination_path.open("wb") as handle:
             downloader = MediaIoBaseDownload(handle, request)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
+
+    def download_file(self, file: DriveFile, destination: str | Path) -> None:
+        self.download_by_id(file.id, destination)
 
     def upload_text_file(self, source_path: str | Path, filename: str) -> str:
         from googleapiclient.http import MediaFileUpload

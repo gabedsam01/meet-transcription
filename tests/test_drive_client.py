@@ -142,3 +142,42 @@ class FakeCredentials:
 
     def to_json(self):
         return '{"token":"refreshed"}'
+
+
+def test_download_by_id_writes_media_to_destination(tmp_path, monkeypatch):
+    import app.drive_client as drive_module
+    from app.drive_client import DriveClient
+
+    class FakeChunkDownloader:
+        def __init__(self, handle, request):
+            self.handle = handle
+            self.request = request
+            self.done = False
+
+        def next_chunk(self):
+            self.handle.write(b"video-bytes")
+            self.done = True
+            return None, True
+
+    monkeypatch.setattr(drive_module, "MediaIoBaseDownload", FakeChunkDownloader, raising=False)
+
+    captured = {}
+
+    class FakeFiles:
+        def get_media(self, fileId, supportsAllDrives):
+            captured["file_id"] = fileId
+            captured["all_drives"] = supportsAllDrives
+            return "request-object"
+
+    class FakeService:
+        def files(self):
+            return FakeFiles()
+
+    client = DriveClient.__new__(DriveClient)
+    client.service = FakeService()
+    destination = tmp_path / "out" / "video.mp4"
+
+    client.download_by_id("file-123", destination)
+
+    assert captured == {"file_id": "file-123", "all_drives": True}
+    assert destination.read_bytes() == b"video-bytes"
