@@ -86,3 +86,20 @@ class FakeResponse:
 
     def json(self):
         return self.payload
+
+
+def test_from_api_key_builds_client_with_options():
+    client = DeepgramClient.from_api_key("user-key", model="nova-3", language="pt-BR")
+    assert client.api_key == "user-key"
+    assert client.model == "nova-3"
+
+
+def test_transcribe_per_call_api_key_overrides_instance_key(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    session = FakeSession(FakeResponse(200, {"results": {}}))
+    client = DeepgramClient.from_api_key("instance-key", session=session)
+
+    client.transcribe(video, api_key="per-call-key")
+
+    assert session.requests[0]["headers"]["Authorization"] == "Token per-call-key"
