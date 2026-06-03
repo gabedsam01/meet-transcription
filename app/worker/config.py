@@ -31,7 +31,7 @@ class WorkerSettings:
             poll_interval_seconds=_positive_int(values, "WORKER_POLL_INTERVAL_SECONDS", 10),
             concurrency=_positive_int(values, "WORKER_CONCURRENCY", 1),
             stale_job_timeout_minutes=_positive_int(values, "STALE_JOB_TIMEOUT_MINUTES", 60),
-            tmp_dir=Path(values.get("TMP_DIR", "/app/tmp")),
+            tmp_dir=Path(values.get("TMP_DIR", "").strip() or "/app/tmp"),
             deepgram_model=values.get("DEEPGRAM_MODEL", "nova-3").strip() or "nova-3",
             deepgram_language=values.get("DEEPGRAM_LANGUAGE", "pt-BR").strip() or "pt-BR",
             deepgram_smart_format=parse_bool(values.get("DEEPGRAM_SMART_FORMAT", "true")),
