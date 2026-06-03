@@ -21,7 +21,7 @@ def test_job_defaults():
 def test_settings_and_token_and_transcript_construct():
     settings = Settings(
         user_id=7, source_drive_folder_id="src", destination_drive_folder_id="dst",
-        poll_interval_seconds=300, save_copy_to_drive=True, deepgram_api_key="dg",
+        save_copy_to_drive=True, deepgram_api_key="dg",
     )
     token = GoogleToken(access_token="a", token_uri="u", client_id="c")
     now = datetime.now(timezone.utc)

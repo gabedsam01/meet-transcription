@@ -35,7 +35,6 @@ class Settings:
     user_id: int
     source_drive_folder_id: str
     destination_drive_folder_id: str
-    poll_interval_seconds: int
     save_copy_to_drive: bool = False
     deepgram_api_key: str | None = None
 

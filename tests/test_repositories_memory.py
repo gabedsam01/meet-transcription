@@ -119,7 +119,7 @@ def test_transcript_create_and_get_by_job():
 
 def test_settings_and_token_seed_and_get():
     repos = build_memory_repositories()
-    repos.settings.set(Settings(7, "src", "dst", 300, True, "dg-key"))
+    repos.settings.set(Settings(7, "src", "dst", True, "dg-key"))
     repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
     assert repos.settings.get(7).deepgram_api_key == "dg-key"
     assert repos.google_tokens.get(7).access_token == "a"
