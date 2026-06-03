@@ -1043,7 +1043,12 @@ def build_oauth_credentials(token: dict):
         info["token"] = info["access_token"]
     if info.get("expiry"):
         info["expiry"] = _google_expiry(info["expiry"])
-    return Credentials.from_authorized_user_info(info, scopes=scopes)
+    credentials = Credentials.from_authorized_user_info(info, scopes=scopes)
+    # Some google-auth versions don't restore the access token from info; set it so the
+    # credential is immediately usable instead of being forced to refresh on first call.
+    if not credentials.token and info.get("token"):
+        credentials.token = info["token"]
+    return credentials
 
 
 def credentials_from_token(token: GoogleToken):
