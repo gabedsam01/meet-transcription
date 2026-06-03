@@ -44,6 +44,26 @@ def test_user_get_or_create_is_idempotent_and_updates_name(db):
     assert len(repo.list()) == 1
 
 
+def test_ensure_admin_creates_promotes_and_is_idempotent(db):
+    repo = UserRepository(db)
+    # Promote an existing non-admin row.
+    existing = repo.create(email="admin@example.com", role="user", is_active=False)
+    db.flush()
+    promoted = repo.ensure_admin(email="admin@example.com", name="Admin")
+    assert promoted.id == existing.id
+    assert promoted.role == "admin"
+    assert promoted.is_active is True
+    assert promoted.name == "Admin"
+    # Idempotent.
+    again = repo.ensure_admin(email="admin@example.com")
+    assert again.id == existing.id and again.role == "admin"
+    # Creates when absent.
+    fresh = repo.ensure_admin(email="fresh@example.com")
+    db.flush()
+    assert fresh.role == "admin" and fresh.is_active is True
+    assert len(repo.list()) == 2
+
+
 def test_user_update_only_touches_allowed_fields(db):
     repo = UserRepository(db)
     user = repo.create(email="a@example.com")

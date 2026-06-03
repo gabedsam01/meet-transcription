@@ -99,15 +99,6 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
             user_settings.source_drive_folder_id,
             user_settings.destination_drive_folder_id,
         )
-        deepgram_client = DeepgramClient(
-            api_key=settings.deepgram_api_key,
-            model="nova-2",
-            language="pt-BR",
-            smart_format=True,
-            punctuate=True,
-            diarize=True,
-            utterances=True,
-        )
 
         jobs.update(job_id, status="processing", attempts=1)
         session.commit()
@@ -128,6 +119,36 @@ def run_user_job_background(settings: WebSettings, job_id: int, user_id: int) ->
         file = files[0]
         jobs.update(job_id, source_file_id=file.id, source_file_name=file.name)
         session.commit()
+
+        # Skip BEFORE any heavy work (download / Deepgram / upload) when this
+        # user already has a completed job for this source file. Without this
+        # check the run would waste a Deepgram transcription, upload a duplicate
+        # transcript to Drive, and only then hit the completed-dedupe partial
+        # unique index at commit — recording a "failed" job for work that
+        # actually succeeded.
+        if jobs.has_completed_for_source(user_id, file.id):
+            logging.info(
+                "Background job skipped (source already completed) job_id=%s source_file_id=%s",
+                job_id,
+                file.id,
+            )
+            jobs.update(
+                job_id,
+                status="skipped",
+                error_message="Source file already completed for this user.",
+            )
+            session.commit()
+            return
+
+        deepgram_client = DeepgramClient(
+            api_key=settings.deepgram_api_key,
+            model="nova-2",
+            language="pt-BR",
+            smart_format=True,
+            punctuate=True,
+            diarize=True,
+            utterances=True,
+        )
         transcript_drive_file_id = _process_file(
             drive_client, deepgram_client, settings.tmp_dir, file
         )

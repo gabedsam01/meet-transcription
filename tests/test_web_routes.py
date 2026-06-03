@@ -46,6 +46,19 @@ def test_login_sets_http_only_session_cookie(pg, tmp_path):
         assert "httponly" in response.headers["set-cookie"].lower()
 
 
+def test_login_promotes_existing_user_to_admin(pg, tmp_path):
+    with session_scope() as s:
+        UserRepository(s).create(email="admin", name="admin", role="user")
+
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        _login(client)
+
+    with session_scope() as s:
+        user = UserRepository(s).get_by_email("admin")
+        assert user.role == "admin"
+        assert user.is_active is True
+
+
 def test_authenticated_settings_and_jobs_render(pg, tmp_path):
     with TestClient(create_app(_settings(tmp_path))) as client:
         _login(client)

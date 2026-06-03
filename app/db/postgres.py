@@ -15,7 +15,11 @@ from typing import Any
 
 from sqlalchemy.orm import sessionmaker
 
-from app.database.connection import create_engine_from_url, normalize_database_url
+from app.database.connection import (
+    create_engine_from_url,
+    get_database_url,
+    normalize_database_url,
+)
 from app.database.repositories import (
     DeepgramCredentialRepository as CoreDeepgram,
     GoogleTokenRepository as CoreTokens,
@@ -270,11 +274,14 @@ class PgTranscriptionJobsRepository(_Bound):
 def build_repositories(database_url: Any = None, *, engine=None) -> RepositoryBundle:
     """Build the Postgres-backed RepositoryBundle the auth branch consumes.
 
-    Pass ``database_url`` in production; tests may pass a pre-built ``engine``.
+    Pass ``database_url`` in production (falls back to the DATABASE_URL
+    environment variable when None); tests may pass a pre-built ``engine``.
     """
-    eng = engine if engine is not None else create_engine_from_url(
-        normalize_database_url(database_url)
-    )
+    if engine is not None:
+        eng = engine
+    else:
+        url = database_url if database_url is not None else get_database_url()
+        eng = create_engine_from_url(normalize_database_url(url))
     factory = sessionmaker(
         bind=eng, autoflush=False, expire_on_commit=False, future=True
     )

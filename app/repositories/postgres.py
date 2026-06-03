@@ -54,6 +54,19 @@ except ImportError:  # postgres-core standalone
 _STALE_MESSAGE = "stale timeout: job exceeded processing window"
 
 
+def _scopes_to_list(scopes: Any) -> list:
+    """Worker-side canonical shape: a list (empty list for empty/absent scopes).
+
+    The DB stores scopes as a JSONB list; the worker's credential builder accepts
+    a list directly. Only the auth border degrades to an empty string.
+    """
+    if not scopes:
+        return []
+    if isinstance(scopes, (list, tuple)):
+        return list(scopes)
+    return str(scopes).split()
+
+
 class CredentialDecryptionError(RuntimeError):
     """An encrypted credential is present but APP_SECRET_KEY is missing to decrypt it."""
 
@@ -81,14 +94,6 @@ class _Decryptor:
                 )
             self._fernet = fernet_from_secret(self._key)
         return decrypt_value(self._fernet, value)
-
-
-def _scopes_to_str(scopes: Any) -> str | None:
-    if scopes is None:
-        return None
-    if isinstance(scopes, (list, tuple)):
-        return " ".join(scopes)
-    return str(scopes)
 
 
 def _to_job(j: models.TranscriptionJob | None) -> Job | None:
@@ -305,7 +310,7 @@ class PgGoogleTokenRepository(_Bound):
                 client_id=t.client_id,
                 refresh_token=self._dec.decrypt(t.encrypted_refresh_token),
                 client_secret=self._dec.decrypt(t.client_secret),
-                scopes=_scopes_to_str(t.scopes),
+                scopes=_scopes_to_list(t.scopes),
                 expiry=t.expiry.isoformat() if t.expiry else None,
             )
 

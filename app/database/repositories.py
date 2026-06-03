@@ -76,6 +76,25 @@ class UserRepository:
             self.session.flush()
         return user
 
+    def ensure_admin(self, *, email: str, name: str | None = None) -> User:
+        """Create the admin user, or promote/reactivate an existing row. Idempotent."""
+        user = self.get_by_email(email)
+        if user is None:
+            return self.create(email=email, name=name, role="admin")
+        changed = False
+        if user.role != "admin":
+            user.role = "admin"
+            changed = True
+        if not user.is_active:
+            user.is_active = True
+            changed = True
+        if name is not None and user.name != name:
+            user.name = name
+            changed = True
+        if changed:
+            self.session.flush()
+        return user
+
     def list(self) -> Sequence[User]:
         return self.session.scalars(select(User).order_by(User.id)).all()
 

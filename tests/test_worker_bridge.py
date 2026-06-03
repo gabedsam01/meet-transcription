@@ -187,9 +187,31 @@ def test_google_token_get_returns_decrypted_token(pg):
     assert tok.refresh_token == "PLAIN_rt"  # decrypted
     assert tok.client_secret == "PLAIN_cs"  # decrypted
     assert tok.client_id == "cid"  # never encrypted
-    assert isinstance(tok.scopes, str)
-    assert tok.scopes == "scope-a scope-b"
+    # Canonical worker shape: scopes as a list (the worker's credential builder
+    # accepts a list directly); empty string only at the auth border.
+    assert tok.scopes == ["scope-a", "scope-b"]
     assert repos.google_tokens.get(999999) is None
+
+
+def test_google_token_empty_scopes_is_empty_list(pg):
+    fernet = fernet_from_secret(_SECRET)
+    auth = build_auth(engine=pg)
+    uid = auth.users.create(email="empty@example.com", password_hash="h", role="user").id
+    auth.google_tokens.save_for_user(
+        uid,
+        GoogleToken(
+            access_token=encrypt_value(fernet, "a"),
+            refresh_token=None,
+            token_uri="uri",
+            client_id="cid",
+            client_secret=None,
+            scopes="",
+            expiry=None,
+        ),
+    )
+
+    tok = build_postgres_repositories(engine=pg, app_secret_key=_SECRET).google_tokens.get(uid)
+    assert tok.scopes == []  # empty -> empty list at the worker border
 
 
 def test_decryption_fails_clearly_without_app_secret_key(pg):

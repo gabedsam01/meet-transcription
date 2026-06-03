@@ -78,9 +78,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 {"error": "Invalid username or password"},
                 status_code=401,
             )
-        user = UserRepository(db).get_or_create(
-            email=username, name=username, role="admin"
-        )
+        # Bootstrap/repair the admin: promote an existing row to admin if needed.
+        user = UserRepository(db).ensure_admin(email=username, name=username)
         db.commit()
         request.session["user_id"] = user.id
         request.session["user_email"] = user.email

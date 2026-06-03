@@ -97,6 +97,31 @@ def test_background_job_completes_and_records_file_and_transcript(db, tmp_path, 
     assert deepgram_instances[0].api_key == "global-dg-key"
 
 
+def test_background_job_skips_source_already_completed(db, tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    user_id = _seed_user(db)
+    repo = TranscriptionJobRepository(db)
+    # A prior completed job for the same source file.
+    prior = repo.create(user_id=user_id, status="pending", source_file_id="file-1")
+    repo.update(prior.id, status="completed")
+    job = repo.create(user_id=user_id, status="pending")
+    db.commit()
+    fake_drive = FakeDrive([_drive_file("file-1", "meet.mp4")])
+    deepgram_instances = []
+    _patch_clients(monkeypatch, fake_drive, deepgram_instances)
+
+    services.run_user_job_background(settings, job.id, user_id)
+
+    db.expire_all()
+    done = TranscriptionJobRepository(db).get(job.id)
+    assert done.status == "skipped"  # not "failed"
+    assert done.error_message == "Source file already completed for this user."
+    assert done.source_file_id == "file-1"
+    # No heavy work happened: no download, no Deepgram client built, no upload.
+    assert fake_drive.downloads == []
+    assert deepgram_instances == []
+
+
 def test_background_job_marks_failed_with_error_message(db, tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     user_id = _seed_user(db)

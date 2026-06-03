@@ -1,7 +1,18 @@
 """Integration tests for the auth-branch bridge (app/db/postgres.py)."""
 
+import pytest
+
+from app.database.connection import DatabaseConfigError
 from app.db._auth_contract import DriveSettings, GoogleToken
 from app.db.postgres import build_repositories
+
+
+def test_build_repositories_without_url_or_env_fails_clearly(monkeypatch):
+    # Symmetric with build_postgres_repositories: None falls back to DATABASE_URL,
+    # and a missing DATABASE_URL raises a clear, actionable error (no connection).
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(DatabaseConfigError, match="DATABASE_URL is required"):
+        build_repositories()
 
 
 def test_build_repositories_returns_full_bundle(pg):
@@ -70,6 +81,26 @@ def test_google_tokens_keep_ciphertext_and_string_scopes(pg):
     assert isinstance(tok.scopes, str)
     assert tok.scopes == "https://www.googleapis.com/auth/drive"
     assert bundle.google_tokens.get_for_user(999999) is None
+
+
+def test_google_tokens_empty_scopes_is_empty_string(pg):
+    bundle = build_repositories(engine=pg)
+    user = bundle.users.create(email="es@example.com", password_hash="h", role="user")
+    bundle.google_tokens.save_for_user(
+        user.id,
+        GoogleToken(
+            access_token="a",
+            refresh_token=None,
+            token_uri="uri",
+            client_id="cid",
+            client_secret=None,
+            scopes="",
+            expiry=None,
+        ),
+    )
+
+    tok = bundle.google_tokens.get_for_user(user.id)
+    assert tok.scopes == ""  # empty -> empty string at the auth border
 
 
 def test_drive_settings_roundtrip(pg):
