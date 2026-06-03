@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -164,12 +165,17 @@ def create_app(settings: WebSettings | None = None, repositories=None) -> FastAP
             _set_flash(request, error)
             return RedirectResponse("/jobs", status_code=303)
 
-        result = create_next_pending_job(
-            repositories,
-            build_drive_client=app.state.build_drive_client,
-            credentials_from_token=app.state.credentials_from_token,
-            user_id=user["id"],
-        )
+        try:
+            result = create_next_pending_job(
+                repositories,
+                build_drive_client=app.state.build_drive_client,
+                credentials_from_token=app.state.credentials_from_token,
+                user_id=user["id"],
+            )
+        except Exception:  # noqa: BLE001 - surface Drive/credential errors as a flash, not a 500.
+            logging.exception("run-once failed to create a job for user_id=%s", user["id"])
+            _set_flash(request, "Could not start a transcription right now. Please try again.")
+            return RedirectResponse("/jobs", status_code=303)
         messages = {
             "no_settings": "Configure source and destination folders in Settings first.",
             "not_connected": "Connect Google before running a transcription.",

@@ -31,4 +31,9 @@ def run_worker_loop(
             sleeper(container.settings.poll_interval_seconds)
             continue
         LOGGER.info("Claimed job_id=%s worker=%s", job.id, worker_id)
-        proc.process(job)
+        try:
+            proc.process(job)
+        except Exception:  # noqa: BLE001 - a single job must never kill the worker loop.
+            LOGGER.exception(
+                "Unhandled error processing job_id=%s worker=%s", job.id, worker_id
+            )

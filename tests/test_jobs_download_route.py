@@ -150,3 +150,24 @@ def test_jobs_page_handles_backend_unavailable_gracefully(tmp_path):
         page = client.get("/jobs")
     assert page.status_code == 200
     assert "not available" in page.text.lower() or "postgres-core" in page.text
+
+
+def test_run_once_flashes_error_when_drive_fails(tmp_path):
+    repos = build_memory_repositories()
+    _seed_user1(repos)
+    app = create_app(_web_settings(tmp_path), repositories=repos)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("drive exploded")
+
+    app.state.build_drive_client = boom
+    app.state.credentials_from_token = lambda token: object()
+
+    with TestClient(app) as client:
+        _login(client)
+        response = client.post("/jobs/run-once", follow_redirects=False)
+        assert response.status_code == 303  # graceful redirect, not a 500
+        page = client.get("/jobs")
+
+    assert "Could not start a transcription" in page.text
+    assert repos.jobs.list_jobs_for_user(1) == []

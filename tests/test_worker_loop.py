@@ -46,3 +46,20 @@ def test_loop_exits_immediately_when_already_stopped(tmp_path):
     run_worker_loop(container, stop_event, "w1", processor=processor, sleep=lambda s: None)
 
     assert processor.processed == []  # never claimed because stop was set first
+
+
+def test_loop_survives_a_job_whose_processing_raises(tmp_path):
+    container = make_worker_container(tmp_path)
+    container.repositories.jobs.create_job(7, "src-1", "a.mp4", _now())
+    stop_event = threading.Event()
+
+    class BoomProcessor:
+        def process(self, job):
+            raise RuntimeError("boom")
+
+    # Once the raising job is handled the queue is empty -> sleeper stops the loop.
+    def fake_sleep(_seconds):
+        stop_event.set()
+
+    # Must NOT propagate: a single failing job cannot kill the worker loop.
+    run_worker_loop(container, stop_event, "w1", processor=BoomProcessor(), sleep=fake_sleep)
