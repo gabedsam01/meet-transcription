@@ -195,6 +195,24 @@ def list_jobs(path: str | Path, user_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def get_active_job(path: str | Path, user_id: int) -> sqlite3.Row | None:
+    """Return the user's most recent pending/processing job, or None.
+
+    Used to prevent a second run-once from starting while one is already
+    queued or running.
+    """
+    with connect_db(path) as conn:
+        return conn.execute(
+            """
+            SELECT * FROM transcription_jobs
+            WHERE user_id = ? AND status IN ('pending', 'processing')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+
+
 def get_latest_jobs(path: str | Path, user_id: int, limit: int = 5) -> list[sqlite3.Row]:
     with connect_db(path) as conn:
         return conn.execute(

@@ -2,8 +2,11 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
+from app import db
 from app.web.config import WebSettings
 from app.web.main import create_app
+from app.web.security import fernet_from_secret
+from app.web.token_store import TokenStore
 
 
 def test_health_returns_ok(tmp_path):
@@ -105,6 +108,148 @@ def test_oauth_callback_rejects_mismatched_state(tmp_path):
         response = client.get("/oauth/google/callback?code=abc&state=wrong")
 
         assert response.status_code == 400
+
+
+def test_run_once_responds_fast_with_pending_job_and_background_task(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    user = _seed_admin_with_settings_and_token(settings)
+    scheduled = []
+    monkeypatch.setattr(
+        "app.web.services.run_user_job_background",
+        lambda s, job_id, user_id: scheduled.append((job_id, user_id)),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        _login(client)
+
+        response = client.post("/jobs/run-once", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/jobs"
+
+        jobs = db.list_jobs(settings.database_path, user["id"])
+        assert len(jobs) == 1
+        # Request path must NOT process synchronously: the stubbed background
+        # task never ran the work, so the job is still pending.
+        assert jobs[0]["status"] == "pending"
+        assert scheduled == [(jobs[0]["id"], user["id"])]
+
+        page = client.get("/jobs")
+        assert "Job started" in page.text
+
+
+def test_run_once_blocks_when_a_job_is_already_running(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    user = _seed_admin_with_settings_and_token(settings)
+    db.create_job(settings.database_path, user["id"], status="processing")
+    scheduled = []
+    monkeypatch.setattr(
+        "app.web.services.run_user_job_background",
+        lambda s, job_id, user_id: scheduled.append((job_id, user_id)),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        _login(client)
+
+        response = client.post("/jobs/run-once", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/jobs"
+        assert scheduled == []
+        assert len(db.list_jobs(settings.database_path, user["id"])) == 1
+
+        page = client.get("/jobs")
+        assert "There is already a job running." in page.text
+
+
+def test_run_once_without_settings_redirects_with_message(tmp_path):
+    settings = _settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        _login(client)  # admin user exists, but no settings or Google token
+
+        response = client.post("/jobs/run-once", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/jobs"
+
+        user = db.get_or_create_user(settings.database_path, "admin")
+        assert db.list_jobs(settings.database_path, user["id"]) == []
+
+        page = client.get("/jobs")
+        assert "Configure source and destination folders" in page.text
+
+
+def test_jobs_page_shows_all_job_fields_and_refresh_guidance(tmp_path):
+    settings = _settings(tmp_path)
+    user = _seed_admin_with_settings_and_token(settings)
+    job = db.create_job(
+        settings.database_path,
+        user["id"],
+        status="pending",
+        source_file_id="src-123",
+        source_file_name="meeting.mp4",
+    )
+    db.update_job(
+        settings.database_path,
+        job["id"],
+        status="completed",
+        transcript_drive_file_id="txt-456",
+        attempts=1,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        _login(client)
+        page = client.get("/jobs")
+
+    text = page.text
+    assert "meeting.mp4" in text
+    assert "src-123" in text
+    assert "txt-456" in text
+    assert "completed" in text
+    assert "After starting a job, refresh this page to see updates." in text
+    for header in ["Source ID", "Transcript", "Attempts", "Created", "Updated", "Processed"]:
+        assert header in text
+
+
+def test_jobs_page_shows_error_message_for_failed_job(tmp_path):
+    settings = _settings(tmp_path)
+    user = _seed_admin_with_settings_and_token(settings)
+    job = db.create_job(settings.database_path, user["id"], status="pending")
+    db.update_job(
+        settings.database_path,
+        job["id"],
+        status="failed",
+        error_message="Deepgram exploded mid-transcription",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        _login(client)
+        page = client.get("/jobs")
+
+    assert "failed" in page.text
+    assert "Deepgram exploded mid-transcription" in page.text
+
+
+def _seed_admin_with_settings_and_token(settings: WebSettings):
+    db.init_db(settings.database_path)
+    user = db.get_or_create_user(settings.database_path, "admin", "admin")
+    db.save_settings(settings.database_path, user["id"], "source", "dest", 60)
+    TokenStore(
+        settings.database_path, fernet_from_secret(settings.app_secret_key)
+    ).save_for_user(
+        user["id"],
+        {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": "https://www.googleapis.com/auth/drive",
+            "expiry": "2026-06-03T00:00:00+00:00",
+        },
+    )
+    return user
 
 
 def _login(client: TestClient) -> None:

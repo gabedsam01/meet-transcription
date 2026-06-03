@@ -136,6 +136,18 @@ Open `http://localhost:8000`, sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`
 
 The `worker` service is still the legacy env-driven worker. It does not read Web UI SQLite settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
 
+### Run Once And Background Processing
+
+The Web UI **Run once** button does not block the HTTP request. When you click it:
+
+1. The request validates your settings and Google connection, creates a `pending` job, and returns to `/jobs` immediately (well under a second).
+2. The transcription itself — download, Deepgram, and upload — runs in a local **FastAPI background task** inside the same web container.
+3. Refresh `/jobs` to follow the job through `pending` → `processing` → `completed`/`failed`.
+
+Each Run once transcribes the next recording found in the source folder as a single background job. If a job is already `pending` or `processing` for your user, a second Run once is rejected with "There is already a job running." This is what avoids the Cloudflare `524` timeout that happened when the request processed the whole transcription synchronously.
+
+This background task is local to one container and is intentionally simple for the MVP. It does not survive a process restart and does not scale across multiple web replicas. For production with many users, evolve it into a dedicated worker or queue (for example the legacy CLI worker, or a real job queue) instead of in-process background tasks.
+
 ### Required Web Env Vars
 
 ```env

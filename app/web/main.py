@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -7,13 +8,14 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
+from app.logger import setup_logging
 from app.web.config import WebSettings
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
@@ -25,6 +27,7 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 
 def create_app(settings: WebSettings | None = None) -> FastAPI:
+    setup_logging()
     web_settings = settings or WebSettings.from_env()
 
     @asynccontextmanager
@@ -125,14 +128,43 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "jobs.html",
-            {"user": user, "jobs": jobs},
+            {"user": user, "jobs": jobs, "message": _pop_flash(request)},
         )
 
     @app.post("/jobs/run-once")
-    def run_once(user=Depends(require_user)):
-        from app.web.services import run_once_for_user
+    def run_once(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        user=Depends(require_user),
+    ):
+        from app.web import services
 
-        run_once_for_user(web_settings, user["id"])
+        logging.info("POST /jobs/run-once received user_id=%s", user["id"])
+        result = services.enqueue_run_once_job(web_settings, user["id"])
+
+        if result.status == "missing_settings":
+            _set_flash(
+                request, "Configure source and destination folders in Settings first."
+            )
+        elif result.status == "not_connected":
+            _set_flash(request, "Connect Google before running a transcription.")
+        elif result.status == "already_running":
+            _set_flash(request, "There is already a job running.")
+        else:  # created
+            job_id = result.job["id"]
+            background_tasks.add_task(
+                services.run_user_job_background, web_settings, job_id, user["id"]
+            )
+            logging.info(
+                "Background job scheduled job_id=%s user_id=%s", job_id, user["id"]
+            )
+            _set_flash(request, "Job started. Refresh this page to follow progress.")
+
+        logging.info(
+            "POST /jobs/run-once responding redirect to /jobs user_id=%s status=%s",
+            user["id"],
+            result.status,
+        )
         return RedirectResponse("/jobs", status_code=303)
 
     @app.get("/connect-google")
@@ -162,6 +194,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return RedirectResponse("/", status_code=303)
 
     return app
+
+
+def _set_flash(request: Request, message: str) -> None:
+    request.session["flash"] = message
+
+
+def _pop_flash(request: Request) -> str | None:
+    return request.session.pop("flash", None)
 
 
 def require_user(request: Request):

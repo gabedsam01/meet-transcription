@@ -5,15 +5,41 @@
     <div><h1>Jobs</h1><p>Manual and processed transcription jobs.</p></div>
     <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
   </div>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  <p class="hint">After starting a job, refresh this page to see updates.</p>
   {% if jobs %}
+  <div class="table-scroll">
   <table>
-    <thead><tr><th>File</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Source ID</th>
+        <th>Status</th>
+        <th>Attempts</th>
+        <th>Transcript</th>
+        <th>Error</th>
+        <th>Created</th>
+        <th>Updated</th>
+        <th>Processed</th>
+      </tr>
+    </thead>
     <tbody>
     {% for job in jobs %}
-      <tr><td>{{ job['source_file_name'] or '-' }}</td><td>{{ job['status'] }}</td><td>{{ job['attempts'] }}</td><td>{{ job['error_message'] or '' }}</td></tr>
+      <tr>
+        <td>{{ job['source_file_name'] or '-' }}</td>
+        <td>{{ job['source_file_id'] or '-' }}</td>
+        <td>{{ job['status'] }}</td>
+        <td>{{ job['attempts'] }}</td>
+        <td>{{ job['transcript_drive_file_id'] or '-' }}</td>
+        <td>{{ job['error_message'] or '' }}</td>
+        <td>{{ job['created_at'] or '-' }}</td>
+        <td>{{ job['updated_at'] or '-' }}</td>
+        <td>{{ job['processed_at'] or '-' }}</td>
+      </tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}<p>No jobs yet.</p>{% endif %}
 </section>
 {% endblock %}

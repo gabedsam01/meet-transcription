@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from app import db
 from app.processor import DriveFile
 from app.web.config import WebSettings
@@ -9,46 +7,150 @@ from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
 
 
-def test_run_once_requires_settings_and_tokens(tmp_path):
-    from app.web.services import run_once_for_user
+# --- enqueue_run_once_job (fast request path, no processing) ----------------
+
+
+def test_enqueue_reports_missing_settings(tmp_path):
+    from app.web import services
 
     settings = _settings(tmp_path)
     db.init_db(settings.database_path)
     user = db.get_or_create_user(settings.database_path, "user@example.com")
 
-    with pytest.raises(RuntimeError, match="settings"):
-        run_once_for_user(settings, user["id"])
+    result = services.enqueue_run_once_job(settings, user["id"])
 
+    assert result.status == "missing_settings"
+    assert db.list_jobs(settings.database_path, user["id"]) == []
+
+
+def test_enqueue_reports_google_not_connected(tmp_path):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    db.init_db(settings.database_path)
+    user = db.get_or_create_user(settings.database_path, "user@example.com")
     db.save_settings(settings.database_path, user["id"], "source", "dest", 60)
 
-    with pytest.raises(RuntimeError, match="token"):
-        run_once_for_user(settings, user["id"])
+    result = services.enqueue_run_once_job(settings, user["id"])
+
+    assert result.status == "not_connected"
+    assert db.list_jobs(settings.database_path, user["id"]) == []
 
 
-def test_run_once_creates_jobs_and_completes_with_transcript_id(tmp_path, monkeypatch):
+def test_enqueue_creates_pending_job_without_processing(tmp_path):
     from app.web import services
 
     settings = _settings(tmp_path)
     user = _user_with_settings_and_token(settings)
+
+    # No Drive/Deepgram clients are patched here. If enqueue tried to process
+    # synchronously, it would build a real DriveClient and fail/hang. A passing
+    # test proves the request path only creates a pending job.
+    result = services.enqueue_run_once_job(settings, user["id"])
+
+    assert result.status == "created"
+    assert result.job["status"] == "pending"
+    jobs = db.list_jobs(settings.database_path, user["id"])
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "pending"
+    assert jobs[0]["source_file_id"] is None
+
+
+def test_enqueue_blocks_when_active_job_exists(tmp_path):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    user = _user_with_settings_and_token(settings)
+    db.create_job(settings.database_path, user["id"], status="processing")
+
+    result = services.enqueue_run_once_job(settings, user["id"])
+
+    assert result.status == "already_running"
+    # No duplicate job created; only the pre-existing active one remains.
+    assert len(db.list_jobs(settings.database_path, user["id"])) == 1
+
+
+# --- run_user_job_background (heavy work, runs after the response) ----------
+
+
+def test_background_job_completes_and_records_file_and_transcript(tmp_path, monkeypatch):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    user = _user_with_settings_and_token(settings)
+    job = db.create_job(settings.database_path, user["id"], status="pending")
     fake_drive = FakeDrive([_drive_file("file-1", "meet.mp4")])
     deepgram_instances = []
-
     _patch_clients(monkeypatch, services, fake_drive, deepgram_instances)
 
-    processed = services.run_once_for_user(settings, user["id"])
+    services.run_user_job_background(settings, job["id"], user["id"])
 
     jobs = db.list_jobs(settings.database_path, user["id"])
-    assert processed == 1
     assert len(jobs) == 1
+    assert jobs[0]["status"] == "completed"
     assert jobs[0]["source_file_id"] == "file-1"
     assert jobs[0]["source_file_name"] == "meet.mp4"
-    assert jobs[0]["status"] == "completed"
     assert jobs[0]["transcript_drive_file_id"] == "txt-file-1"
     assert jobs[0]["error_message"] is None
+    assert jobs[0]["attempts"] == 1
+    assert jobs[0]["processed_at"] is not None
     assert deepgram_instances[0].api_key == "global-dg-key"
 
 
-def test_run_once_processes_only_files_for_requested_user(tmp_path, monkeypatch):
+def test_background_job_marks_failed_with_error_message(tmp_path, monkeypatch):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    user = _user_with_settings_and_token(settings)
+    job = db.create_job(settings.database_path, user["id"], status="pending")
+    fake_drive = FakeDrive([_drive_file("file-1", "meet.mp4")], fail_upload=True)
+    _patch_clients(monkeypatch, services, fake_drive, [])
+
+    services.run_user_job_background(settings, job["id"], user["id"])
+
+    jobs = db.list_jobs(settings.database_path, user["id"])
+    assert jobs[0]["status"] == "failed"
+    assert jobs[0]["transcript_drive_file_id"] is None
+    assert "upload failed" in jobs[0]["error_message"]
+
+
+def test_background_job_marks_failed_when_no_video_files(tmp_path, monkeypatch):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    user = _user_with_settings_and_token(settings)
+    job = db.create_job(settings.database_path, user["id"], status="pending")
+    _patch_clients(monkeypatch, services, FakeDrive([]), [])
+
+    services.run_user_job_background(settings, job["id"], user["id"])
+
+    jobs = db.list_jobs(settings.database_path, user["id"])
+    assert jobs[0]["status"] == "failed"
+    assert "No video files" in jobs[0]["error_message"]
+
+
+def test_background_job_never_stays_processing_on_error(tmp_path, monkeypatch):
+    from app.web import services
+
+    settings = _settings(tmp_path)
+    user = _user_with_settings_and_token(settings)
+    job = db.create_job(settings.database_path, user["id"], status="pending")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("drive exploded")
+
+    monkeypatch.setattr(services, "build_oauth_credentials", lambda token: object())
+    monkeypatch.setattr(services.DriveClient, "from_credentials", boom)
+    monkeypatch.setattr(services, "DeepgramClient", FakeDeepgramClient)
+
+    services.run_user_job_background(settings, job["id"], user["id"])
+
+    jobs = db.list_jobs(settings.database_path, user["id"])
+    assert jobs[0]["status"] == "failed"
+    assert "drive exploded" in jobs[0]["error_message"]
+
+
+def test_background_job_uses_only_requested_users_drive(tmp_path, monkeypatch):
     from app.web import services
 
     settings = _settings(tmp_path)
@@ -70,33 +172,15 @@ def test_run_once_processes_only_files_for_requested_user(tmp_path, monkeypatch)
     monkeypatch.setattr(services.DriveClient, "from_credentials", fake_from_credentials)
     monkeypatch.setattr(services, "DeepgramClient", FakeDeepgramClient)
 
-    services.run_once_for_user(settings, user_two["id"])
+    job = db.create_job(settings.database_path, user_two["id"], status="pending")
+    services.run_user_job_background(settings, job["id"], user_two["id"])
 
     assert drives[("source-one", "dest-one")].downloads == []
     assert drives[("source-two", "dest-two")].downloads == ["two-file"]
     assert db.list_jobs(settings.database_path, user_one["id"]) == []
-    assert [job["source_file_id"] for job in db.list_jobs(settings.database_path, user_two["id"])] == [
-        "two-file"
-    ]
-
-
-def test_run_once_marks_failed_with_error_message(tmp_path, monkeypatch):
-    from app.web import services
-
-    settings = _settings(tmp_path)
-    user = _user_with_settings_and_token(settings)
-    fake_drive = FakeDrive([_drive_file("file-1", "meet.mp4")], fail_upload=True)
-
-    _patch_clients(monkeypatch, services, fake_drive, [])
-
-    processed = services.run_once_for_user(settings, user["id"])
-
-    jobs = db.list_jobs(settings.database_path, user["id"])
-    assert processed == 0
-    assert len(jobs) == 1
-    assert jobs[0]["status"] == "failed"
-    assert jobs[0]["transcript_drive_file_id"] is None
-    assert "upload failed" in jobs[0]["error_message"]
+    assert [
+        j["source_file_id"] for j in db.list_jobs(settings.database_path, user_two["id"])
+    ] == ["two-file"]
 
 
 def test_build_oauth_credentials_maps_web_token_format():
@@ -116,6 +200,9 @@ def test_build_oauth_credentials_maps_web_token_format():
 
     assert credentials.token == "access-token"
     assert credentials.refresh_token == "refresh-token"
+
+
+# --- helpers ----------------------------------------------------------------
 
 
 def _patch_clients(monkeypatch, services, fake_drive, deepgram_instances):

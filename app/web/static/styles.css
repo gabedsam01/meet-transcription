@@ -25,8 +25,11 @@ label { display: grid; gap: .4rem; color: var(--muted); }
 input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: .75rem; font: inherit; color: var(--ink); background: white; }
 button, .button { border: 0; border-radius: 999px; padding: .75rem 1rem; background: var(--accent); color: white; font: inherit; cursor: pointer; display: inline-block; }
 .error { color: #9d2b22; }
+.notice { margin: 1rem 0 .25rem; padding: .75rem 1rem; border: 1px solid var(--accent); border-radius: 12px; background: rgba(31, 111, 91, .08); color: var(--ink); }
+.hint { color: var(--muted); font-size: .9rem; margin: .25rem 0 1rem; }
 .list { padding-left: 1.25rem; }
 .row-between { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .75rem; vertical-align: top; }
+th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .75rem; vertical-align: top; white-space: nowrap; }
 @media (max-width: 760px) { .hero, .row-between { align-items: flex-start; flex-direction: column; } .grid { grid-template-columns: 1fr; } }

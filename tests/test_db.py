@@ -54,3 +54,35 @@ def test_user_settings_and_jobs_roundtrip(tmp_path):
     assert settings["destination_drive_folder_id"] == "destination"
     assert jobs[0]["status"] == "completed"
     assert jobs[0]["transcript_drive_file_id"] == "txt123"
+
+
+def test_get_active_job_returns_pending_or_processing_job(tmp_path):
+    db_path = tmp_path / "app.db"
+    db.init_db(db_path)
+    user = db.get_or_create_user(db_path, email="user@example.com")
+
+    assert db.get_active_job(db_path, user["id"]) is None
+
+    db.create_job(db_path, user_id=user["id"], status="completed")
+    assert db.get_active_job(db_path, user["id"]) is None
+
+    pending = db.create_job(db_path, user_id=user["id"], status="pending")
+    assert db.get_active_job(db_path, user["id"])["id"] == pending["id"]
+
+    db.update_job(db_path, pending["id"], status="processing")
+    assert db.get_active_job(db_path, user["id"])["id"] == pending["id"]
+
+    db.update_job(db_path, pending["id"], status="failed")
+    assert db.get_active_job(db_path, user["id"]) is None
+
+
+def test_get_active_job_is_scoped_to_user(tmp_path):
+    db_path = tmp_path / "app.db"
+    db.init_db(db_path)
+    user = db.get_or_create_user(db_path, email="user@example.com")
+    other = db.get_or_create_user(db_path, email="other@example.com")
+
+    db.create_job(db_path, user_id=other["id"], status="processing")
+
+    assert db.get_active_job(db_path, user["id"]) is None
+    assert db.get_active_job(db_path, other["id"]) is not None
