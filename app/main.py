@@ -57,11 +57,16 @@ def main() -> int:
 
 
 def _build_processor(settings: Settings) -> FileProcessor:
+    logging.info("Google auth mode configured: %s", settings.google_auth_mode)
+    logging.info("SOURCE_DRIVE_FOLDER_ID: %s", settings.source_drive_folder_id)
+    logging.info("DESTINATION_DRIVE_FOLDER_ID: %s", settings.destination_drive_folder_id)
     return FileProcessor(
         drive_client=DriveClient(settings),
         deepgram_client=DeepgramClient.from_settings(settings),
         state=ProcessedState(settings.state_file),
         tmp_dir=settings.tmp_dir,
+        max_processing_attempts=settings.max_processing_attempts,
+        failed_retry_after_seconds=settings.failed_retry_after_seconds,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from app.processor import DriveFile
 
 
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+LOGGER = logging.getLogger(__name__)
 
 
 class DriveClient:
@@ -15,12 +17,10 @@ class DriveClient:
         self.source_folder_id = settings.source_drive_folder_id
         self.destination_folder_id = settings.destination_drive_folder_id
 
-        from google.oauth2 import service_account
         from googleapiclient.discovery import build
 
-        credentials = service_account.Credentials.from_service_account_file(
-            str(settings.google_service_account_file), scopes=DRIVE_SCOPES
-        )
+        LOGGER.info("Google auth mode: %s", settings.google_auth_mode)
+        credentials = build_drive_credentials(settings)
         self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
     def list_video_files(self) -> list[DriveFile]:
@@ -123,3 +123,50 @@ def to_drive_file(item: dict[str, Any]) -> DriveFile:
 
 def sort_drive_files(files: list[DriveFile]) -> list[DriveFile]:
     return sorted(files, key=lambda file: file.modified_time or file.created_time or "")
+
+
+def build_drive_credentials(
+    settings,
+    service_account_credentials_cls=None,
+    oauth_credentials_cls=None,
+    request_factory=None,
+):
+    if settings.google_auth_mode == "service_account":
+        if service_account_credentials_cls is None:
+            from google.oauth2 import service_account
+
+            service_account_credentials_cls = service_account.Credentials
+        return service_account_credentials_cls.from_service_account_file(
+            str(settings.google_service_account_file), scopes=DRIVE_SCOPES
+        )
+
+    if settings.google_auth_mode == "oauth":
+        client_secrets_file = getattr(settings, "google_oauth_client_secrets_file", None)
+        if client_secrets_file and not Path(client_secrets_file).exists():
+            raise FileNotFoundError(
+                f"OAuth client secrets file not found: {client_secrets_file}"
+            )
+        if oauth_credentials_cls is None:
+            from google.oauth2.credentials import Credentials
+
+            oauth_credentials_cls = Credentials
+        credentials = oauth_credentials_cls.from_authorized_user_file(
+            str(settings.google_oauth_token_file), DRIVE_SCOPES
+        )
+        if credentials.expired and credentials.refresh_token:
+            if request_factory is None:
+                from google.auth.transport.requests import Request
+
+                request_factory = Request
+            credentials.refresh(request_factory())
+            _save_refreshed_token(settings.google_oauth_token_file, credentials)
+        return credentials
+
+    raise ValueError("GOOGLE_AUTH_MODE must be 'service_account' or 'oauth'")
+
+
+def _save_refreshed_token(token_file: Path, credentials) -> None:
+    try:
+        token_file.write_text(credentials.to_json(), encoding="utf-8")
+    except OSError as exc:
+        LOGGER.warning("Could not save refreshed OAuth token to %s: %s", token_file, exc)

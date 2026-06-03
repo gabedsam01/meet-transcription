@@ -61,18 +61,30 @@ def format_transcript(
 
 
 class FileProcessor:
-    def __init__(self, drive_client, deepgram_client, state, tmp_dir: str | Path):
+    def __init__(
+        self,
+        drive_client,
+        deepgram_client,
+        state,
+        tmp_dir: str | Path,
+        max_processing_attempts: int = 2,
+        failed_retry_after_seconds: int = 86400,
+    ):
         self.drive_client = drive_client
         self.deepgram_client = deepgram_client
         self.state = state
         self.tmp_dir = Path(tmp_dir)
+        self.max_processing_attempts = max_processing_attempts
+        self.failed_retry_after_seconds = failed_retry_after_seconds
 
     def process_pending(self, reprocess_file_id: str | None = None) -> int:
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         processed_count = 0
 
         LOGGER.info("Buscando vídeos na pasta de origem...")
-        for file in self.drive_client.list_video_files():
+        files = self.drive_client.list_video_files()
+        LOGGER.info("Total de arquivos de vídeo encontrados: %s", len(files))
+        for file in files:
             if reprocess_file_id and file.id != reprocess_file_id:
                 continue
             if not reprocess_file_id and self.state.is_processed(file.id):
@@ -81,14 +93,24 @@ class FileProcessor:
             if reprocess_file_id != file.id and self.state.is_processed(file.id):
                 LOGGER.info("Arquivo já processado, ignorando: %s", file.name)
                 continue
+            if not reprocess_file_id and self.state.should_skip_failed(
+                file.id,
+                self.max_processing_attempts,
+                self.failed_retry_after_seconds,
+            ):
+                LOGGER.info(
+                    "Arquivo ignorado por limite/janela de falhas: %s (%s)",
+                    file.name,
+                    file.id,
+                )
+                continue
 
             try:
                 LOGGER.info("Novo arquivo encontrado: %s", file.name)
                 self._process_file(file)
                 processed_count += 1
-            except Exception as exc:  # noqa: BLE001 - keep watch mode resilient per spec.
-                LOGGER.error("Falha ao transcrever arquivo %s", file.name)
-                LOGGER.error("Motivo: %s", exc)
+            except Exception:  # noqa: BLE001 - keep watch mode resilient per spec.
+                LOGGER.exception("Falha ao processar arquivo %s", file.name)
 
         return processed_count
 
@@ -97,6 +119,7 @@ class FileProcessor:
         video_path = self.tmp_dir / f"{file.id}_{safe_base}.mp4"
         transcript_filename = f"{safe_base}_Transcricao.txt"
         transcript_path = self.tmp_dir / f"{file.id}_{transcript_filename}"
+        deepgram_completed = False
 
         try:
             LOGGER.info("Baixando vídeo...")
@@ -104,19 +127,25 @@ class FileProcessor:
 
             LOGGER.info("Enviando para Deepgram...")
             deepgram_response = self.deepgram_client.transcribe(video_path)
+            deepgram_completed = True
             LOGGER.info("Transcrição recebida.")
 
             transcript_text = format_transcript(deepgram_response, file.name, file.id)
             transcript_path.write_text(transcript_text, encoding="utf-8")
 
-            LOGGER.info("Enviando TXT para Google Drive...")
+            LOGGER.info("Iniciando upload do TXT para Google Drive...")
             transcript_drive_file_id = self.drive_client.upload_text_file(
                 transcript_path, transcript_filename
             )
             LOGGER.info("Upload concluído.")
 
             self.state.mark_processed(file.id, file.name, transcript_drive_file_id)
+            self.state.clear_failure(file.id)
             LOGGER.info("Arquivo marcado como processado.")
+        except Exception as exc:
+            if deepgram_completed:
+                self.state.mark_failed(file.id, file.name, str(exc))
+            raise
         finally:
             LOGGER.info("Limpando arquivos temporários...")
             _unlink_if_exists(video_path)

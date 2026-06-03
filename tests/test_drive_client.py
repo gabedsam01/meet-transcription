@@ -1,4 +1,6 @@
-from app.drive_client import is_ready_video_file, sort_drive_files, to_drive_file
+from pathlib import Path
+
+from app.drive_client import build_drive_credentials, is_ready_video_file, sort_drive_files, to_drive_file
 
 
 def test_is_ready_video_file_accepts_mp4_mime_type():
@@ -40,3 +42,103 @@ def test_sort_drive_files_orders_oldest_first():
     older = to_drive_file({"id": "1", "name": "a.mp4", "mimeType": "video/mp4", "size": "10", "createdTime": "2026-06-03T10:00:00Z", "modifiedTime": "2026-06-03T10:00:00Z"})
 
     assert [file.id for file in sort_drive_files([newer, older])] == ["1", "2"]
+
+
+def test_build_drive_credentials_uses_service_account_mode():
+    settings = FakeSettings(google_auth_mode="service_account")
+    fake_service_account = FakeServiceAccountCredentials()
+
+    credentials = build_drive_credentials(
+        settings,
+        service_account_credentials_cls=fake_service_account,
+    )
+
+    assert credentials == "service-account-credentials"
+    assert fake_service_account.calls == [
+        ("/app/secrets/service-account.json", ["https://www.googleapis.com/auth/drive"])
+    ]
+
+
+def test_build_drive_credentials_uses_oauth_token_and_refreshes(tmp_path):
+    token_file = tmp_path / "token.json"
+    client_secrets_file = tmp_path / "oauth-client.json"
+    client_secrets_file.write_text("{}", encoding="utf-8")
+    settings = FakeSettings(
+        google_auth_mode="oauth",
+        google_oauth_token_file=token_file,
+        google_oauth_client_secrets_file=client_secrets_file,
+    )
+    fake_oauth = FakeOAuthCredentials(expired=True, refresh_token="refresh-token")
+
+    credentials = build_drive_credentials(
+        settings,
+        oauth_credentials_cls=fake_oauth,
+        request_factory=lambda: "request",
+    )
+
+    assert credentials is fake_oauth.credentials
+    assert fake_oauth.calls == [
+        (str(token_file), ["https://www.googleapis.com/auth/drive"])
+    ]
+    assert fake_oauth.credentials.refresh_calls == ["request"]
+    assert token_file.read_text(encoding="utf-8") == '{"token":"refreshed"}'
+
+
+def test_build_drive_credentials_requires_oauth_client_secrets_file(tmp_path):
+    settings = FakeSettings(
+        google_auth_mode="oauth",
+        google_oauth_token_file=tmp_path / "token.json",
+        google_oauth_client_secrets_file=tmp_path / "missing-oauth-client.json",
+    )
+
+    try:
+        build_drive_credentials(settings, oauth_credentials_cls=FakeOAuthCredentials(False, None))
+    except FileNotFoundError as exc:
+        assert "missing-oauth-client.json" in str(exc)
+    else:
+        raise AssertionError("Expected missing oauth-client.json to fail fast")
+
+
+class FakeSettings:
+    def __init__(
+        self,
+        google_auth_mode: str,
+        google_oauth_token_file: Path | None = None,
+        google_oauth_client_secrets_file: Path | None = None,
+    ):
+        self.google_auth_mode = google_auth_mode
+        self.google_service_account_file = Path("/app/secrets/service-account.json")
+        self.google_oauth_token_file = google_oauth_token_file or Path("/app/secrets/token.json")
+        self.google_oauth_client_secrets_file = google_oauth_client_secrets_file or Path("/app/secrets/oauth-client.json")
+
+
+class FakeServiceAccountCredentials:
+    def __init__(self):
+        self.calls = []
+
+    def from_service_account_file(self, path, scopes):
+        self.calls.append((path, scopes))
+        return "service-account-credentials"
+
+
+class FakeOAuthCredentials:
+    def __init__(self, expired: bool, refresh_token: str | None):
+        self.calls = []
+        self.credentials = FakeCredentials(expired, refresh_token)
+
+    def from_authorized_user_file(self, path, scopes):
+        self.calls.append((path, scopes))
+        return self.credentials
+
+
+class FakeCredentials:
+    def __init__(self, expired: bool, refresh_token: str | None):
+        self.expired = expired
+        self.refresh_token = refresh_token
+        self.refresh_calls = []
+
+    def refresh(self, request):
+        self.refresh_calls.append(request)
+
+    def to_json(self):
+        return '{"token":"refreshed"}'

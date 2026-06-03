@@ -54,13 +54,17 @@ Required variables:
 
 ```env
 DEEPGRAM_API_KEY=
-GOOGLE_AUTH_MODE=service_account
+GOOGLE_AUTH_MODE=oauth
+GOOGLE_OAUTH_CLIENT_SECRETS_FILE=/app/secrets/oauth-client.json
+GOOGLE_OAUTH_TOKEN_FILE=/app/secrets/token.json
 GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
 SOURCE_DRIVE_FOLDER_ID=your_source_drive_folder_id
 DESTINATION_DRIVE_FOLDER_ID=your_destination_drive_folder_id
 POLL_INTERVAL_SECONDS=300
 TMP_DIR=/app/tmp
 STATE_FILE=/app/data/processed_files.json
+MAX_PROCESSING_ATTEMPTS=2
+FAILED_RETRY_AFTER_SECONDS=86400
 DEEPGRAM_MODEL=nova-3
 DEEPGRAM_LANGUAGE=pt-BR
 DEEPGRAM_SMART_FORMAT=true
@@ -69,7 +73,7 @@ DEEPGRAM_DIARIZE=true
 DEEPGRAM_UTTERANCES=true
 ```
 
-`GOOGLE_AUTH_MODE` will support only `service_account` in the MVP. The config object should fail fast when required values are missing or invalid.
+`GOOGLE_AUTH_MODE` supports `oauth` for personal Google Drive accounts and `service_account` for compatible Workspace setups. The config object should fail fast when required values are missing or invalid.
 
 ## Components
 
@@ -97,7 +101,7 @@ Configures clear console logs with timestamps and levels such as `[INFO]` and `[
 
 Owns Google Drive API interaction using a Service Account:
 
-- Authenticate using `GOOGLE_SERVICE_ACCOUNT_FILE`.
+- Authenticate using OAuth token credentials or Service Account credentials based on `GOOGLE_AUTH_MODE`.
 - List files in `SOURCE_DRIVE_FOLDER_ID`.
 - Filter files whose MIME type starts with `video/`, especially `video/mp4`, or whose filename ends with `.mp4`.
 - Sort by creation or modification time, oldest first, so files are processed predictably.

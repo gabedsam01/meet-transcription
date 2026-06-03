@@ -12,7 +12,9 @@ venv/
 .env.*
 !.env.example
 **/service-account.json
+**/oauth-client.json
 **/token.json
+secrets/*.json
 secrets/*
 !secrets/.gitkeep
 

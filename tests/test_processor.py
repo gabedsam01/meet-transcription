@@ -72,7 +72,28 @@ def test_processor_does_not_mark_processed_when_upload_fails(tmp_path):
     assert processor.process_pending() == 0
 
     assert state.marked == []
+    assert state.failures["new"]["attempts"] == 1
     assert list(tmp_path.iterdir()) == []
+
+
+def test_processor_skips_file_after_failed_attempt_limit(tmp_path):
+    source = _drive_file("new", "meet.mp4")
+    drive = FakeDrive([source])
+    state = FakeState(failures={"new": {"attempts": 2}})
+    deepgram = FakeDeepgram()
+    processor = FileProcessor(
+        drive,
+        deepgram,
+        state,
+        tmp_path,
+        max_processing_attempts=2,
+        failed_retry_after_seconds=86400,
+    )
+
+    assert processor.process_pending() == 0
+
+    assert drive.downloads == []
+    assert deepgram.calls == 0
 
 
 def test_processor_reprocesses_requested_processed_file(tmp_path):
@@ -85,6 +106,26 @@ def test_processor_reprocesses_requested_processed_file(tmp_path):
 
     assert state.removed == []
     assert state.marked[0] == ("done", "done.mp4", "txt123")
+
+
+def test_processor_reprocess_bypasses_failed_attempt_limit(tmp_path):
+    source = _drive_file("new", "meet.mp4")
+    drive = FakeDrive([source])
+    state = FakeState(failures={"new": {"attempts": 2}})
+    deepgram = FakeDeepgram()
+    processor = FileProcessor(
+        drive,
+        deepgram,
+        state,
+        tmp_path,
+        max_processing_attempts=2,
+        failed_retry_after_seconds=86400,
+    )
+
+    assert processor.process_pending(reprocess_file_id="new") == 1
+
+    assert deepgram.calls == 1
+    assert state.cleared_failures == ["new"]
 
 
 def _drive_file(file_id: str, name: str) -> DriveFile:
@@ -121,7 +162,11 @@ class FakeDrive:
 
 
 class FakeDeepgram:
+    def __init__(self):
+        self.calls = 0
+
     def transcribe(self, video_path):
+        self.calls += 1
         assert video_path.read_bytes() == b"mp4 bytes"
         return {
             "results": {
@@ -133,10 +178,12 @@ class FakeDeepgram:
 
 
 class FakeState:
-    def __init__(self, processed=None):
+    def __init__(self, processed=None, failures=None):
         self.processed = set(processed or set())
+        self.failures = failures or {}
         self.marked = []
         self.removed = []
+        self.cleared_failures = []
 
     def is_processed(self, file_id: str) -> bool:
         return file_id in self.processed
@@ -144,6 +191,20 @@ class FakeState:
     def mark_processed(self, file_id: str, name: str, transcript_drive_file_id: str):
         self.marked.append((file_id, name, transcript_drive_file_id))
         self.processed.add(file_id)
+
+    def mark_failed(self, file_id: str, name: str, error: str):
+        failure = self.failures.setdefault(file_id, {"attempts": 0})
+        failure["name"] = name
+        failure["error"] = error
+        failure["attempts"] += 1
+
+    def should_skip_failed(self, file_id: str, max_attempts: int, retry_after_seconds: int):
+        failure = self.failures.get(file_id)
+        return bool(failure and failure["attempts"] >= max_attempts)
+
+    def clear_failure(self, file_id: str):
+        self.cleared_failures.append(file_id)
+        self.failures.pop(file_id, None)
 
     def remove(self, file_id: str):
         self.removed.append(file_id)
