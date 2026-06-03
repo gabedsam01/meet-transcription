@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Drive folders</h1>
+  <p class="hint">Paste a Google Drive folder link or the folder id. A link looks like
+    <span class="mono">https://drive.google.com/drive/folders/1zv32Q...tBD5</span>.</p>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  <form method="post" action="/settings/drive" class="form-stack">
+    <label>Source Drive folder (URL or id)
+      <input name="source_drive_folder" value="{{ settings['source_drive_folder_id'] if settings else '' }}" required>
+    </label>
+    <label>Destination Drive folder (URL or id)
+      <input name="destination_drive_folder" value="{{ settings['destination_drive_folder_id'] if settings else '' }}" required>
+    </label>
+    <label>Poll interval (seconds)
+      <input name="poll_interval_seconds" type="number" min="1" value="{{ settings['poll_interval_seconds'] if settings else 300 }}" required>
+    </label>
+    <button type="submit">Save Drive settings</button>
+  </form>
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Back to settings</a></p>
+</section>
+{% endblock %}

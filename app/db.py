@@ -195,6 +195,20 @@ def list_jobs(path: str | Path, user_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def get_job(path: str | Path, job_id: int, user_id: int) -> sqlite3.Row | None:
+    """Return a single job by id, scoped to its owner.
+
+    User-scoped on purpose: the job detail page must never expose another
+    user's job. Returns None when the job does not exist or belongs to a
+    different user.
+    """
+    with connect_db(path) as conn:
+        return conn.execute(
+            "SELECT * FROM transcription_jobs WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+
+
 def get_active_job(path: str | Path, user_id: int) -> sqlite3.Row | None:
     """Return the user's most recent pending/processing job, or None.
 

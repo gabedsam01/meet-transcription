@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Deepgram API key</h1>
+  <p class="hint">
+    Each user provides their own Deepgram API key. It is stored
+    <strong>encrypted</strong> (like your Google token) and is required before a
+    transcription can run — there is <strong>no deployment-wide fallback</strong>.
+  </p>
+  <div class="notice">
+    Per-user Deepgram key entry and encrypted storage are delivered by the
+    auth/users branch (<span class="mono">feat/auth-users-settings</span>) and are
+    not wired into this branch yet. Once integrated, this page lets you save your
+    personal key, and Run once is blocked until a key is set.
+  </div>
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Back to settings</a></p>
+</section>
+{% endblock %}

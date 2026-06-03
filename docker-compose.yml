@@ -1,24 +1,85 @@
+# Three services: web + worker share ONE application image; postgres backs them.
+#
+#   Local dev : docker compose up --build      (builds the image from ./Dockerfile)
+#   Production: docker compose pull && docker compose up -d
+#               (pulls ghcr.io/gabedsam01/meet-transcription:latest — see README
+#                "GHCR Image" and docs/deploy/dokploy.md)
+#
+# Values come from a local .env (see .env.example). Every variable has a safe
+# default below so `docker compose config` and `docker compose build` work even
+# without a fully populated .env; production MUST override the secrets.
+
 x-app: &app
+  # `image` doubles as the local build tag, so the same name resolves whether
+  # you build locally or pull the published image in production.
+  image: ghcr.io/gabedsam01/meet-transcription:latest
   build: .
-  env_file:
-    - .env
   restart: unless-stopped
 
 services:
-  worker:
-    <<: *app
-    command: ["python", "-m", "app.main", "--watch"]
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-meet}
+      POSTGRES_USER: ${POSTGRES_USER:-meet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meet}
     volumes:
-      - ./data:/app/data
-      - ./tmp:/app/tmp
-      - ./secrets:/app/secrets
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meet} -d ${POSTGRES_DB:-meet}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   web:
     <<: *app
     command: ["uvicorn", "app.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Postgres is the single source of truth — NO SQLite in the architecture.
+      # The Postgres + SQLAlchemy repository layer is owned by feat/postgres-core;
+      # until it merges, the legacy app/db.py on this branch cannot consume this
+      # DSN, so the stack is not runnable end-to-end yet. For local UI work on
+      # THIS branch only, override DATABASE_URL with a temporary SQLite path.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meet:meet@postgres:5432/meet}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-}
+      GOOGLE_WEB_CLIENT_SECRET: ${GOOGLE_WEB_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/oauth/google/callback}
+      # Global key kept while per-user Deepgram keys are pending the DB branch.
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      TMP_DIR: ${TMP_DIR:-/app/tmp}
     ports:
       - "8000:8000"
     volumes:
+      - ./data:/app/data   # scratch/temp only; the database lives in Postgres
+      - ./tmp:/app/tmp
+
+  worker:
+    <<: *app
+    # New DB-driven worker. This module is owned by feat/postgres-worker and is
+    # not in this branch yet. Until it lands, run the legacy env-driven worker:
+    #   docker compose run --rm worker python -m app.main --watch
+    command: ["python", "-m", "app.worker.main"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meet:meet@postgres:5432/meet}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
+      WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-30}
+      STALE_JOB_TIMEOUT_MINUTES: ${STALE_JOB_TIMEOUT_MINUTES:-30}
+    volumes:
       - ./data:/app/data
       - ./tmp:/app/tmp
-      - ./secrets:/app/secrets:ro
+      - ./secrets:/app/secrets:ro   # only the legacy app.main worker needs this
+
+volumes:
+  postgres_data:

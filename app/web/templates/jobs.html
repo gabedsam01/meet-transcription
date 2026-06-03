@@ -8,38 +8,35 @@
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
   <p class="hint">After starting a job, refresh this page to see updates.</p>
   {% if jobs %}
-  <div class="table-scroll">
+  <div class="table-wrapper">
   <table>
     <thead>
       <tr>
         <th>File</th>
-        <th>Source ID</th>
+        <th>Source</th>
         <th>Status</th>
-        <th>Attempts</th>
         <th>Transcript</th>
-        <th>Error</th>
         <th>Created</th>
-        <th>Updated</th>
-        <th>Processed</th>
       </tr>
     </thead>
     <tbody>
     {% for job in jobs %}
       <tr>
-        <td>{{ job['source_file_name'] or '-' }}</td>
-        <td>{{ job['source_file_id'] or '-' }}</td>
-        <td>{{ job['status'] }}</td>
-        <td>{{ job['attempts'] }}</td>
-        <td>{{ job['transcript_drive_file_id'] or '-' }}</td>
-        <td>{{ job['error_message'] or '' }}</td>
-        <td>{{ job['created_at'] or '-' }}</td>
-        <td>{{ job['updated_at'] or '-' }}</td>
-        <td>{{ job['processed_at'] or '-' }}</td>
+        <td><a href="/jobs/{{ job['id'] }}">{{ job['source_file_name'] or 'Manual run' }}</a></td>
+        <td><span class="mono" title="{{ job['source_file_id'] or '' }}">{{ job['source_file_id'] | mid }}</span></td>
+        <td><span class="badge badge-{{ job['status'] }}">{{ job['status'] }}</span></td>
+        <td>
+          {% if job['status'] == 'completed' and job['transcript_drive_file_id'] %}
+          <a class="button button-sm" href="{{ job['transcript_drive_file_id'] | drive_dl }}" target="_blank" rel="noopener">Download TXT</a>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="mono">{{ job['created_at'] | dt }}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
+  <p class="hint">Open a job to see attempts, errors, and full timestamps.</p>
   {% else %}<p>No jobs yet.</p>{% endif %}
 </section>
 {% endblock %}

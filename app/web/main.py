@@ -16,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
 from app.logger import setup_logging
+from app.web import helpers
 from app.web.config import WebSettings
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
@@ -24,6 +25,10 @@ from app.web.token_store import TokenStore
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+# Template filters keep long Drive ids and ISO timestamps from breaking layout.
+templates.env.filters["mid"] = helpers.middle_truncate
+templates.env.filters["dt"] = helpers.short_datetime
+templates.env.filters["drive_dl"] = helpers.drive_download_url
 
 
 def create_app(settings: WebSettings | None = None) -> FastAPI:
@@ -85,7 +90,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     def dashboard(request: Request, user=Depends(require_user)):
         settings_row = db.get_settings(web_settings.database_path, user["id"])
         token_row = db.get_google_token(web_settings.database_path, user["id"])
-        jobs = db.get_latest_jobs(web_settings.database_path, user["id"], limit=5)
+        jobs = db.list_jobs(web_settings.database_path, user["id"])
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -93,34 +98,55 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 "user": user,
                 "settings": settings_row,
                 "google_connected": token_row is not None,
-                "jobs": jobs,
+                "deepgram_configured": bool(web_settings.deepgram_api_key),
+                "total_jobs": len(jobs),
+                "last_job": jobs[0] if jobs else None,
+                "jobs": jobs[:5],
             },
         )
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, user=Depends(require_user)):
+        # Landing page: links out to the focused settings sections.
+        return templates.TemplateResponse(request, "settings.html", {"user": user})
+
+    @app.get("/settings/drive", response_class=HTMLResponse)
+    def settings_drive_page(request: Request, user=Depends(require_user)):
         settings_row = db.get_settings(web_settings.database_path, user["id"])
         return templates.TemplateResponse(
             request,
-            "settings.html",
-            {"user": user, "settings": settings_row},
+            "settings_drive.html",
+            {"user": user, "settings": settings_row, "message": _pop_flash(request)},
         )
 
-    @app.post("/settings")
-    def save_settings(
+    @app.post("/settings/drive")
+    def save_drive_settings(
+        request: Request,
         user=Depends(require_user),
-        source_drive_folder_id: str = Form(...),
-        destination_drive_folder_id: str = Form(...),
+        source_drive_folder: str = Form(...),
+        destination_drive_folder: str = Form(...),
         poll_interval_seconds: int = Form(...),
     ):
+        # Accept a pasted Drive folder URL or a bare id and normalize to the id.
         db.save_settings(
             web_settings.database_path,
             user_id=user["id"],
-            source_drive_folder_id=source_drive_folder_id,
-            destination_drive_folder_id=destination_drive_folder_id,
+            source_drive_folder_id=helpers.extract_drive_folder_id(source_drive_folder),
+            destination_drive_folder_id=helpers.extract_drive_folder_id(
+                destination_drive_folder
+            ),
             poll_interval_seconds=poll_interval_seconds,
         )
-        return RedirectResponse("/settings", status_code=303)
+        _set_flash(request, "Drive settings saved.")
+        return RedirectResponse("/settings/drive", status_code=303)
+
+    @app.get("/settings/deepgram", response_class=HTMLResponse)
+    def settings_deepgram_page(request: Request, user=Depends(require_user)):
+        return templates.TemplateResponse(
+            request,
+            "settings_deepgram.html",
+            {"user": user, "deepgram_configured": bool(web_settings.deepgram_api_key)},
+        )
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
@@ -166,6 +192,20 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             result.status,
         )
         return RedirectResponse("/jobs", status_code=303)
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    def job_detail_page(request: Request, job_id: int, user=Depends(require_user)):
+        job = db.get_job(web_settings.database_path, job_id, user["id"])
+        if job is None:
+            return templates.TemplateResponse(
+                request,
+                "error.html",
+                {"user": user, "message": "Job not found."},
+                status_code=404,
+            )
+        return templates.TemplateResponse(
+            request, "job_detail.html", {"user": user, "job": job}
+        )
 
     @app.get("/connect-google")
     def connect_google(request: Request, user=Depends(require_user)):

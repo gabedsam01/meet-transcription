@@ -180,7 +180,7 @@ def test_run_once_without_settings_redirects_with_message(tmp_path):
         assert "Configure source and destination folders" in page.text
 
 
-def test_jobs_page_shows_all_job_fields_and_refresh_guidance(tmp_path):
+def test_jobs_page_lists_jobs_with_status_badge_and_download_link(tmp_path):
     settings = _settings(tmp_path)
     user = _seed_admin_with_settings_and_token(settings)
     job = db.create_job(
@@ -204,15 +204,17 @@ def test_jobs_page_shows_all_job_fields_and_refresh_guidance(tmp_path):
 
     text = page.text
     assert "meeting.mp4" in text
-    assert "src-123" in text
-    assert "txt-456" in text
-    assert "completed" in text
+    assert "src-123" in text  # short id is shown in full
+    assert "completed" in text  # status badge label
+    assert "Download TXT" in text  # transcript shown as a link, not a raw id
+    assert "txt-456" in text  # raw id appears only inside the download href
+    assert f'/jobs/{job["id"]}' in text  # file name links to the detail page
     assert "After starting a job, refresh this page to see updates." in text
-    for header in ["Source ID", "Transcript", "Attempts", "Created", "Updated", "Processed"]:
+    for header in ["File", "Source", "Status", "Transcript", "Created"]:
         assert header in text
 
 
-def test_jobs_page_shows_error_message_for_failed_job(tmp_path):
+def test_failed_job_shows_badge_on_list_and_error_on_detail(tmp_path):
     settings = _settings(tmp_path)
     user = _seed_admin_with_settings_and_token(settings)
     job = db.create_job(settings.database_path, user["id"], status="pending")
@@ -225,10 +227,14 @@ def test_jobs_page_shows_error_message_for_failed_job(tmp_path):
 
     with TestClient(create_app(settings)) as client:
         _login(client)
-        page = client.get("/jobs")
+        list_page = client.get("/jobs")
+        detail_page = client.get(f"/jobs/{job['id']}")
 
-    assert "failed" in page.text
-    assert "Deepgram exploded mid-transcription" in page.text
+    # Status is a badge on the list; the long error text is kept off the list so
+    # it never blows out the table, and lives on the detail page instead.
+    assert "badge-failed" in list_page.text
+    assert "Deepgram exploded mid-transcription" not in list_page.text
+    assert "Deepgram exploded mid-transcription" in detail_page.text
 
 
 def _seed_admin_with_settings_and_token(settings: WebSettings):
