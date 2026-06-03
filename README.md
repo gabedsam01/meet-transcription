@@ -14,7 +14,7 @@ Python Docker worker and optional Web UI that watch a Google Drive folder for Go
 - Persistent processed-file state
 - Docker Compose support
 - Worker mode does not require a database or Web UI
-- Web UI mode uses SQLite for users, settings, jobs, and encrypted Google tokens
+- Web UI mode uses PostgreSQL for users, settings, jobs, and encrypted Google tokens
 - No FFmpeg required
 
 ## How It Works
@@ -81,7 +81,7 @@ GOOGLE_OAUTH_TOKEN_FILE=/app/secrets/token.json
 GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
 SOURCE_DRIVE_FOLDER_ID=your_source_drive_folder_id
 DESTINATION_DRIVE_FOLDER_ID=your_destination_drive_folder_id
-POLL_INTERVAL_SECONDS=300
+WORKER_POLL_INTERVAL_SECONDS=300
 TMP_DIR=/app/tmp
 STATE_FILE=/app/data/processed_files.json
 MAX_PROCESSING_ATTEMPTS=2
@@ -124,7 +124,7 @@ python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
 
 ## Web UI Mode
 
-Web UI Mode runs FastAPI with Uvicorn and stores per-user settings, jobs, and Google OAuth tokens in SQLite at `DATABASE_URL`. Google tokens are encrypted before storage with a key derived from `APP_SECRET_KEY`.
+Web UI Mode runs FastAPI with Uvicorn and stores per-user settings, jobs, and Google OAuth tokens in PostgreSQL via SQLAlchemy, with the schema managed by Alembic. Google tokens are encrypted before storage with a key derived from `APP_SECRET_KEY`.
 
 Start the Web UI service:
 
@@ -134,7 +134,7 @@ docker compose up -d web
 
 Open `http://localhost:8000`, sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`, connect Google, and configure the Drive folders in the UI.
 
-The `worker` service is still the legacy env-driven worker. It does not read Web UI SQLite settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
+The `worker` service is still the legacy env-driven worker. It does not read Web UI database settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
 
 ### Run Once And Background Processing
 
@@ -158,16 +158,19 @@ SESSION_COOKIE_SECURE=false
 GOOGLE_WEB_CLIENT_ID=
 GOOGLE_WEB_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://localhost:8000/oauth/google/callback
-DATABASE_URL=/app/data/app.db
+POSTGRES_DB=meet_transcription
+POSTGRES_USER=meet_user
+POSTGRES_PASSWORD=change_me
+DATABASE_URL=postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription
 ```
 
-`DATABASE_URL` is a SQLite file path for this app, not a SQLAlchemy URL or Postgres connection string.
+`DATABASE_URL` is a required PostgreSQL SQLAlchemy URL using the psycopg 3 driver. Inside Docker Compose use host `postgres`, and make its user/password/database match the `POSTGRES_*` values. Create the schema once before first use with `docker compose run --rm web alembic upgrade head`.
 
 `DEEPGRAM_API_KEY` remains global and is used by both worker and Web UI-triggered transcription flows.
 
 ### Single User
 
-The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `ADMIN_PASSWORD` gate access, and the connected Google account is stored for that admin user in SQLite.
+The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `ADMIN_PASSWORD` gate access, and the connected Google account is stored for that admin user in PostgreSQL.
 
 ### Multi User Roadmap
 
@@ -280,12 +283,15 @@ ADMIN_USERNAME=
 ADMIN_PASSWORD=
 APP_SECRET_KEY=
 SESSION_COOKIE_SECURE=true
-DATABASE_URL=/app/data/app.db
+POSTGRES_DB=meet_transcription
+POSTGRES_USER=meet_user
+POSTGRES_PASSWORD=change_me
+DATABASE_URL=postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription
 DEEPGRAM_API_KEY=
 ```
 
 The Google Cloud authorized redirect URI must exactly match `GOOGLE_REDIRECT_URI`.
-`DATABASE_URL` must be a SQLite file path such as `/app/data/app.db`.
+Run a PostgreSQL service (the bundled `postgres` Compose service or a managed database), point `DATABASE_URL` at it, and apply migrations with `docker compose run --rm web alembic upgrade head`.
 
 ## Security
 
@@ -298,7 +304,6 @@ oauth-client.json
 token.json
 tmp/
 data/processed_files.json
-data/app.db
 ```
 
 The app does not make Drive files public. It downloads files through the Google Drive API and sends the MP4 binary directly to Deepgram.
@@ -312,11 +317,12 @@ Make sure all meeting participants know that the meeting is being recorded and t
 ```bash
 python -m pip install -r requirements.txt
 python -m pytest -v
-python -m compileall app
+python -m compileall app scripts
 docker compose config
+docker compose build
 ```
 
-`docker compose config` requires a local `.env` file. Create it first with `cp .env.example .env`.
+Database tests run against a real PostgreSQL instance. Point `TEST_DATABASE_URL` at a disposable database (for example a `postgres:16` container); when it is unset or unreachable those tests are skipped rather than run against SQLite.
 
 ## Roadmap
 

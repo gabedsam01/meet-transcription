@@ -12,9 +12,16 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Requ
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import db
+from app.database.repositories import (
+    GoogleTokenRepository,
+    TranscriptionJobRepository,
+    UserDriveSettingsRepository,
+    UserRepository,
+)
+from app.database.session import get_db, get_engine
 from app.logger import setup_logging
 from app.web.config import WebSettings
 from app.web.security import fernet_from_secret
@@ -32,14 +39,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        db.init_db(web_settings.database_path)
+        # Build the engine eagerly so a missing/invalid DATABASE_URL fails
+        # clearly at startup rather than on the first query. The schema itself
+        # comes from Alembic migrations, not from app startup.
+        get_engine()
         yield
 
     app = FastAPI(title="Meet Transcription", lifespan=lifespan)
     app.state.settings = web_settings
-    app.state.token_store = TokenStore(
-        web_settings.database_path, fernet_from_secret(web_settings.app_secret_key)
-    )
+    app.state.token_store = TokenStore(fernet_from_secret(web_settings.app_secret_key))
     app.add_middleware(
         SessionMiddleware,
         secret_key=web_settings.app_secret_key,
@@ -59,6 +67,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     @app.post("/login")
     def login(
         request: Request,
+        db: Session = Depends(get_db),
         username: str = Form(...),
         password: str = Form(...),
     ):
@@ -69,11 +78,12 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 {"error": "Invalid username or password"},
                 status_code=401,
             )
-        user = db.get_or_create_user(
-            web_settings.database_path, email=username, name=username
+        user = UserRepository(db).get_or_create(
+            email=username, name=username, role="admin"
         )
-        request.session["user_id"] = user["id"]
-        request.session["user_email"] = user["email"]
+        db.commit()
+        request.session["user_id"] = user.id
+        request.session["user_email"] = user.email
         return RedirectResponse("/", status_code=303)
 
     @app.post("/logout")
@@ -82,10 +92,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return RedirectResponse("/login", status_code=303)
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request, user=Depends(require_user)):
-        settings_row = db.get_settings(web_settings.database_path, user["id"])
-        token_row = db.get_google_token(web_settings.database_path, user["id"])
-        jobs = db.get_latest_jobs(web_settings.database_path, user["id"], limit=5)
+    def dashboard(
+        request: Request,
+        db: Session = Depends(get_db),
+        user=Depends(require_user),
+    ):
+        settings_row = UserDriveSettingsRepository(db).get_for_user(user.id)
+        token_row = GoogleTokenRepository(db).get_for_user(user.id)
+        jobs = TranscriptionJobRepository(db).latest_for_user(user.id, limit=5)
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -98,8 +112,12 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, user=Depends(require_user)):
-        settings_row = db.get_settings(web_settings.database_path, user["id"])
+    def settings_page(
+        request: Request,
+        db: Session = Depends(get_db),
+        user=Depends(require_user),
+    ):
+        settings_row = UserDriveSettingsRepository(db).get_for_user(user.id)
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -108,23 +126,26 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @app.post("/settings")
     def save_settings(
+        db: Session = Depends(get_db),
         user=Depends(require_user),
         source_drive_folder_id: str = Form(...),
         destination_drive_folder_id: str = Form(...),
-        poll_interval_seconds: int = Form(...),
     ):
-        db.save_settings(
-            web_settings.database_path,
-            user_id=user["id"],
+        UserDriveSettingsRepository(db).upsert_for_user(
+            user.id,
             source_drive_folder_id=source_drive_folder_id,
             destination_drive_folder_id=destination_drive_folder_id,
-            poll_interval_seconds=poll_interval_seconds,
         )
+        db.commit()
         return RedirectResponse("/settings", status_code=303)
 
     @app.get("/jobs", response_class=HTMLResponse)
-    def jobs_page(request: Request, user=Depends(require_user)):
-        jobs = db.list_jobs(web_settings.database_path, user["id"])
+    def jobs_page(
+        request: Request,
+        db: Session = Depends(get_db),
+        user=Depends(require_user),
+    ):
+        jobs = TranscriptionJobRepository(db).list_for_user(user.id)
         return templates.TemplateResponse(
             request,
             "jobs.html",
@@ -135,12 +156,13 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     def run_once(
         request: Request,
         background_tasks: BackgroundTasks,
+        db: Session = Depends(get_db),
         user=Depends(require_user),
     ):
         from app.web import services
 
-        logging.info("POST /jobs/run-once received user_id=%s", user["id"])
-        result = services.enqueue_run_once_job(web_settings, user["id"])
+        logging.info("POST /jobs/run-once received user_id=%s", user.id)
+        result = services.enqueue_run_once_job(web_settings, db, user.id)
 
         if result.status == "missing_settings":
             _set_flash(
@@ -151,18 +173,20 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         elif result.status == "already_running":
             _set_flash(request, "There is already a job running.")
         else:  # created
-            job_id = result.job["id"]
+            # Commit the pending job before the background task reads it.
+            db.commit()
+            job_id = result.job.id
             background_tasks.add_task(
-                services.run_user_job_background, web_settings, job_id, user["id"]
+                services.run_user_job_background, web_settings, job_id, user.id
             )
             logging.info(
-                "Background job scheduled job_id=%s user_id=%s", job_id, user["id"]
+                "Background job scheduled job_id=%s user_id=%s", job_id, user.id
             )
             _set_flash(request, "Job started. Refresh this page to follow progress.")
 
         logging.info(
             "POST /jobs/run-once responding redirect to /jobs user_id=%s status=%s",
-            user["id"],
+            user.id,
             result.status,
         )
         return RedirectResponse("/jobs", status_code=303)
@@ -184,12 +208,19 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return RedirectResponse(url, status_code=303)
 
     @app.get("/oauth/google/callback")
-    def oauth_callback(request: Request, code: str, state: str, user=Depends(require_user)):
+    def oauth_callback(
+        request: Request,
+        code: str,
+        state: str,
+        db: Session = Depends(get_db),
+        user=Depends(require_user),
+    ):
         expected_state = request.session.get("oauth_state")
         if not expected_state or state != expected_state:
             raise HTTPException(status_code=400, detail="Invalid OAuth state")
         token_data = exchange_google_code(web_settings, code)
-        app.state.token_store.save_for_user(user["id"], token_data)
+        app.state.token_store.save_for_user(db, user.id, token_data)
+        db.commit()
         request.session.pop("oauth_state", None)
         return RedirectResponse("/", status_code=303)
 
@@ -204,12 +235,11 @@ def _pop_flash(request: Request) -> str | None:
     return request.session.pop("flash", None)
 
 
-def require_user(request: Request):
+def require_user(request: Request, db: Session = Depends(get_db)):
     user_id = request.session.get("user_id")
     if not user_id:
-        raise_redirect = HTTPException(status_code=303, headers={"Location": "/login"})
-        raise raise_redirect
-    user = db.get_user_by_id(request.app.state.settings.database_path, int(user_id))
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    user = UserRepository(db).get(int(user_id))
     if user is None:
         request.session.clear()
         raise HTTPException(status_code=303, headers={"Location": "/login"})

@@ -1,10 +1,29 @@
 x-app: &app
   build: .
   env_file:
-    - .env
+    - path: .env
+      required: false
   restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-meet_transcription}
+      POSTGRES_USER: ${POSTGRES_USER:-meet_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meet_user} -d ${POSTGRES_DB:-meet_transcription}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   worker:
     <<: *app
     command: ["python", "-m", "app.main", "--watch"]
@@ -22,3 +41,6 @@ services:
       - ./data:/app/data
       - ./tmp:/app/tmp
       - ./secrets:/app/secrets:ro
+
+volumes:
+  postgres_data:

@@ -17,7 +17,6 @@ class WebSettings:
     google_web_client_id: str
     google_web_client_secret: str
     google_redirect_uri: str
-    database_path: Path
     deepgram_api_key: str
     tmp_dir: Path
 
@@ -34,11 +33,9 @@ class WebSettings:
             google_web_client_id=_required(values, "GOOGLE_WEB_CLIENT_ID"),
             google_web_client_secret=_required(values, "GOOGLE_WEB_CLIENT_SECRET"),
             google_redirect_uri=_required(values, "GOOGLE_REDIRECT_URI"),
-            database_path=Path(values.get("DATABASE_URL", "/app/data/app.db")),
             deepgram_api_key=_required(values, "DEEPGRAM_API_KEY"),
             tmp_dir=Path(values.get("TMP_DIR", "/app/tmp")),
         )
-        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
         settings.tmp_dir.mkdir(parents=True, exist_ok=True)
         return settings
 

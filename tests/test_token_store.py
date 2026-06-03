@@ -1,9 +1,10 @@
+from app.database.repositories import GoogleTokenRepository, UserRepository
 from app.web.security import decrypt_value, encrypt_value, fernet_from_secret
-from app import db
 from app.web.token_store import TokenStore
 
 
 def test_encrypt_value_does_not_store_plaintext():
+    """Pure logic: Fernet round-trip, no database."""
     fernet = fernet_from_secret("a-long-secret-for-tests")
 
     encrypted = encrypt_value(fernet, "secret-token")
@@ -12,15 +13,15 @@ def test_encrypt_value_does_not_store_plaintext():
     assert decrypt_value(fernet, encrypted) == "secret-token"
 
 
-def test_token_store_encrypts_and_decrypts_tokens(tmp_path):
-    db_path = tmp_path / "app.db"
-    db.init_db(db_path)
-    user = db.get_or_create_user(db_path, "admin@example.com", "Admin")
+def test_token_store_encrypts_and_decrypts_tokens(db):
+    user = UserRepository(db).create(email="admin@example.com", name="Admin", role="admin")
+    db.flush()
     fernet = fernet_from_secret("a-long-secret-for-tests")
-    store = TokenStore(db_path, fernet)
+    store = TokenStore(fernet)
 
     store.save_for_user(
-        user["id"],
+        db,
+        user.id,
         {
             "access_token": "access-secret",
             "refresh_token": "refresh-secret",
@@ -31,15 +32,26 @@ def test_token_store_encrypts_and_decrypts_tokens(tmp_path):
             "expiry": "2026-06-03T10:00:00Z",
         },
     )
+    db.flush()
 
-    with db.connect_db(db_path) as conn:
-        row = conn.execute("SELECT * FROM google_tokens WHERE user_id = ?", (user["id"],)).fetchone()
+    raw = GoogleTokenRepository(db).get_for_user(user.id)
+    assert raw.encrypted_access_token != "access-secret"
+    assert raw.encrypted_refresh_token != "refresh-secret"
+    assert raw.client_secret != "client-secret"  # encrypted
+    assert raw.client_id == "client-id"  # not encrypted
+    assert raw.scopes == ["https://www.googleapis.com/auth/drive"]  # string -> JSONB list
+    assert raw.expiry is not None  # ISO string parsed into a timestamp
 
-    assert row["access_token"] != "access-secret"
-    assert row["refresh_token"] != "refresh-secret"
-    assert row["client_secret"] != "client-secret"
-
-    loaded = store.get_for_user(user["id"])
+    loaded = store.get_for_user(db, user.id)
     assert loaded["access_token"] == "access-secret"
     assert loaded["refresh_token"] == "refresh-secret"
     assert loaded["client_secret"] == "client-secret"
+    assert loaded["client_id"] == "client-id"
+
+
+def test_token_store_returns_none_when_absent(db):
+    user = UserRepository(db).create(email="nobody@example.com")
+    db.flush()
+    store = TokenStore(fernet_from_secret("a-long-secret-for-tests"))
+
+    assert store.get_for_user(db, user.id) is None

@@ -11,4 +11,11 @@ google-api-python-client>=2.150,<3
 google-auth>=2.36,<3
 google-auth-httplib2>=0.2,<1
 google-auth-oauthlib>=1.2,<2
+
+# Database: PostgreSQL via SQLAlchemy (sync) + Alembic migrations.
+sqlalchemy>=2.0,<3
+alembic>=1.13,<2
+psycopg[binary]>=3.2,<4
+passlib[bcrypt]>=1.7,<2
+
 pytest>=8,<9
