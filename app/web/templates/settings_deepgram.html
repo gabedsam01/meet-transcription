@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Deepgram</h1>
+  <p class="hint">Sua Deepgram API Key fica criptografada e nunca é exibida novamente.</p>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  <p>Status: {% if configured %}<strong>Configured</strong> ({{ masked }}){% else %}<strong>Not configured</strong>{% endif %}</p>
+  <form method="post" action="/settings/deepgram" class="form-stack">
+    <label>Deepgram API Key<input name="deepgram_api_key" type="password" autocomplete="off" required></label>
+    <button type="submit">Save key</button>
+  </form>
+  {% if configured %}
+  <form method="post" action="/settings/deepgram/test"><button type="submit">Test key</button></form>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Admin · Users</h1>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  <form method="post" action="/admin/users" class="form-stack">
+    <label>Email<input name="email" type="email" required></label>
+    <label>Password<input name="password" type="password" required></label>
+    <label>Role
+      <select name="role"><option value="user">user</option><option value="admin">admin</option></select>
+    </label>
+    <button type="submit">Create user</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Users</h2>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>ID</th><th>Email</th><th>Role</th><th>Active</th><th>Google</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.id }}</td>
+        <td>{{ u.email }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ "yes" if u.is_active else "no" }}</td>
+        <td>{{ u.google_email or "-" }}</td>
+        <td class="row-between">
+          {% if u.is_active %}
+          <form method="post" action="/admin/users/{{ u.id }}/disable"><button type="submit">Disable</button></form>
+          {% else %}
+          <form method="post" action="/admin/users/{{ u.id }}/enable"><button type="submit">Enable</button></form>
+          {% endif %}
+          <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="row-between">
+            <input name="new_password" type="password" placeholder="new password" required>
+            <button type="submit">Reset</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}
