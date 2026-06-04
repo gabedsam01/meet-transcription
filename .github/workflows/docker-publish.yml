@@ -2,7 +2,12 @@ name: Publish Docker image to GHCR
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - integration/postgres-platform
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
