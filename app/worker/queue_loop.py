@@ -59,6 +59,7 @@ def run_queue_loop(
             if job_id is None:
                 idle()
                 continue
+            LOGGER.info("Queue job received: job_id=%s worker=%s", job_id, worker_id)
             token = queue.acquire_global_lock(container.queue_lock_ttl)
             if token is None:
                 # Another worker holds the single execution lock; put the job back.

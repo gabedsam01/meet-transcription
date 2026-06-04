@@ -41,3 +41,6 @@ class TranscriptionQueue(Protocol):
 
     def queued_job_ids(self) -> set[int]:
         """Snapshot of currently-queued ids (introspection / tests)."""
+
+    def health(self) -> bool:
+        """True if the backing store is reachable (Redis PING). Never raises."""

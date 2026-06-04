@@ -56,6 +56,9 @@ class FakeRedis:
         self.kv.pop(key, None)
         return 1
 
+    def ping(self):
+        return True
+
 
 def test_enqueue_dedupes_via_set_and_uses_transcription_keys():
     r = FakeRedis()
@@ -106,3 +109,13 @@ def test_release_with_wrong_token_keeps_lock():
     token = q.acquire_global_lock(120)
     q.release_global_lock("wrong-token")
     assert r.kv.get("t:global_lock") == token  # not released by a foreign token
+
+
+def test_health_pings_and_degrades_gracefully():
+    assert RedisTranscriptionQueue(FakeRedis(), queue_name="t").health() is True
+
+    class DownRedis(FakeRedis):
+        def ping(self):
+            raise RuntimeError("connection refused")
+
+    assert RedisTranscriptionQueue(DownRedis(), queue_name="t").health() is False

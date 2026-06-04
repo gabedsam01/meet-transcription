@@ -76,3 +76,6 @@ class InMemoryTranscriptionQueue:
     def queued_job_ids(self) -> set[int]:
         with self._cond:
             return set(self._queued)
+
+    def health(self) -> bool:
+        return True  # in-process: always reachable

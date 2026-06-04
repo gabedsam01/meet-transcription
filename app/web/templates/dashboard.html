@@ -41,6 +41,18 @@
     <p class="hint">Deepgram (transcrição local desativada).</p>
     {% endif %}
   </article>
+  <article class="card">
+    <h2>Queue</h2>
+    {% if not queue_status or queue_status.mode == 'poll' %}
+    <p class="hint">Polling (sem Redis)</p>
+    {% elif queue_status.available %}
+    <p class="ok">Online</p>
+    <p class="hint">Redis · processamento sequencial</p>
+    {% else %}
+    <p class="off">Indisponível</p>
+    <p class="hint">Jobs ficam pendentes até o Redis voltar.</p>
+    {% endif %}
+  </article>
 </section>
 
 <section class="grid">

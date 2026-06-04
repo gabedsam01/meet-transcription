@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
+from app.errors import LocalTranscriptionUnavailableError
 from app.transcription.config import TranscriptionConfig
 from app.transcription.local_validation import ValidationProbes
 from app.transcription.provider import (
@@ -10,11 +12,10 @@ from app.transcription.provider import (
     get_transcription_provider_status,
 )
 
+LOGGER = logging.getLogger(__name__)
 
-class LocalTranscriptionUnavailable(RuntimeError):
-    """No usable transcription provider: local is disabled/invalid and there is no
-    Deepgram key to fall back to. The message names Deepgram and links the docs so
-    the UI/worker can surface an actionable error (never a silent failure)."""
+# Back-compat alias: the canonical error now lives in app.errors.
+LocalTranscriptionUnavailable = LocalTranscriptionUnavailableError
 
 
 def build_local_provider(config: TranscriptionConfig) -> TranscriptionProvider:
@@ -51,7 +52,14 @@ def resolve_provider(
     if status.local_valid:
         return build_local_provider(config), status
     if not has_deepgram_key:
-        raise LocalTranscriptionUnavailable(_unavailable_message(status))
+        message = _unavailable_message(status)
+        raise LocalTranscriptionUnavailableError(message, user_message=message)
+    if status.enabled:
+        # Local was requested but is invalid; we fall back to Deepgram and say so.
+        LOGGER.info(
+            "Local transcription invalid; requiring Deepgram: reason=%s",
+            status.reason or status.message,
+        )
     return build_deepgram_provider(), status
 
 

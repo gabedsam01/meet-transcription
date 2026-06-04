@@ -31,7 +31,14 @@ class RedisTranscriptionQueue:
     ) -> "RedisTranscriptionQueue":
         from redis import Redis  # lazy: only production / redis-backed runs need it
 
-        client = Redis.from_url(redis_url, decode_responses=True)
+        # Bounded timeouts so a down Redis fails fast (UI health probe, enqueue)
+        # instead of hanging a request or the worker loop.
+        client = Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
         return cls(client, queue_name=queue_name)
 
     def enqueue(self, job_id: int) -> bool:
@@ -82,3 +89,9 @@ class RedisTranscriptionQueue:
 
     def queued_job_ids(self) -> set[int]:
         return {int(member) for member in self._r.smembers(self._set_key)}
+
+    def health(self) -> bool:
+        try:
+            return bool(self._r.ping())
+        except Exception:  # noqa: BLE001 - a health probe must never raise
+            return False

@@ -47,6 +47,9 @@ class ProviderStatus:
     summary: str | None
     message: str
     doc_url: str | None
+    # Technical reason a local engine is invalid (for logs/diagnostics), distinct
+    # from the friendly ``message`` shown in the UI. None when local is valid.
+    reason: str | None = None
 
 
 def get_transcription_provider_status(
@@ -80,4 +83,5 @@ def get_transcription_provider_status(
         summary=None,
         message="Modelo local inválido. Consulte a documentação de modelos locais.",
         doc_url=config.doc_url,
+        reason=validation.reason,
     )

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.models import Job
+from app.errors import AppError, DriveFolderMissingError, GoogleTokenMissingError
 from app.processor import sanitize_filename
 from app.transcription.config import TranscriptionConfig
 from app.transcription.deepgram_provider import DeepgramProvider
@@ -27,20 +29,26 @@ class JobProcessor:
     def process(self, job: Job) -> None:
         repos = self.container.repositories
         job_dir = Path(self.container.settings.tmp_dir) / "jobs" / str(job.id)
+        started = time.monotonic()
         try:
             settings = repos.settings.get(job.user_id)
             if settings is None:
-                raise RuntimeError("User settings are required before transcription")
+                raise DriveFolderMissingError("User settings are required before transcription")
             token = repos.google_tokens.get(job.user_id)
             if token is None:
-                raise RuntimeError("Google token is required before transcription")
+                raise GoogleTokenMissingError("Google token is required before transcription")
             if not job.source_file_id:
-                raise RuntimeError("Job has no source_file_id to download")
+                raise DriveFolderMissingError("Job has no source_file_id to download")
 
             # Pick the transcription provider per the local/Deepgram product rule.
             # A valid local engine needs no Deepgram key; otherwise a per-user key is
             # required and its absence raises a clear, Deepgram-mentioning error.
-            provider = self._resolve_provider(settings)
+            provider, status = self._resolve_provider(settings)
+            label = status.summary if status.local_valid else "deepgram"
+            LOGGER.info(
+                "Transcription started: job_id=%s user_id=%s provider=%s",
+                job.id, job.user_id, label,
+            )
 
             credentials = self.container.credentials_from_token(token)
             drive = self.container.build_drive_client(
@@ -78,10 +86,15 @@ class JobProcessor:
             repos.jobs.mark_completed(
                 job.id, self._now(), transcript_drive_file_id=transcript_drive_file_id
             )
-            LOGGER.info("Job completed job_id=%s", job.id)
+            LOGGER.info(
+                "Transcription completed: job_id=%s provider=%s duration_seconds=%.1f",
+                job.id, label, time.monotonic() - started,
+            )
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
-            LOGGER.exception("Job failed job_id=%s", job.id)
-            repos.jobs.mark_failed(job.id, str(exc), self._now())
+            # Friendly message for the UI; full traceback only in the logs.
+            user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
+            LOGGER.exception("Transcription failed: job_id=%s reason=%s", job.id, exc)
+            repos.jobs.mark_failed(job.id, user_message, self._now())
         finally:
             _cleanup_job_dir(job_dir)
 
@@ -96,14 +109,13 @@ class JobProcessor:
                 language=self.container.settings.deepgram_language,
             )
 
-        provider, _status = resolve_provider(
+        return resolve_provider(
             config,
             has_deepgram_key=bool(settings.deepgram_api_key),
             build_local_provider=self.container.build_local_provider or build_local_provider,
             build_deepgram_provider=build_deepgram_provider,
             probes=self.container.transcription_probes,
         )
-        return provider
 
 
 def _cleanup_job_dir(job_dir: Path) -> None:

@@ -130,6 +130,55 @@ def test_jobs_page_shows_local_invalid_alert_with_doc_link(tmp_path):
     assert "https://docs/local" in page
 
 
+def test_dashboard_shows_queue_online_when_healthy(tmp_path):
+    queue = InMemoryTranscriptionQueue()
+    app = create_app(
+        _settings(tmp_path), repositories=build_fake_repositories(),
+        worker_repositories=build_memory_repositories(), queue=queue,
+    )
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/").text
+    assert "Queue" in page
+    assert "Online" in page
+
+
+def test_dashboard_shows_queue_offline_when_down(tmp_path):
+    class DownQueue(InMemoryTranscriptionQueue):
+        def health(self):
+            return False
+
+    app = create_app(
+        _settings(tmp_path), repositories=build_fake_repositories(),
+        worker_repositories=build_memory_repositories(), queue=DownQueue(),
+    )
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/").text
+    assert "Indisponível" in page
+
+
+def test_run_once_flashes_when_queue_enqueue_fails(tmp_path):
+    class FailingQueue(InMemoryTranscriptionQueue):
+        def enqueue(self, job_id):
+            raise RuntimeError("redis down")
+
+    worker = _seed_worker("dg-key")
+    app = create_app(
+        _settings(tmp_path), repositories=build_fake_repositories(),
+        worker_repositories=worker, queue=FailingQueue(),
+    )
+    _wire_drive(app, [drive_file("file-1", "m.mp4")])
+    with TestClient(app) as client:
+        _login(client)
+        client.post("/jobs/run-once", follow_redirects=False)
+        page = client.get("/jobs").text
+    # The job is still created in Postgres (source of truth) ...
+    assert len(worker.jobs.list_jobs_for_user(1)) == 1
+    # ... and the UI explains the queue is temporarily unavailable.
+    assert "Fila indisponível" in page
+
+
 def test_dashboard_shows_local_active(tmp_path):
     status = _status(
         local_valid=True, deepgram_required=False,

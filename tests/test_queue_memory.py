@@ -29,6 +29,10 @@ def test_requeue_puts_job_back_for_retry():
     assert q.dequeue(0) == 1
 
 
+def test_health_is_always_true_in_process():
+    assert InMemoryTranscriptionQueue().health() is True
+
+
 def test_ensure_queued_is_idempotent():
     q = InMemoryTranscriptionQueue()
     assert q.ensure_queued(9) is True

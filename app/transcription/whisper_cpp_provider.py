@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
+from app.errors import ModelNotFoundError, WhisperCppBinaryNotFoundError
 from app.transcription.audio import extract_audio_to_wav
 from app.transcription.config import TranscriptionConfig
 from app.transcription.normalizer import (
@@ -44,7 +45,7 @@ class WhisperCppProvider:
     ) -> TranscriptionResult:
         # whisper.cpp has no auto-download; never build a broken "-m <empty>" cmd.
         if not self._config.model_path:
-            raise RuntimeError(
+            raise ModelNotFoundError(
                 "whisper.cpp requires LOCAL_TRANSCRIPTION_MODEL_PATH (no auto-download)."
             )
         workdir = Path(source_path).parent / "whispercpp"
@@ -55,7 +56,13 @@ class WhisperCppProvider:
 
             out_prefix = str(workdir / "out")
             cmd = self._build_command(str(wav_path), out_prefix)
-            result = self._runner(cmd)
+            try:
+                result = self._runner(cmd)
+            except FileNotFoundError as exc:
+                # The whisper-cli binary is missing from PATH / WHISPER_CPP_BINARY.
+                raise WhisperCppBinaryNotFoundError(
+                    f"whisper.cpp binary not found: {self._config.whisper_cpp_binary!r}"
+                ) from exc
             if getattr(result, "returncode", 0) != 0:
                 stderr = (getattr(result, "stderr", "") or "")[:500]
                 raise RuntimeError(

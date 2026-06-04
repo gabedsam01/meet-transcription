@@ -127,6 +127,17 @@ def create_app(settings: WebSettings | None = None,
         except RepositoryBackendError as exc:
             return None, str(exc)
 
+    def _queue_status() -> dict:
+        """UI-facing queue health: poll mode (no Redis), online, or unavailable."""
+        queue = app.state.queue
+        if queue is None:
+            return {"mode": "poll", "available": None}
+        try:
+            available = queue.health()
+        except Exception:  # noqa: BLE001 - a status probe must never 500 the page
+            available = False
+        return {"mode": "queue", "available": available}
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -162,6 +173,7 @@ def create_app(settings: WebSettings | None = None,
             "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
             "deepgram_configured": deepgram_store.has_key(user.id),
             "transcription_status": app.state.transcription_status,
+            "queue_status": _queue_status(),
             "total_jobs": len(jobs),
             "last_job": jobs[0] if jobs else None,
             "jobs": jobs[:5],
@@ -247,6 +259,7 @@ def create_app(settings: WebSettings | None = None,
             "message": _pop_flash(request),
             "backend_error": error,
             "transcription_status": app.state.transcription_status,
+            "queue_status": _queue_status(),
         })
 
     @app.post("/jobs/run-once")
@@ -268,17 +281,25 @@ def create_app(settings: WebSettings | None = None,
             logging.exception("run-once failed to create a job for user_id=%s", user.id)
             _set_flash(request, "Não foi possível iniciar a transcrição agora. Tente novamente.")
             return RedirectResponse("/jobs", status_code=303)
+        flash_message = RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado.")
         # Enqueue the pending job for the worker. Best-effort: if Redis is down the
         # job stays pending in Postgres and the worker reconciles it on startup/idle.
         if result.status == "created" and result.job is not None and app.state.queue is not None:
             try:
                 app.state.queue.enqueue(result.job.id)
+                logging.getLogger(__name__).info(
+                    "Enqueued job_id=%s user_id=%s", result.job.id, user.id
+                )
             except Exception:  # noqa: BLE001 - Postgres is the source of truth; never 500 here.
-                logging.exception(
+                logging.getLogger(__name__).exception(
                     "Could not enqueue job_id=%s; it stays pending for the worker to reconcile",
                     result.job.id,
                 )
-        _set_flash(request, RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado."))
+                flash_message = (
+                    "Fila indisponível no momento: a transcrição foi registrada e será "
+                    "processada assim que a fila voltar."
+                )
+        _set_flash(request, flash_message)
         return RedirectResponse("/jobs", status_code=303)
 
     @app.get("/jobs/{job_id}/download")

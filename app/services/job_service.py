@@ -60,7 +60,8 @@ def create_next_pending_job(
             source_file_name=file.name, now=now(),
         )
         LOGGER.info(
-            "Created pending job job_id=%s user_id=%s file=%s", job.id, user_id, file.id
+            "Job queued: job_id=%s user_id=%s source_file_id=%s",
+            job.id, user_id, file.id,
         )
         return JobCreationResult("created", job)
 
