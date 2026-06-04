@@ -91,11 +91,13 @@ def test_whisper_cpp_missing_model_path_without_auto_download():
     assert result.valid is False
 
 
-def test_whisper_cpp_missing_model_path_is_ok_with_auto_download():
+def test_whisper_cpp_requires_model_path_even_with_auto_download():
+    # whisper.cpp cannot auto-download a ggml model, so model_path is ALWAYS
+    # required; auto_download only meaningfully applies to faster-whisper.
     result = validate_local_config(
         _wcpp(auto_download=True), _probes(path=False, executable=True)
     )
-    assert result.valid is True
+    assert result.valid is False
 
 
 # --- unknown engine ---------------------------------------------------------

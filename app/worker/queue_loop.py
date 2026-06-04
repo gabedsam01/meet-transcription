@@ -24,6 +24,7 @@ def run_queue_loop(
     dequeue_timeout: float | None = None,
     on_idle=None,
     on_contention=None,
+    on_error=None,
 ) -> None:
     """Redis-queue worker loop: one transcription at a time, globally locked.
 
@@ -46,27 +47,36 @@ def run_queue_loop(
     contention = on_contention if on_contention is not None else (
         lambda: stop_event.wait(1)
     )
+    # A transient Redis/Postgres failure (dequeue, reconcile, lock, claim) must
+    # never kill this daemon thread; log, back off, and recover next iteration.
+    error_backoff = on_error if on_error is not None else (
+        lambda: stop_event.wait(min(timeout or 1, 5))
+    )
 
     while not stop_event.is_set():
-        job_id = queue.dequeue(timeout)
-        if job_id is None:
-            idle()
-            continue
-        token = queue.acquire_global_lock(container.queue_lock_ttl)
-        if token is None:
-            # Another worker holds the single execution lock; put the job back.
-            queue.requeue(job_id)
-            contention()
-            continue
         try:
-            job = container.repositories.jobs.claim_job(job_id, worker_id, now())
-            if job is None:
-                LOGGER.info("Queued job_id=%s is no longer pending; skipping", job_id)
+            job_id = queue.dequeue(timeout)
+            if job_id is None:
+                idle()
                 continue
-            LOGGER.info("Claimed job_id=%s worker=%s", job.id, worker_id)
+            token = queue.acquire_global_lock(container.queue_lock_ttl)
+            if token is None:
+                # Another worker holds the single execution lock; put the job back.
+                queue.requeue(job_id)
+                contention()
+                continue
             try:
-                proc.process(job)
-            except Exception:  # noqa: BLE001 - a single job must never kill the loop.
-                LOGGER.exception("Unhandled error processing job_id=%s", job_id)
-        finally:
-            queue.release_global_lock(token)
+                job = container.repositories.jobs.claim_job(job_id, worker_id, now())
+                if job is None:
+                    LOGGER.info("Queued job_id=%s is no longer pending; skipping", job_id)
+                    continue
+                LOGGER.info("Claimed job_id=%s worker=%s", job.id, worker_id)
+                try:
+                    proc.process(job)
+                except Exception:  # noqa: BLE001 - a single job must never kill the loop.
+                    LOGGER.exception("Unhandled error processing job_id=%s", job_id)
+            finally:
+                queue.release_global_lock(token)
+        except Exception:  # noqa: BLE001 - survive transient queue/database errors.
+            LOGGER.exception("Queue worker iteration failed worker=%s", worker_id)
+            error_backoff()

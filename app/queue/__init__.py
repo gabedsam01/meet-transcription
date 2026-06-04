@@ -47,7 +47,9 @@ def requeue_pending_jobs(repositories, queue: TranscriptionQueue) -> int:
     """
     count = 0
     for job in repositories.jobs.list_pending_jobs():
-        if queue.enqueue(job.id):
+        # ensure_queued (not enqueue) so a job orphaned in the dedupe set by a
+        # mid-dequeue Redis failure is still re-pushed onto the list.
+        if queue.ensure_queued(job.id):
             count += 1
     if count:
         LOGGER.info("Re-enqueued %s pending job(s) into the transcription queue", count)

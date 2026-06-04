@@ -83,11 +83,12 @@ def _validate_whisper_cpp(
         return _invalid(
             "Binário whisper.cpp ausente ou não executável (WHISPER_CPP_BINARY)."
         )
-    if not config.auto_download:
-        if not config.model_path or not probes.path_exists(config.model_path):
-            return _invalid(
-                "Arquivo de modelo whisper.cpp ausente (LOCAL_TRANSCRIPTION_MODEL_PATH)."
-            )
+    # whisper.cpp cannot fetch a ggml model itself, so model_path is ALWAYS
+    # required (auto_download only applies to faster-whisper / HuggingFace).
+    if not config.model_path or not probes.path_exists(config.model_path):
+        return _invalid(
+            "Arquivo de modelo whisper.cpp ausente (LOCAL_TRANSCRIPTION_MODEL_PATH)."
+        )
     return LocalValidation(
         valid=True, summary=f"whisper.cpp {config.model} {config.quantization}"
     )

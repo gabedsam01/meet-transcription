@@ -16,6 +16,13 @@ class TranscriptionQueue(Protocol):
     def enqueue(self, job_id: int) -> bool:
         """Add ``job_id`` to the tail. Return False if it was already queued."""
 
+    def ensure_queued(self, job_id: int) -> bool:
+        """Re-queue ``job_id`` unless it is genuinely present in the list.
+
+        Used by reconciliation. Unlike ``enqueue`` (which trusts the dedupe set),
+        this checks the list itself, so it self-heals an id orphaned in the dedupe
+        set by a mid-dequeue failure. Returns True if it was (re-)added."""
+
     def dequeue(self, timeout: float = 0) -> int | None:
         """Pop the oldest job id, blocking up to ``timeout`` seconds (0 = no wait).
 

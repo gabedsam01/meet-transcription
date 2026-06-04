@@ -116,7 +116,9 @@ WHISPER_CPP_BINARY=/usr/local/bin/whisper-cli
 ```
 
 whisper.cpp needs **ffmpeg** (16 kHz mono WAV extraction) and the `whisper-cli`
-binary. ffmpeg is installed when you build with:
+binary. **`LOCAL_TRANSCRIPTION_MODEL_PATH` is always required** for whisper.cpp —
+unlike faster-whisper it cannot auto-download a model, so `AUTO_DOWNLOAD` does not
+apply here. ffmpeg is installed when you build with:
 
 ```bash
 docker build --build-arg INSTALL_WHISPER_CPP=true -t meet-transcription:wc .

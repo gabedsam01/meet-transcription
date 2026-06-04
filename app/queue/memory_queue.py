@@ -40,6 +40,18 @@ class InMemoryTranscriptionQueue:
             self._queued.discard(job_id)
             return job_id
 
+    def ensure_queued(self, job_id: int) -> bool:
+        with self._cond:
+            # In-process the set and list never diverge, but check the list itself
+            # for parity with the Redis adapter's self-healing reconcile.
+            if job_id in self._items:
+                self._queued.add(job_id)
+                return False
+            self._queued.add(job_id)
+            self._items.appendleft(job_id)
+            self._cond.notify()
+            return True
+
     def requeue(self, job_id: int) -> None:
         with self._cond:
             if job_id in self._queued:

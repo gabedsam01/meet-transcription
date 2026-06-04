@@ -29,6 +29,13 @@ def test_requeue_puts_job_back_for_retry():
     assert q.dequeue(0) == 1
 
 
+def test_ensure_queued_is_idempotent():
+    q = InMemoryTranscriptionQueue()
+    assert q.ensure_queued(9) is True
+    assert q.ensure_queued(9) is False  # already in the list -> not duplicated
+    assert q.queued_job_ids() == {9}
+
+
 def test_global_lock_is_mutually_exclusive():
     q = InMemoryTranscriptionQueue()
     token = q.acquire_global_lock(60)

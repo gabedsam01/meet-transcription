@@ -29,6 +29,11 @@ class FakeRedis:
     def lpush(self, key, value):
         self.lists.setdefault(key, []).insert(0, str(value))
 
+    def lpos(self, key, value):
+        bucket = self.lists.get(key, [])
+        value = str(value)
+        return bucket.index(value) if value in bucket else None
+
     def rpush(self, key, value):
         self.lists.setdefault(key, []).append(str(value))
 
@@ -70,6 +75,18 @@ def test_dequeue_pops_fifo_and_clears_set():
     assert q.dequeue(0) == 2
     assert q.dequeue(0) is None
     assert r.sets["t:queued"] == set()
+
+
+def test_ensure_queued_reheals_an_orphaned_set_entry():
+    # Simulate the BRPOP-then-SREM crash: the id is left in the dedupe set but not
+    # in the list. ensure_queued (used by reconciliation) must re-push it anyway so
+    # the pending Postgres job is never stuck forever.
+    r = FakeRedis()
+    q = RedisTranscriptionQueue(r, queue_name="t")
+    r.sets["t:queued"] = {"5"}  # orphan: in set, absent from list
+    assert q.ensure_queued(5) is True
+    assert r.lists["t:queue"] == ["5"]
+    assert q.ensure_queued(5) is False  # now really queued -> no duplicate
 
 
 def test_global_lock_uses_set_nx_ex():

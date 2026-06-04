@@ -121,6 +121,18 @@ def test_audio_extractor_is_invoked_with_wav_destination(tmp_path):
     assert calls[0][1].endswith(".wav")
 
 
+def test_missing_model_path_raises_clear_error(tmp_path):
+    # Defense in depth: even if reached with no model_path, never build a broken
+    # "whisper-cli -m  -f ..." command — fail loudly instead.
+    provider = WhisperCppProvider(
+        _cfg(LOCAL_TRANSCRIPTION_MODEL_PATH=""),
+        runner=lambda cmd: _Completed(0),
+        audio_extractor=_wav_extractor,
+    )
+    with pytest.raises(RuntimeError, match="MODEL_PATH"):
+        provider.transcribe(tmp_path / "x.mp4", original_name="x", file_id="i")
+
+
 def test_work_dir_is_cleaned_up(tmp_path):
     runner = _json_runner([{"offsets": {"from": 0, "to": 1000}, "text": "hi"}])
     provider = WhisperCppProvider(_cfg(), runner=runner, audio_extractor=_wav_extractor)

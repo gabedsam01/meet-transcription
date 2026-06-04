@@ -99,6 +99,32 @@ def test_skips_job_that_is_no_longer_pending(tmp_path):
     assert proc.processed == []  # claim_job returned None -> dedupe defense
 
 
+def test_survives_a_transient_queue_error(tmp_path):
+    # A dequeue that raises once (e.g. a Redis hiccup) must NOT kill the worker
+    # thread — the loop logs, backs off, and recovers on the next iteration.
+    queue = InMemoryTranscriptionQueue()
+    container = make_worker_container(tmp_path, queue=queue)
+    job = container.repositories.jobs.create_job(7, "s1", "a.mp4", _now())
+    queue.enqueue(job.id)
+    proc = RecordingProcessor(container.repositories)
+    stop = threading.Event()
+    real_dequeue = queue.dequeue
+    state = {"n": 0}
+
+    def flaky_dequeue(timeout=0):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("redis hiccup")
+        return real_dequeue(timeout)
+
+    queue.dequeue = flaky_dequeue
+    run_queue_loop(
+        container, stop, "w1", processor=proc, dequeue_timeout=0,
+        on_idle=stop.set, on_error=lambda: None,
+    )
+    assert proc.processed == [job.id]  # recovered after the transient error
+
+
 def test_survives_a_job_whose_processing_raises(tmp_path):
     queue = InMemoryTranscriptionQueue()
     container = make_worker_container(tmp_path, queue=queue)

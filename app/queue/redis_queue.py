@@ -50,6 +50,18 @@ class RedisTranscriptionQueue:
         self._r.srem(self._set_key, job_id)
         return job_id
 
+    def ensure_queued(self, job_id: int) -> bool:
+        # Reconcile/self-heal path: trust the LIST, not the dedupe set. If a prior
+        # dequeue crashed between BRPOP and SREM, the id is stranded in the set but
+        # absent from the list; LPOS detects that and we re-push it. Postgres stays
+        # the source of truth, so a pending job can never be stuck unqueued.
+        if self._r.lpos(self._list_key, job_id) is None:
+            self._r.sadd(self._set_key, job_id)
+            self._r.lpush(self._list_key, job_id)
+            return True
+        self._r.sadd(self._set_key, job_id)  # keep the dedupe set consistent
+        return False
+
     def requeue(self, job_id: int) -> None:
         if self._r.sadd(self._set_key, job_id) == 1:
             self._r.rpush(self._list_key, job_id)  # tail: retried after current items

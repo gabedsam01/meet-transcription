@@ -42,6 +42,11 @@ class WhisperCppProvider:
     def transcribe(
         self, source_path: str | Path, *, original_name: str, file_id: str
     ) -> TranscriptionResult:
+        # whisper.cpp has no auto-download; never build a broken "-m <empty>" cmd.
+        if not self._config.model_path:
+            raise RuntimeError(
+                "whisper.cpp requires LOCAL_TRANSCRIPTION_MODEL_PATH (no auto-download)."
+            )
         workdir = Path(source_path).parent / "whispercpp"
         workdir.mkdir(parents=True, exist_ok=True)
         try:
