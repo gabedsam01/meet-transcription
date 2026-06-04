@@ -30,6 +30,7 @@ def create_next_pending_job(
     credentials_from_token: Callable,
     user_id: int,
     now: Callable[[], datetime] = _utc_now,
+    deepgram_required: bool = True,
 ) -> JobCreationResult:
     settings = repositories.settings.get(user_id)
     if settings is None or not settings.source_drive_folder_id:
@@ -39,10 +40,10 @@ def create_next_pending_job(
     if token is None:
         return JobCreationResult("not_connected")
 
-    # A per-user Deepgram key is mandatory before a job may be enqueued; the
-    # worker also requires it at processing time. Enforce it here so the UI never
-    # creates a job that is doomed to fail for a missing key.
-    if not settings.deepgram_api_key:
+    # A per-user Deepgram key is mandatory before a job may be enqueued *unless* a
+    # valid local engine is active (deepgram_required=False). Enforcing it here
+    # keeps the UI from creating a job that is doomed to fail for a missing key.
+    if deepgram_required and not settings.deepgram_api_key:
         return JobCreationResult("no_deepgram_key")
 
     credentials = credentials_from_token(token)

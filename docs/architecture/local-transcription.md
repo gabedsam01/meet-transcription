@@ -1,65 +1,151 @@
-# Local transcription (proposal — not implemented)
+# Local transcription (CPU-only)
 
-This document describes a **future** option to transcribe recordings locally
-with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) instead of
-Deepgram. It is a design note only. **No Whisper code exists yet and none should
-be added before the PostgreSQL architecture is stable.**
+Meet Transcription can transcribe recordings **locally on CPU** instead of sending
+audio to Deepgram. Two engines are supported, both CPU-only and multiarch
+(x86_64 + ARM64):
 
-## Motivation
+- **faster-whisper** — CTranslate2 reimplementation of Whisper, `int8` on CPU.
+- **whisper.cpp** — C++ Whisper, driven via the `whisper-cli` binary.
 
-Deepgram is fast and accurate but is a paid, external service that receives the
-raw meeting audio. A local engine would:
+PostgreSQL stays the single source of truth, Redis is the queue/lock, the **web**
+service only enqueues jobs, and the **worker** does all transcription. Nothing is
+ever transcribed inside an HTTP request, and no GPU is used.
 
-- remove per-minute transcription cost,
-- keep audio on infrastructure you control (privacy), and
-- allow offline / air-gapped operation.
+## Provider selection rule
 
-The trade-off is CPU/RAM usage and slower, lower-accuracy transcription.
+The worker and UI agree on one rule (`get_transcription_provider_status`):
 
-## Proposed shape
+| `LOCAL_TRANSCRIPTION_ENABLED` | Local config | Result |
+| --- | --- | --- |
+| `false` | — | **Deepgram** (per-user key required, as today). |
+| `true`  | **valid**   | **Local engine** used. Deepgram key **not** required. |
+| `true`  | **invalid** | **Deepgram required.** UI shows *"Modelo local inválido. Consulte a documentação de modelos locais."* with a link here, and "Run once" is blocked until a Deepgram key is configured. |
 
-- A new optional service, **`local-transcriber`**, packaged like web/worker
-  (same repo, possibly the same image with extra dependencies, or a dedicated
-  image to keep the base image small).
-- Engine: **faster-whisper** with a small model (`tiny` or `base`) using `int8`
-  quantization for CPU inference. Larger models only on machines with a GPU.
-- The **worker chooses the engine per job**: `deepgram` (default) or `local`,
-  selected by configuration (e.g. a per-user setting or an env flag). The
-  worker keeps owning download → transcribe → upload; only the transcribe step
-  swaps implementations behind a common interface.
+There is **no silent fallback**: an invalid local configuration always surfaces a
+clear message; if there is also no Deepgram key, run-once is blocked with a
+friendly message instead of failing later.
+
+## Languages
+
+Both engines run **multilingual** checkpoints so the same model handles **pt-BR
+and English**. Do **not** use `.en` models — they are English-only. Set
+`LOCAL_TRANSCRIPTION_LANGUAGE=auto` to auto-detect, or pin `pt` / `en`.
+
+## Supported models (both engines)
 
 ```
-worker job:
-  download MP4 from Drive
-  engine = settings.engine  # "deepgram" | "local"
-  transcript = engine.transcribe(mp4)
-  upload transcript to Drive
+tiny · base · small · medium · large-v1 · large-v2 · large-v3 · large-v3-turbo
 ```
 
-## Risks and constraints
+## whisper.cpp quantizations
 
-- **CPU/RAM**: even `tiny`/`base` int8 models use significant CPU and hundreds of
-  MB to a few GB of RAM. Concurrent jobs can starve the host. The local engine
-  must run in the worker (never in the web request) and likely needs a
-  concurrency limit of 1.
-- **Latency**: CPU transcription is much slower than Deepgram, especially for
-  long meetings. Job timeouts and `STALE_JOB_TIMEOUT_MINUTES` need revisiting.
-- **Image size / build time**: Whisper dependencies (and any model weights)
-  inflate the image. Prefer a separate image or lazy model download.
-- **Accuracy**: small models are weaker than Deepgram, particularly for
-  Portuguese and multi-speaker audio (no diarization out of the box).
+MVP-supported: `q4_0`, `q4_1`, `q5_0`, `q5_1`, `q8_0`.
 
-## Sequencing
+> `q2_*`, `q3_*`, `q6_*` may exist in custom whisper.cpp builds, but the official
+> MVP only validates the five quantizations above.
 
-Do this **only after** the PostgreSQL architecture (web + worker + postgres) is
-stable and the worker reliably processes Deepgram jobs end to end. The engine
-selection should reuse the same job model and settings storage, so it depends on
-the database and worker work landing first.
+## faster-whisper compute types (CPU)
 
-## Out of scope for now
+`int8` (default), `int8_float32`, `float32`. `int8` is the right default for CPU.
 
-- No faster-whisper dependency in `requirements.txt`.
-- No engine-selection setting in the UI or database.
-- No `local-transcriber` service in `docker-compose.yml`.
+## VPS recommendations
 
-These are intentionally deferred; this file just records the intended direction.
+| Tier | Hardware | faster-whisper | whisper.cpp |
+| --- | --- | --- | --- |
+| **Minimum**     | 4 GB RAM, 1–2 vCPU   | `base`/`small` `int8`        | `base`/`small` `q4_0`        |
+| **Recommended** | 8 GB RAM, 4 vCPU     | `small`/`medium` `int8`      | `small`/`medium` `q5_0`      |
+| **Comfortable** | 16–24 GB RAM, 4+ vCPU| `medium`/`large-v3-turbo` `int8` | `medium`/`large` `q5_0`/`q8_0` |
+
+CPU transcription is roughly **~1× realtime or slower** — a 60-minute meeting can
+take an hour or more. Keep `WORKER_CONCURRENCY=1` and raise
+`STALE_JOB_TIMEOUT_MINUTES` for long recordings.
+
+## Deepgram vs local — trade-offs
+
+| | Deepgram | Local (faster-whisper / whisper.cpp) |
+| --- | --- | --- |
+| Diarization (speakers) | ✅ yes | ❌ no (MVP: `speaker = null`) |
+| Speed | fast | slower (CPU-bound) |
+| Cost | per-minute | free after model download |
+| Privacy | audio leaves your infra | audio stays on your infra |
+
+## Configuration
+
+All variables (see `.env.example`):
+
+```bash
+LOCAL_TRANSCRIPTION_ENABLED=false            # master switch
+LOCAL_TRANSCRIPTION_ENGINE=faster-whisper    # faster-whisper | whisper-cpp
+LOCAL_TRANSCRIPTION_MODEL=small
+LOCAL_TRANSCRIPTION_LANGUAGE=auto            # auto | pt | en | ...
+LOCAL_TRANSCRIPTION_THREADS=4
+LOCAL_TRANSCRIPTION_MODEL_DIR=/models
+LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=false      # do NOT fetch models at runtime unless true
+LOCAL_TRANSCRIPTION_DOC_URL=https://github.com/gabedsam01/meet-transcription/blob/main/docs/architecture/local-transcription.md
+```
+
+### faster-whisper
+
+```bash
+LOCAL_TRANSCRIPTION_ENABLED=true
+LOCAL_TRANSCRIPTION_ENGINE=faster-whisper
+LOCAL_TRANSCRIPTION_MODEL=small
+LOCAL_TRANSCRIPTION_COMPUTE_TYPE=int8
+```
+
+Build an image with the dependency baked in (it is **not** installed at runtime):
+
+```bash
+docker build --build-arg INSTALL_FASTER_WHISPER=true -t meet-transcription:fw .
+```
+
+With `LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=false` (default) the model must already be
+present under `LOCAL_TRANSCRIPTION_MODEL_DIR` (mounted at `/models`); the worker
+uses `local_files_only` and never reaches out to HuggingFace at job time. Set it
+to `true` to allow a one-time download.
+
+### whisper.cpp
+
+```bash
+LOCAL_TRANSCRIPTION_ENABLED=true
+LOCAL_TRANSCRIPTION_ENGINE=whisper-cpp
+LOCAL_TRANSCRIPTION_MODEL=small
+LOCAL_TRANSCRIPTION_QUANTIZATION=q4_0
+LOCAL_TRANSCRIPTION_MODEL_PATH=/models/ggml-small-q4_0.bin
+WHISPER_CPP_BINARY=/usr/local/bin/whisper-cli
+```
+
+whisper.cpp needs **ffmpeg** (16 kHz mono WAV extraction) and the `whisper-cli`
+binary. ffmpeg is installed when you build with:
+
+```bash
+docker build --build-arg INSTALL_WHISPER_CPP=true -t meet-transcription:wc .
+```
+
+> **Build status:** this image does **not** compile whisper.cpp itself (heavy and
+> arch-specific). The engine is fully implemented in code and driven through an
+> **external `WHISPER_CPP_BINARY`** — mount a prebuilt `whisper-cli` (and the
+> `ggml-*.bin` model) into `/models` / your image. Compiling whisper.cpp into a
+> dedicated multiarch image is the documented next step.
+
+## How it is stored
+
+Every engine normalizes into one internal schema saved in
+`transcripts.transcript_json`:
+
+```json
+{
+  "provider": "local",
+  "engine": "faster-whisper",
+  "model": "small",
+  "language": "pt",
+  "text": "…",
+  "segments": [{"start": 0.0, "end": 3.2, "speaker": null, "text": "…"}],
+  "words": [],
+  "utterances": [],
+  "raw": {}
+}
+```
+
+`transcripts.text` holds the human-readable `.txt` (the TXT download is unchanged
+for Deepgram and consistently formatted for local engines).

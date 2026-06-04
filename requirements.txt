@@ -19,4 +19,12 @@ alembic>=1.13,<2
 psycopg[binary]>=3.2,<4
 passlib[bcrypt]>=1.7,<2
 
+# Redis: transcription queue + global execution lock (QUEUE_BACKEND=redis).
+redis>=5,<6
+
+# NOTE: local transcription engines are NOT installed here — they are heavy and
+# CPU/arch-specific. faster-whisper is installed at image build time only when
+# INSTALL_FASTER_WHISPER=true (see Dockerfile build args); whisper.cpp is provided
+# via an external WHISPER_CPP_BINARY. See docs/architecture/local-transcription.md.
+
 pytest>=8,<9

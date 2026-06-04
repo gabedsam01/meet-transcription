@@ -5,6 +5,15 @@
     <div><h1>Jobs</h1><p>Manual and processed transcription jobs.</p></div>
     <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
   </div>
+  {% if transcription_status and transcription_status.enabled and not transcription_status.local_valid %}
+  <div class="notice notice-warn">
+    {{ transcription_status.message }}
+    {% if transcription_status.doc_url %}<a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Ver documentação de modelos locais</a>.{% endif %}
+    Configure uma Deepgram API Key para iniciar uma transcrição.
+  </div>
+  {% elif transcription_status and transcription_status.local_valid %}
+  <div class="notice">{{ transcription_status.message }} — Deepgram opcional.</div>
+  {% endif %}
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
   {% if backend_error %}<div class="notice">{{ backend_error }}</div>{% endif %}
   <p class="hint">After starting a job, refresh this page to see updates.</p>

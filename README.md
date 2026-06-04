@@ -109,9 +109,37 @@ docker compose run --rm web alembic upgrade head
 
 Each user supplies their **own** Deepgram API key in **Settings → Deepgram**. It
 is stored **encrypted** at rest (Fernet, with a key derived from
-`APP_SECRET_KEY`, like Google tokens), is **required** before a job can run, and
-there is **no global fallback**. The key is never shown again after saving and is
-used only by the worker when processing that user's jobs.
+`APP_SECRET_KEY`, like Google tokens), is **required** before a job can run
+(unless a valid local engine is active — see below), and there is **no global
+fallback**. The key is never shown again after saving and is used only by the
+worker when processing that user's jobs.
+
+## Local CPU Transcription (optional)
+
+Instead of Deepgram you can transcribe **locally on CPU** with **faster-whisper**
+or **whisper.cpp** (no GPU, x86_64 + ARM64). Set `LOCAL_TRANSCRIPTION_ENABLED=true`
+and choose an engine. The rule:
+
+- **disabled** → Deepgram, per-user key required (default, unchanged).
+- **enabled + valid** → local engine used; **no Deepgram key required**.
+- **enabled + invalid** → UI shows *"Modelo local inválido. Consulte a
+  documentação de modelos locais."* with a docs link, and run-once is blocked
+  until a Deepgram key is set (no silent fallback).
+
+Local engines are **not** installed in the base image (they are heavy); build them
+in with `--build-arg INSTALL_FASTER_WHISPER=true` (or provide an external
+`WHISPER_CPP_BINARY`). Full configuration, model/quantization lists, and VPS
+sizing are in **[docs/architecture/local-transcription.md](docs/architecture/local-transcription.md)**.
+
+## Redis Queue
+
+With `QUEUE_BACKEND=redis` (default in `docker-compose.yml`), the web service
+**enqueues** a job id when you click *Run once* and the worker **consumes** the
+queue, processing **one transcription at a time** behind a global Redis lock — so
+concurrent clicks never start two CPU transcriptions at once. PostgreSQL remains
+the source of truth: if Redis loses the queue, the worker re-enqueues pending jobs
+on startup (and while idle). Set `QUEUE_BACKEND=none` to keep the legacy poll
+loop, or `memory` for a single-process dev run without Redis.
 
 ## Drive Folder URL Setup
 

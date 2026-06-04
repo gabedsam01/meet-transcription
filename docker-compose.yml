@@ -22,6 +22,29 @@ x-app: &app
     postgres:
       condition: service_healthy
 
+# Queue + local-transcription configuration, shared by web (enqueue + UI status)
+# and worker (consume + transcribe). Every value has a safe default so
+# `docker compose config`/`build` work without a populated .env. Local engines are
+# OFF by default (Deepgram per-user keys); flip LOCAL_TRANSCRIPTION_ENABLED=true and
+# build the image with the engine you want (see docs/architecture/local-transcription.md).
+x-transcription-env: &transcription-env
+  QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  QUEUE_NAME: ${QUEUE_NAME:-transcription}
+  TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS: ${TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS:-14400}
+  LOCAL_TRANSCRIPTION_ENABLED: ${LOCAL_TRANSCRIPTION_ENABLED:-false}
+  LOCAL_TRANSCRIPTION_ENGINE: ${LOCAL_TRANSCRIPTION_ENGINE:-faster-whisper}
+  LOCAL_TRANSCRIPTION_MODEL: ${LOCAL_TRANSCRIPTION_MODEL:-small}
+  LOCAL_TRANSCRIPTION_LANGUAGE: ${LOCAL_TRANSCRIPTION_LANGUAGE:-auto}
+  LOCAL_TRANSCRIPTION_THREADS: ${LOCAL_TRANSCRIPTION_THREADS:-4}
+  LOCAL_TRANSCRIPTION_MODEL_DIR: ${LOCAL_TRANSCRIPTION_MODEL_DIR:-/models}
+  LOCAL_TRANSCRIPTION_COMPUTE_TYPE: ${LOCAL_TRANSCRIPTION_COMPUTE_TYPE:-int8}
+  LOCAL_TRANSCRIPTION_QUANTIZATION: ${LOCAL_TRANSCRIPTION_QUANTIZATION:-q4_0}
+  LOCAL_TRANSCRIPTION_MODEL_PATH: ${LOCAL_TRANSCRIPTION_MODEL_PATH:-}
+  WHISPER_CPP_BINARY: ${WHISPER_CPP_BINARY:-}
+  LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD: ${LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD:-false}
+  LOCAL_TRANSCRIPTION_DOC_URL: ${LOCAL_TRANSCRIPTION_DOC_URL:-https://github.com/gabedsam01/meet-transcription/blob/main/docs/architecture/local-transcription.md}
+
 services:
   postgres:
     image: postgres:16
@@ -38,6 +61,21 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  # Redis — transcription queue + single global execution lock. With QUEUE_BACKEND=
+  # redis the web enqueues job ids and the worker consumes them one at a time, so
+  # concurrent "Run once" clicks never run two CPU transcriptions at once.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # One-shot schema migration. Runs `alembic upgrade head` against PostgreSQL and
   # exits; web and worker wait for it to finish successfully before starting, so
@@ -62,9 +100,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     environment:
+      <<: *transcription-env
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -81,6 +122,7 @@ services:
       - ./data:/app/data   # scratch/temp only; the database lives in Postgres
       - ./tmp:/app/tmp
       - ./secrets:/app/secrets:ro
+      - ./models:/models:ro   # local model files (validated for UI status)
 
   # Owns all processing: claims pending jobs from PostgreSQL, downloads the MP4,
   # transcribes with the user's per-user Deepgram key, optionally uploads to Drive.
@@ -92,9 +134,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     environment:
+      <<: *transcription-env
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
       WORKER_REPOSITORY_BACKEND: ${WORKER_REPOSITORY_BACKEND:-postgres}
@@ -106,6 +151,8 @@ services:
       - ./data:/app/data
       - ./tmp:/app/tmp
       - ./secrets:/app/secrets:ro
+      - ./models:/models:ro   # local model files (faster-whisper cache / whisper.cpp .bin)
 
 volumes:
   postgres_data:
+  redis_data:
