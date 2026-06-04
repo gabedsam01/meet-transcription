@@ -1,16 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card">
-  <h1>Deepgram</h1>
-  <p class="hint">Sua Deepgram API Key fica criptografada e nunca é exibida novamente.</p>
+  <h1>Deepgram API key</h1>
+  <p class="hint">
+    Cada usuário fornece sua própria Deepgram API Key. Ela é armazenada
+    <strong>criptografada</strong> (como o token do Google), é obrigatória para
+    rodar uma transcrição e nunca é exibida novamente. Não há chave global.
+  </p>
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
-  <p>Status: {% if configured %}<strong>Configured</strong> ({{ masked }}){% else %}<strong>Not configured</strong>{% endif %}</p>
+  <p>Status: {% if configured %}<strong class="ok">Configured</strong> (<span class="mono">{{ masked }}</span>){% else %}<strong class="off">Not configured</strong>{% endif %}</p>
   <form method="post" action="/settings/deepgram" class="form-stack">
     <label>Deepgram API Key<input name="deepgram_api_key" type="password" autocomplete="off" required></label>
     <button type="submit">Save key</button>
   </form>
   {% if configured %}
-  <form method="post" action="/settings/deepgram/test"><button type="submit">Test key</button></form>
+  <form method="post" action="/settings/deepgram/test"><button type="submit" class="button button-ghost button-sm">Test key</button></form>
   {% endif %}
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Back to settings</a></p>
 </section>
 {% endblock %}

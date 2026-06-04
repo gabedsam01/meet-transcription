@@ -14,4 +14,11 @@ COPY alembic.ini ./
 
 RUN mkdir -p /app/data /app/tmp /app/secrets
 
-CMD ["python", "-m", "app.main", "--watch"]
+EXPOSE 8000
+
+# One image serves both roles; docker-compose overrides `command` per service:
+#   web    -> uvicorn app.web.main:app --host 0.0.0.0 --port 8000
+#   worker -> python -m app.worker.main      (legacy: python -m app.main --watch)
+# Default to the web server so a bare `docker run` is useful; override to run a
+# worker. This CMD is intentionally easy to override — nothing is baked in.
+CMD ["uvicorn", "app.web.main:app", "--host", "0.0.0.0", "--port", "8000"]

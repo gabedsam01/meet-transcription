@@ -7,7 +7,11 @@ __pycache__
 secrets
 tmp
 data/processed_files.json
-docs/superpowers/plans
+data/app.db
+docs
 tests
+.github
+*.md
+LICENSE
 .venv
 venv

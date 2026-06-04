@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="row-between">
+    <div>
+      <p class="eyebrow">Job #{{ job.id }}</p>
+      <h1>{{ job.source_file_name or 'Manual run' }}</h1>
+    </div>
+    <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+  </div>
+
+  {% if job.status == 'completed' %}
+  <p>
+    <a class="button" href="/jobs/{{ job.id }}/download">Download TXT</a>
+    {% if job.transcript_drive_file_id %}
+    <a class="button button-ghost" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Open in Drive</a>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  <dl class="detail">
+    <dt>File name</dt><dd>{{ job.source_file_name or '—' }}</dd>
+    <dt>Source file id</dt><dd class="mono">{{ job.source_file_id or '—' }}</dd>
+    <dt>Status</dt><dd><span class="badge badge-{{ job.status }}">{{ job.status }}</span></dd>
+    <dt>Attempts</dt><dd>{{ job.attempts }}</dd>
+    <dt>Transcript Drive id</dt><dd class="mono">{{ job.transcript_drive_file_id or '—' }}</dd>
+    <dt>Error</dt><dd>{{ job.error_message or '—' }}</dd>
+    <dt>Created</dt><dd class="mono">{{ job.created_at | dt }}</dd>
+    <dt>Updated</dt><dd class="mono">{{ job.updated_at | dt }}</dd>
+    <dt>Processed</dt><dd class="mono">{{ job.processed_at | dt }}</dd>
+  </dl>
+
+  <p class="cta-row"><a class="button button-ghost" href="/jobs">← Back to jobs</a></p>
+</section>
+{% endblock %}

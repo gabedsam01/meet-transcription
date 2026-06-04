@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card">
-  <h1>Drive Settings</h1>
-  <p class="hint">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive.</p>
+  <h1>Drive folders</h1>
+  <p class="hint">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive, por exemplo
+    <span class="mono">https://drive.google.com/drive/folders/1zv32Q...tBD5</span>.</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
   <form method="post" action="/settings/drive" class="form-stack">
@@ -17,7 +18,8 @@
     <button type="submit">Save Drive settings</button>
   </form>
   {% if settings %}
-  <p class="hint">Source folder ID: {{ settings.source_drive_folder_id }}{% if settings.destination_drive_folder_id %} · Destination folder ID: {{ settings.destination_drive_folder_id }}{% endif %}</p>
+  <p class="hint">Source folder ID: <span class="mono">{{ settings.source_drive_folder_id }}</span>{% if settings.destination_drive_folder_id %} · Destination folder ID: <span class="mono">{{ settings.destination_drive_folder_id }}</span>{% endif %}</p>
   {% endif %}
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Back to settings</a></p>
 </section>
 {% endblock %}

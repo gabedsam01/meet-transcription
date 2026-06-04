@@ -22,6 +22,7 @@ from app.repositories import RepositoryBackendError
 from app.repositories import build_repositories as build_worker_repositories
 from app.services.download_service import DownloadError, get_downloadable_transcript
 from app.services.job_service import create_next_pending_job
+from app.web import helpers
 from app.web.config import WebSettings
 from app.web.deepgram_key import DeepgramKeyStore, verify_deepgram_key
 from app.web.drive_links import extract_google_drive_folder_id
@@ -33,6 +34,10 @@ from app.web.token_store import TokenStore
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+# Template filters keep long Drive ids and ISO timestamps from breaking layout.
+templates.env.filters["mid"] = helpers.middle_truncate
+templates.env.filters["dt"] = helpers.short_datetime
+templates.env.filters["drive_dl"] = helpers.drive_download_url
 
 # Run-once only creates a pending job; the worker does the processing. Keys match
 # JobCreationResult.status from app.services.job_service.create_next_pending_job.
@@ -137,18 +142,21 @@ def create_app(settings: WebSettings | None = None,
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, user=Depends(require_user)):
         worker_repos, _ = _resolve_worker_repositories()
-        jobs = worker_repos.jobs.list_jobs_for_user(user.id)[:5] if worker_repos else []
+        jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
         return templates.TemplateResponse(request, "dashboard.html", {
             "user": user,
             "settings": repos.drive_settings.get_for_user(user.id),
             "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
             "deepgram_configured": deepgram_store.has_key(user.id),
-            "jobs": jobs,
+            "total_jobs": len(jobs),
+            "last_job": jobs[0] if jobs else None,
+            "jobs": jobs[:5],
         })
 
-    @app.get("/settings")
-    def settings_redirect():
-        return RedirectResponse("/settings/drive", status_code=303)
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request, user=Depends(require_user)):
+        # Landing page that links out to the focused settings sections.
+        return templates.TemplateResponse(request, "settings.html", {"user": user})
 
     @app.get("/settings/drive", response_class=HTMLResponse)
     def drive_settings_page(request: Request, user=Depends(require_user)):
@@ -266,6 +274,19 @@ def create_app(settings: WebSettings | None = None,
                 "Content-Disposition": f'attachment; filename="{result.filename}"'
             },
         )
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    def job_detail_page(request: Request, job_id: int, user=Depends(require_user)):
+        worker_repos, _ = _resolve_worker_repositories()
+        job = worker_repos.jobs.get_job(job_id) if worker_repos else None
+        # Owner-scoped: unknown ids and other users' jobs both render a 404,
+        # so the existence of another user's job never leaks.
+        if job is None or job.user_id != user.id:
+            return templates.TemplateResponse(
+                request, "error.html", {"user": user, "message": "Job not found."},
+                status_code=404,
+            )
+        return templates.TemplateResponse(request, "job_detail.html", {"user": user, "job": job})
 
     @app.get("/admin/users", response_class=HTMLResponse)
     def admin_users(request: Request, admin=Depends(require_admin)):
