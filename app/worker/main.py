@@ -6,8 +6,10 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 from app.logger import setup_logging
+from app.queue import requeue_pending_jobs
 from app.worker.container import WorkerContainer, build_container
 from app.worker.loop import run_worker_loop
+from app.worker.queue_loop import run_queue_loop
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,11 +24,20 @@ def recover_stale_jobs(container: WorkerContainer, now: datetime) -> int:
 
 def run(container: WorkerContainer, stop_event: threading.Event) -> None:
     recover_stale_jobs(container, datetime.now(timezone.utc))
+    # Queue mode (QUEUE_BACKEND=redis|memory): re-enqueue any pending Postgres jobs
+    # the queue may have lost, then consume the queue. Otherwise keep the legacy
+    # poll loop that claims the next pending job directly from Postgres.
+    if container.queue is not None:
+        enqueued = requeue_pending_jobs(container.repositories, container.queue)
+        LOGGER.info("Queue mode: reconciled %s pending job(s) at startup", enqueued)
+        loop = run_queue_loop
+    else:
+        loop = run_worker_loop
     threads: list[threading.Thread] = []
     for i in range(container.settings.concurrency):
         worker_id = f"worker-{i + 1}"
         thread = threading.Thread(
-            target=run_worker_loop,
+            target=loop,
             args=(container, stop_event, worker_id),
             name=worker_id,
             daemon=True,
