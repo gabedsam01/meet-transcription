@@ -108,6 +108,47 @@ def test_reset_stale_processing_jobs():
     assert repos.jobs.get_job(pending.id).status == JobStatus.PENDING.value
 
 
+def test_claim_job_claims_a_specific_pending_job():
+    repos = build_memory_repositories()
+    first = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    second = repos.jobs.create_job(7, "src-2", "b.mp4", _now())
+
+    claimed = repos.jobs.claim_job(second.id, "w1", _now())
+
+    assert claimed.id == second.id
+    assert claimed.status == JobStatus.PROCESSING.value
+    assert claimed.attempts == 1
+    assert claimed.started_at is not None
+    # The other pending job is untouched (we claimed a specific id, not FIFO).
+    assert repos.jobs.get_job(first.id).status == JobStatus.PENDING.value
+
+
+def test_claim_job_is_one_shot_returns_none_when_not_pending():
+    repos = build_memory_repositories()
+    job = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    assert repos.jobs.claim_job(job.id, "w1", _now()) is not None
+    # Second claim of the same (now processing) job is refused: dedupe defense.
+    assert repos.jobs.claim_job(job.id, "w2", _now()) is None
+
+
+def test_claim_job_returns_none_for_unknown_job():
+    repos = build_memory_repositories()
+    assert repos.jobs.claim_job(999, "w1", _now()) is None
+
+
+def test_list_pending_jobs_is_fifo_and_only_pending():
+    repos = build_memory_repositories()
+    a = repos.jobs.create_job(7, "src-a", "a.mp4", _now())
+    b = repos.jobs.create_job(8, "src-b", "b.mp4", _now())
+    repos.jobs.create_job(9, "src-c", "c.mp4", _now())
+    repos.jobs.claim_job(a.id, "w", _now())  # a -> processing, drops out of pending
+
+    pending = repos.jobs.list_pending_jobs()
+
+    assert [j.id for j in pending] == [b.id, b.id + 1]
+    assert all(j.status == JobStatus.PENDING.value for j in pending)
+
+
 def test_transcript_create_and_get_by_job():
     repos = build_memory_repositories()
     repos.transcripts.create(5, 7, "hello", {"k": "v"}, "drive-1", _now())

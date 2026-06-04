@@ -20,12 +20,31 @@ class JobRepository(Protocol):
         transcription happen OUTSIDE this transaction.
         """
 
+    def claim_job(self, job_id: int, worker_id: str, now: datetime) -> Job | None:
+        """Atomically claim a *specific* pending job by id (Redis-queue path).
+
+        Contract (PostgreSQL adapter): inside a single transaction,
+            SELECT ... WHERE id=:id AND status='pending'
+            FOR UPDATE SKIP LOCKED;
+        then mark it 'processing', attempts = attempts + 1, set started_at/updated_at,
+        COMMIT, and return it. Return None when the job is missing or no longer
+        pending — that None is the dedupe defense when the queue double-delivers an
+        id. Download/transcription happen OUTSIDE this transaction.
+        """
+
     def create_job(
         self, user_id: int, source_file_id: str | None,
         source_file_name: str | None, now: datetime,
     ) -> Job: ...
 
     def get_job(self, job_id: int) -> Job | None: ...
+
+    def list_pending_jobs(self) -> list[Job]:
+        """Return every 'pending' job, oldest first (created_at, id).
+
+        Used by the Redis-queue reconciler to re-enqueue jobs that Postgres knows
+        are pending but the queue may have lost. Postgres stays the source of truth.
+        """
 
     def mark_completed(
         self, job_id: int, now: datetime, transcript_drive_file_id: str | None = None,

@@ -42,6 +42,31 @@ class InMemoryJobRepository:
             job.updated_at = now
             return _copy(job)
 
+    def claim_job(self, job_id, worker_id, now) -> Job | None:
+        """Atomically claim a *specific* pending job by id (Redis-queue path).
+
+        Returns the now-processing job, or None when it is missing or no longer
+        pending. The None case is the dedupe defense: even if the queue hands the
+        same id to two workers, only the first claim transitions it.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != JobStatus.PENDING.value:
+                return None
+            job.status = JobStatus.PROCESSING.value
+            job.attempts += 1
+            job.started_at = now
+            job.updated_at = now
+            return _copy(job)
+
+    def list_pending_jobs(self) -> list[Job]:
+        with self._lock:
+            pending = sorted(
+                (j for j in self._jobs.values() if j.status == JobStatus.PENDING.value),
+                key=lambda j: j.id,
+            )
+            return [_copy(j) for j in pending]
+
     def get_job(self, job_id) -> Job | None:
         with self._lock:
             return _copy(self._jobs.get(job_id))
