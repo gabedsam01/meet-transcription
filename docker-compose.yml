@@ -39,12 +39,31 @@ services:
       retries: 10
       start_period: 10s
 
+  # One-shot schema migration. Runs `alembic upgrade head` against PostgreSQL and
+  # exits; web and worker wait for it to finish successfully before starting, so
+  # the schema is always current before any request is served or job is claimed.
+  # Reuses the application image (alembic + alembic.ini are baked into it) and the
+  # same DATABASE_URL. Inherits `depends_on: postgres healthy` from the *app anchor.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"   # one-shot job: must NOT be restarted after it exits 0.
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
+
   # Serves the UI and OAuth flow. Creates pending jobs only — it never downloads,
   # transcribes, or uploads. The Web UI uses per-user encrypted Deepgram keys, so
   # it needs no global DEEPGRAM_API_KEY.
   web:
     <<: *app
     command: ["uvicorn", "app.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # Override the anchor's depends_on: wait for the schema to be migrated, not
+    # just for Postgres to be reachable.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
@@ -68,6 +87,13 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker.main"]
+    # Override the anchor's depends_on: wait for the schema to be migrated before
+    # claiming any job.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me-in-production}
