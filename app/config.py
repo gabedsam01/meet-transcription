@@ -60,7 +60,7 @@ class Settings:
             destination_drive_folder_id=_required(
                 values, "DESTINATION_DRIVE_FOLDER_ID"
             ),
-            poll_interval_seconds=_positive_int(values, "POLL_INTERVAL_SECONDS"),
+            poll_interval_seconds=_positive_int(values, "WORKER_POLL_INTERVAL_SECONDS"),
             tmp_dir=Path(_required(values, "TMP_DIR")),
             state_file=Path(_required(values, "STATE_FILE")),
             max_processing_attempts=_positive_int(

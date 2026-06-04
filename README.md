@@ -1,215 +1,217 @@
 # Meet Transcription
 
-Python Docker worker and optional Web UI that watch a Google Drive folder for Google Meet recordings, send MP4 files to Deepgram, and upload plain text transcripts back to Google Drive.
+Meet Transcription watches a Google Drive folder for Google Meet recordings,
+sends each MP4 to [Deepgram](https://deepgram.com/), and makes a readable
+plain-text transcript available for download. It has a server-rendered web UI for
+signing in, connecting Google, configuring folders, and triggering/inspecting
+jobs, plus a worker that does the transcription work out of band. No FFmpeg
+required.
 
-## Features
+## Architecture
 
-- Google Drive polling worker
-- OAuth authentication for personal Google accounts
-- Service Account authentication for compatible Google Workspace setups
-- MP4 download from Drive
-- Direct MP4 transcription with Deepgram
-- TXT transcript generation
-- Upload transcript to Google Drive
-- Persistent processed-file state
-- Docker Compose support
-- Worker mode does not require a database or Web UI
-- Web UI mode uses SQLite for users, settings, jobs, and encrypted Google tokens
-- No FFmpeg required
+The deployment is three containers, with **PostgreSQL as the single source of
+truth** — there is no SQLite mode:
 
-## How It Works
+```
+            ┌──────────┐        ┌──────────┐
+  browser → │   web    │        │  worker  │ → Google Drive + Deepgram
+            │ (FastAPI)│        │ (jobs)   │
+            └────┬─────┘        └────┬─────┘
+                 │                   │
+                 └─────► postgres ◄──┘
+```
 
-1. Record a Google Meet meeting.
-2. Wait for Google to process the MP4.
-3. Move or copy the MP4 to a shared Google Drive input folder.
-4. The worker detects the video.
-5. The worker downloads the MP4 temporarily.
-6. The worker sends it to Deepgram.
-7. A readable TXT transcript is generated.
-8. The TXT is uploaded to a Google Drive output folder.
-9. Temporary local files are removed.
-10. The file is marked as processed.
+- **web** and **worker** run from the **same image** with different commands.
+- **postgres** holds users, settings, jobs, transcripts, and encrypted Google
+  tokens / per-user Deepgram keys. It stays internal.
 
-## Requirements
+### The flow
 
-- Docker and Docker Compose
-- Deepgram API key
-- Google Cloud project
-- Google Drive API enabled
-- Google OAuth Client ID for personal Gmail/Google One accounts
-- Google Service Account JSON key for compatible Workspace setups
-- Two Google Drive folders accessible by the chosen Google identity
+1. In the web UI a user connects Google, sets their **source** Drive folder
+   (and optionally a **destination** folder), and saves their **own** Deepgram
+   API key.
+2. **Run once** validates those preconditions and creates a single `pending`
+   job in PostgreSQL for the next unprocessed recording. The web request never
+   downloads, transcribes, or uploads — there are no in-process background tasks.
+3. The **worker** claims the job (`FOR UPDATE SKIP LOCKED`), downloads the MP4,
+   transcribes it with that user's encrypted Deepgram key, and **saves the
+   transcript in PostgreSQL**.
+4. The UI offers a **Download TXT** link for each completed job (served from
+   PostgreSQL). Google Drive is the **input** (the source folder the worker
+   reads) and an **optional backup** (when `save_copy_to_drive` is on and a
+   destination folder is set, the worker uploads a TXT copy and the UI links to
+   it).
 
-## Simple Worker Mode
+## Services
 
-Simple Worker Mode is the existing CLI-compatible deployment. It uses the mounted `token.json` OAuth token or Service Account JSON exactly as before, reads worker settings from `.env`, stores processing state in `/app/data/processed_files.json`, and does not require the Web UI database variables.
+### web
 
-Use this mode when one Google identity and one pair of Drive folders is enough.
+`uvicorn app.web.main:app --host 0.0.0.0 --port 8000`
 
-### Quick Start
+Serves the UI and OAuth flow on port **8000**. It validates input and
+**enqueues** jobs; it never transcribes inside the HTTP request.
+
+### worker
+
+`python -m app.worker.main`
+
+Polls PostgreSQL for pending jobs and runs download → Deepgram → save (→ optional
+Drive upload), always leaving each job in a terminal state. Configured by
+`WORKER_POLL_INTERVAL_SECONDS`, `WORKER_CONCURRENCY`, and
+`STALE_JOB_TIMEOUT_MINUTES`.
+
+### postgres
+
+`postgres:16` with a healthcheck and the `postgres_data` volume. The other
+services wait for it to become healthy before starting.
+
+## Environment Variables
+
+| Variable | Service | Notes |
+|---|---|---|
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | web | Bootstrap admin login. |
+| `APP_SECRET_KEY` | web, worker | Session signing **and** the encryption key for stored Google tokens / Deepgram keys. Use a long random value. |
+| `SESSION_COOKIE_SECURE` | web | `true` behind HTTPS. |
+| `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_WEB_CLIENT_SECRET` | web | OAuth **Web application** credentials. |
+| `GOOGLE_REDIRECT_URI` | web | Must equal `https://YOUR_DOMAIN/oauth/google/callback`. |
+| `DATABASE_URL` | web, worker | PostgreSQL DSN, e.g. `postgresql+psycopg://meet_user:...@postgres:5432/meet_transcription`. Never a SQLite path. |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | postgres | Database credentials; must match `DATABASE_URL`. |
+| `WORKER_REPOSITORY_BACKEND` | web, worker | `postgres` (production) or `memory` (dev/tests only). |
+| `WORKER_POLL_INTERVAL_SECONDS` | worker | How often the worker polls for jobs. |
+| `WORKER_CONCURRENCY` | worker | Parallel job workers (safe via `SKIP LOCKED`). |
+| `STALE_JOB_TIMEOUT_MINUTES` | worker | When to fail a stuck `processing` job at startup. |
+| `TMP_DIR` | web, worker | Scratch dir for downloads. |
+
+The Web UI uses **per-user, encrypted** Deepgram keys — it needs **no global
+`DEEPGRAM_API_KEY`**. That env var is consumed only by the legacy CLI worker (see
+[Legacy Simple Worker Mode](#legacy-simple-worker-mode)). See `.env.example` for
+the full list.
+
+## PostgreSQL Setup
+
+PostgreSQL is the single source of truth — **there is no SQLite mode**. The
+`postgres` service in `docker-compose.yml` provisions PostgreSQL 16 with a named
+volume and healthcheck. Set `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD` in `.env`, and point the app at the internal service:
+
+```env
+DATABASE_URL=postgresql+psycopg://meet_user:your-db-password@postgres:5432/meet_transcription
+```
+
+The hostname is `postgres` (the Compose service name) on the internal network,
+and the URL uses the psycopg 3 driver. Apply the schema before first use:
+
+```bash
+docker compose run --rm web alembic upgrade head
+```
+
+## Deepgram Key per User
+
+Each user supplies their **own** Deepgram API key in **Settings → Deepgram**. It
+is stored **encrypted** at rest (Fernet, with a key derived from
+`APP_SECRET_KEY`, like Google tokens), is **required** before a job can run, and
+there is **no global fallback**. The key is never shown again after saving and is
+used only by the worker when processing that user's jobs.
+
+## Drive Folder URL Setup
+
+In **Settings → Drive folders**, paste a Google Drive **folder link** (or a bare
+**folder id**) for the source and, optionally, the destination folder. A link
+looks like:
+
+```
+https://drive.google.com/drive/folders/1zv32Q...tBD5?usp=sharing
+```
+
+The app extracts the id automatically. The source folder is required; the
+destination is optional and only used when you enable “save a copy to Drive”.
+
+## Running locally
 
 ```bash
 git clone https://github.com/gabedsam01/meet-transcription.git
 cd meet-transcription
 
-cp .env.example .env
-mkdir -p secrets data tmp
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env        # fill in secrets
+
+# Tests
+.venv/bin/python -m pytest -v
+
+# Run the web app against a local PostgreSQL (set DATABASE_URL accordingly)
+.venv/bin/uvicorn app.web.main:app --reload --port 8000
 ```
 
-For personal Gmail or Google One accounts, OAuth is recommended. Place your OAuth client JSON file at:
+Open `http://localhost:8000` and sign in with `ADMIN_USERNAME` /
+`ADMIN_PASSWORD`.
+
+## Running with Docker Compose
 
 ```bash
-secrets/oauth-client.json
-```
-
-Generate `token.json` locally:
-
-```bash
-python -m pip install -r requirements.txt
-python scripts/generate_google_oauth_token.py \
-  --client-secrets secrets/oauth-client.json \
-  --token-file secrets/token.json
-```
-
-Edit `.env`:
-
-```env
-DEEPGRAM_API_KEY=your_deepgram_api_key
-GOOGLE_AUTH_MODE=oauth
-GOOGLE_OAUTH_CLIENT_SECRETS_FILE=/app/secrets/oauth-client.json
-GOOGLE_OAUTH_TOKEN_FILE=/app/secrets/token.json
-GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
-SOURCE_DRIVE_FOLDER_ID=your_source_drive_folder_id
-DESTINATION_DRIVE_FOLDER_ID=your_destination_drive_folder_id
-POLL_INTERVAL_SECONDS=300
-TMP_DIR=/app/tmp
-STATE_FILE=/app/data/processed_files.json
-MAX_PROCESSING_ATTEMPTS=2
-FAILED_RETRY_AFTER_SECONDS=86400
-DEEPGRAM_MODEL=nova-3
-DEEPGRAM_LANGUAGE=pt-BR
-DEEPGRAM_SMART_FORMAT=true
-DEEPGRAM_PUNCTUATE=true
-DEEPGRAM_DIARIZE=true
-DEEPGRAM_UTTERANCES=true
-```
-
-### Run Once
-
-```bash
+cp .env.example .env        # fill in secrets
 docker compose build
-docker compose run --rm worker python -m app.main --once
+docker compose run --rm web alembic upgrade head   # one-time schema setup
+docker compose up -d        # starts postgres, web, worker
+docker compose logs -f web
 ```
 
-### Run Continuously
+- Web UI: `http://localhost:8000`
+- Postgres: internal only (not published)
+
+## GHCR Image
+
+On every push to `main`, GitHub Actions
+(`.github/workflows/docker-publish.yml`) runs the tests, builds the image, and
+publishes it to the GitHub Container Registry:
+
+```
+ghcr.io/gabedsam01/meet-transcription:latest
+ghcr.io/gabedsam01/meet-transcription:<short-sha>
+```
+
+Use it in production by pulling instead of building — the image is already set in
+the `x-app` anchor of `docker-compose.yml`:
 
 ```bash
-docker compose up -d worker
-docker compose logs -f worker
+docker compose pull
+docker compose up -d
 ```
 
-### Reprocess A File
+The image's default command is the web server; the worker overrides it with
+`python -m app.worker.main`.
 
-```bash
-docker compose run --rm worker python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
-```
+## Deploying on Dokploy
 
-The same CLI commands still work outside Docker:
-
-```bash
-python -m app.main --once
-python -m app.main --watch
-python -m app.main --once --reprocess GOOGLE_DRIVE_FILE_ID
-```
-
-## Web UI Mode
-
-Web UI Mode runs FastAPI with Uvicorn and stores per-user settings, jobs, and Google OAuth tokens in SQLite at `DATABASE_URL`. Google tokens are encrypted before storage with a key derived from `APP_SECRET_KEY`.
-
-Start the Web UI service:
-
-```bash
-docker compose up -d web
-```
-
-Open `http://localhost:8000`, sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`, connect Google, and configure the Drive folders in the UI.
-
-The `worker` service is still the legacy env-driven worker. It does not read Web UI SQLite settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
-
-### Run Once And Background Processing
-
-The Web UI **Run once** button does not block the HTTP request. When you click it:
-
-1. The request validates your settings and Google connection, creates a `pending` job, and returns to `/jobs` immediately (well under a second).
-2. The transcription itself — download, Deepgram, and upload — runs in a local **FastAPI background task** inside the same web container.
-3. Refresh `/jobs` to follow the job through `pending` → `processing` → `completed`/`failed`.
-
-Each Run once transcribes the next recording found in the source folder as a single background job. If a job is already `pending` or `processing` for your user, a second Run once is rejected with "There is already a job running." This is what avoids the Cloudflare `524` timeout that happened when the request processed the whole transcription synchronously.
-
-This background task is local to one container and is intentionally simple for the MVP. It does not survive a process restart and does not scale across multiple web replicas. For production with many users, evolve it into a dedicated worker or queue (for example the legacy CLI worker, or a real job queue) instead of in-process background tasks.
-
-### Required Web Env Vars
-
-```env
-ADMIN_USERNAME=
-ADMIN_PASSWORD=
-APP_SECRET_KEY=
-SESSION_COOKIE_SECURE=false
-GOOGLE_WEB_CLIENT_ID=
-GOOGLE_WEB_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=http://localhost:8000/oauth/google/callback
-DATABASE_URL=/app/data/app.db
-```
-
-`DATABASE_URL` is a SQLite file path for this app, not a SQLAlchemy URL or Postgres connection string.
-
-`DEEPGRAM_API_KEY` remains global and is used by both worker and Web UI-triggered transcription flows.
-
-### Single User
-
-The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `ADMIN_PASSWORD` gate access, and the connected Google account is stored for that admin user in SQLite.
-
-### Multi User Roadmap
-
-Multi-user support is planned but not complete. Future work should add user provisioning, per-user authorization boundaries, background job isolation, and operational controls before exposing this to multiple independent users.
+See **[docs/deploy/dokploy.md](docs/deploy/dokploy.md)**. In short: deploy the
+Compose project, attach your domain to the **web** service only on port **8000**,
+keep Postgres internal, set the environment variables, and set the Google
+redirect URI to `https://YOUR_DOMAIN/oauth/google/callback`.
 
 ## Google OAuth Setup
 
-Simple Worker Mode can use the existing Desktop OAuth flow with mounted `secrets/oauth-client.json` and `secrets/token.json`, or a Service Account for compatible Workspace setups.
+The web app needs OAuth **Web application** credentials (not Desktop):
 
-Web UI Mode requires Google OAuth **Web Application** credentials, not Desktop credentials. In Google Cloud:
+1. Create/open a Google Cloud project and **enable the Google Drive API**.
+2. `APIs & Services` → `Credentials` → create an **OAuth client ID** of type
+   **Web application**.
+3. Add an authorized redirect URI that exactly matches `GOOGLE_REDIRECT_URI`,
+   e.g. `https://YOUR_DOMAIN/oauth/google/callback` (or
+   `http://localhost:8000/oauth/google/callback` for local dev).
+4. Put the client id/secret in `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_WEB_CLIENT_SECRET`.
 
-1. Create or open a Google Cloud project.
-2. Enable Google Drive API.
-3. Go to `APIs & Services` > `Credentials`.
-4. Create an OAuth client ID with application type `Web application`.
-5. Add an authorized redirect URI that exactly matches `GOOGLE_REDIRECT_URI`, for example `https://seu-dominio.com/oauth/google/callback`.
-6. Put the generated client ID and secret in `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`.
+The current scope requests full Drive access (`.../auth/drive`); the narrower
+`drive.file` scope is a future consideration.
 
-The current scope requests full Drive access with `https://www.googleapis.com/auth/drive`. The narrower `drive.file` scope should be evaluated later; it is outside the current scope.
+## Legacy Simple Worker Mode
 
-## Google Drive Authentication For Worker Mode
+The original env-driven CLI worker (`python -m app.main`) still works and is kept
+for **compatibility only** — it is **not** the Compose `worker` service. It uses
+a mounted OAuth `token.json` (or a Service Account), reads settings from `.env`,
+stores state in `data/processed_files.json`, and needs **no database or web UI**.
+It reads the global `DEEPGRAM_API_KEY`.
 
-### Recommended: OAuth For Personal Google Accounts
-
-Use OAuth when the destination folder is in a personal Google Drive account. Service Accounts can read folders shared with them, but uploads to a personal `My Drive` can fail with:
-
-```txt
-Service Accounts do not have storage quota. Service accounts can't own files.
-```
-
-OAuth uploads the transcript as the human Google user and uses that user's Drive quota.
-
-### Create OAuth Credentials
-
-1. Create or open a Google Cloud project.
-2. Enable Google Drive API.
-3. Go to `APIs & Services` > `Credentials`.
-4. Click `Create Credentials` > `OAuth client ID`.
-5. Choose `Desktop app`.
-6. Download the JSON file.
-7. Save it locally as `secrets/oauth-client.json`.
-8. Generate the token:
+Generate an OAuth token locally:
 
 ```bash
 python scripts/generate_google_oauth_token.py \
@@ -217,116 +219,50 @@ python scripts/generate_google_oauth_token.py \
   --token-file secrets/token.json
 ```
 
-The script opens a local browser, asks for Google consent, and writes `secrets/token.json`.
-
-### Optional: Service Account
-
-Service Account mode can still work for Google Workspace setups, especially with Shared Drives or folders where the Service Account is allowed to create files without personal Drive ownership problems.
-
-Use:
-
-```env
-GOOGLE_AUTH_MODE=service_account
-GOOGLE_SERVICE_ACCOUNT_FILE=/app/secrets/service-account.json
-```
-
-Then:
-
-1. Create a Google Cloud project.
-2. Enable Google Drive API.
-3. Create a Service Account.
-4. Create and download a JSON key.
-5. Save it as `secrets/service-account.json`.
-6. Share your input and output Drive folders with the Service Account email.
-
-## Dokploy Deployment
-
-### Worker Deployment
-
-For OAuth deployments, create two file mounts:
-
-```txt
-/app/secrets/oauth-client.json
-/app/secrets/token.json
-```
-
-Use these environment variables:
-
-```env
-GOOGLE_AUTH_MODE=oauth
-GOOGLE_OAUTH_CLIENT_SECRETS_FILE=/app/secrets/oauth-client.json
-GOOGLE_OAUTH_TOKEN_FILE=/app/secrets/token.json
-```
-
-Keep the container volume mount for `/app/data` persistent so `processed_files.json` preserves successful processing and failure-attempt state. The worker OAuth token file should be writable by the container so refreshed Google tokens can be persisted.
-
-### Web UI Deployment
-
-Use the same Docker image and run the Web UI command:
+Run it:
 
 ```bash
-uvicorn app.web.main:app --host 0.0.0.0 --port 8000
+docker compose run --rm worker python -m app.main --once     # process once
+docker compose run --rm worker python -m app.main --watch    # poll continuously
+docker compose run --rm worker python -m app.main --once --reprocess DRIVE_FILE_ID
 ```
 
-Publish port `8000`, keep `/app/data` and `/app/tmp` persistent/shared with the worker, and mount `./secrets:/app/secrets:ro` if the worker also needs local Google credential files.
-
-Dokploy Web UI deployments need these environment variables:
-
-```env
-GOOGLE_WEB_CLIENT_ID=
-GOOGLE_WEB_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=https://seu-dominio.com/oauth/google/callback
-ADMIN_USERNAME=
-ADMIN_PASSWORD=
-APP_SECRET_KEY=
-SESSION_COOKIE_SECURE=true
-DATABASE_URL=/app/data/app.db
-DEEPGRAM_API_KEY=
-```
-
-The Google Cloud authorized redirect URI must exactly match `GOOGLE_REDIRECT_URI`.
-`DATABASE_URL` must be a SQLite file path such as `/app/data/app.db`.
+For personal Google accounts, OAuth is recommended over a Service Account
+(Service Accounts have no Drive storage quota and cannot own files in a personal
+`My Drive`).
 
 ## Security
 
-Never commit:
-
-```txt
-.env
-service-account.json
-oauth-client.json
-token.json
-tmp/
-data/processed_files.json
-data/app.db
-```
-
-The app does not make Drive files public. It downloads files through the Google Drive API and sends the MP4 binary directly to Deepgram.
-
-## Privacy Notice
-
-Make sure all meeting participants know that the meeting is being recorded and transcribed. You are responsible for complying with privacy laws and internal policies.
+- **Never commit secrets.** `.env`, `secrets/*.json`, `token.json`, and
+  `data/processed_files.json` are git-ignored and must stay that way.
+- Google tokens and per-user Deepgram keys are **encrypted at rest** with Fernet,
+  using a key derived from `APP_SECRET_KEY`.
+- Use `SESSION_COOKIE_SECURE=true` behind HTTPS.
+- The app does not make Drive files public; it downloads via the Drive API and
+  sends the MP4 directly to Deepgram.
+- **Privacy:** make sure all meeting participants know recordings are being
+  transcribed; you are responsible for complying with applicable laws.
 
 ## Development
 
 ```bash
-python -m pip install -r requirements.txt
 python -m pytest -v
-python -m compileall app
-docker compose config
+python -m compileall app scripts
+docker compose config        # needs a local .env (cp .env.example .env)
+docker compose build
 ```
 
-`docker compose config` requires a local `.env` file. Create it first with `cp .env.example .env`.
+Database tests run against a real PostgreSQL instance. Point `TEST_DATABASE_URL`
+at a disposable database (for example a `postgres:16` container); when it is
+unset or unreachable those tests are skipped rather than run against SQLite.
 
 ## Roadmap
 
-- Google Docs output
-- AI summary generation
-- Meeting minutes
-- Email delivery
-- Webhook mode
-- Queue support
-- Multi-user dashboard
+- **Local transcription** with faster-whisper as an alternative engine — see
+  [docs/architecture/local-transcription.md](docs/architecture/local-transcription.md)
+- **Object storage** for recordings/transcripts instead of Drive-only
+- **Summaries** / meeting minutes generation
+- Google Docs output, multi-user dashboard
 
 ## License
 

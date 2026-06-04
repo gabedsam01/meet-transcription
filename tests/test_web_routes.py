@@ -2,277 +2,199 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from app import db
+from app.core.models import GoogleToken as WorkerGoogleToken, Settings as WorkerSettings
+from app.repositories.memory import build_memory_repositories
 from app.web.config import WebSettings
 from app.web.main import create_app
-from app.web.security import fernet_from_secret
-from app.web.token_store import TokenStore
-
-
-def test_health_returns_ok(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        response = client.get("/health")
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
-
-
-def test_create_app_initializes_database_on_startup(tmp_path):
-    settings = _settings(tmp_path)
-
-    app = create_app(settings)
-
-    assert not settings.database_path.exists()
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-    assert settings.database_path.exists()
-
-
-def test_protected_dashboard_redirects_to_login(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        response = client.get("/", follow_redirects=False)
-
-        assert response.status_code in {302, 303, 307}
-        assert response.headers["location"].startswith("/login")
-
-
-def test_login_sets_http_only_session_cookie(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        response = client.post(
-            "/login",
-            data={"username": "admin", "password": "secret"},
-            follow_redirects=False,
-        )
-
-        assert response.status_code in {302, 303}
-        assert response.headers["location"] == "/"
-        assert "httponly" in response.headers["set-cookie"].lower()
-
-
-def test_authenticated_settings_and_jobs_render(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        _login(client)
-
-        assert client.get("/settings").status_code == 200
-        assert client.get("/jobs").status_code == 200
-
-
-def test_connect_google_redirects_and_stores_state(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        _login(client)
-
-        response = client.get("/connect-google", follow_redirects=False)
-
-        assert response.status_code in {302, 303, 307}
-        assert "accounts.google.com" in response.headers["location"]
-        assert "state=" in response.headers["location"]
-
-
-def test_oauth_callback_accepts_state_saved_by_connect_google(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    exchanged_codes = []
-
-    def fake_exchange_google_code(web_settings, code):
-        exchanged_codes.append((web_settings, code))
-        return {
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "client_id": web_settings.google_web_client_id,
-            "client_secret": web_settings.google_web_client_secret,
-            "scopes": "https://www.googleapis.com/auth/drive",
-            "expiry": "2026-06-03T00:00:00+00:00",
-        }
-
-    monkeypatch.setattr("app.web.main.exchange_google_code", fake_exchange_google_code)
-    with TestClient(create_app(settings)) as client:
-        _login(client)
-        connect_response = client.get("/connect-google", follow_redirects=False)
-        state = parse_qs(urlparse(connect_response.headers["location"]).query)["state"][0]
-
-        callback_response = client.get(
-            f"/oauth/google/callback?code=abc&state={state}",
-            follow_redirects=False,
-        )
-
-        assert callback_response.status_code in {302, 303}
-        assert callback_response.headers["location"] == "/"
-        assert exchanged_codes == [(settings, "abc")]
-
-
-def test_oauth_callback_rejects_mismatched_state(tmp_path):
-    with TestClient(create_app(_settings(tmp_path))) as client:
-        _login(client)
-        client.get("/connect-google", follow_redirects=False)
-
-        response = client.get("/oauth/google/callback?code=abc&state=wrong")
-
-        assert response.status_code == 400
-
-
-def test_run_once_responds_fast_with_pending_job_and_background_task(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    user = _seed_admin_with_settings_and_token(settings)
-    scheduled = []
-    monkeypatch.setattr(
-        "app.web.services.run_user_job_background",
-        lambda s, job_id, user_id: scheduled.append((job_id, user_id)),
-    )
-
-    with TestClient(create_app(settings)) as client:
-        _login(client)
-
-        response = client.post("/jobs/run-once", follow_redirects=False)
-
-        assert response.status_code == 303
-        assert response.headers["location"] == "/jobs"
-
-        jobs = db.list_jobs(settings.database_path, user["id"])
-        assert len(jobs) == 1
-        # Request path must NOT process synchronously: the stubbed background
-        # task never ran the work, so the job is still pending.
-        assert jobs[0]["status"] == "pending"
-        assert scheduled == [(jobs[0]["id"], user["id"])]
-
-        page = client.get("/jobs")
-        assert "Job started" in page.text
-
-
-def test_run_once_blocks_when_a_job_is_already_running(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    user = _seed_admin_with_settings_and_token(settings)
-    db.create_job(settings.database_path, user["id"], status="processing")
-    scheduled = []
-    monkeypatch.setattr(
-        "app.web.services.run_user_job_background",
-        lambda s, job_id, user_id: scheduled.append((job_id, user_id)),
-    )
-
-    with TestClient(create_app(settings)) as client:
-        _login(client)
-
-        response = client.post("/jobs/run-once", follow_redirects=False)
-
-        assert response.status_code == 303
-        assert response.headers["location"] == "/jobs"
-        assert scheduled == []
-        assert len(db.list_jobs(settings.database_path, user["id"])) == 1
-
-        page = client.get("/jobs")
-        assert "There is already a job running." in page.text
-
-
-def test_run_once_without_settings_redirects_with_message(tmp_path):
-    settings = _settings(tmp_path)
-
-    with TestClient(create_app(settings)) as client:
-        _login(client)  # admin user exists, but no settings or Google token
-
-        response = client.post("/jobs/run-once", follow_redirects=False)
-
-        assert response.status_code == 303
-        assert response.headers["location"] == "/jobs"
-
-        user = db.get_or_create_user(settings.database_path, "admin")
-        assert db.list_jobs(settings.database_path, user["id"]) == []
-
-        page = client.get("/jobs")
-        assert "Configure source and destination folders" in page.text
-
-
-def test_jobs_page_shows_all_job_fields_and_refresh_guidance(tmp_path):
-    settings = _settings(tmp_path)
-    user = _seed_admin_with_settings_and_token(settings)
-    job = db.create_job(
-        settings.database_path,
-        user["id"],
-        status="pending",
-        source_file_id="src-123",
-        source_file_name="meeting.mp4",
-    )
-    db.update_job(
-        settings.database_path,
-        job["id"],
-        status="completed",
-        transcript_drive_file_id="txt-456",
-        attempts=1,
-    )
-
-    with TestClient(create_app(settings)) as client:
-        _login(client)
-        page = client.get("/jobs")
-
-    text = page.text
-    assert "meeting.mp4" in text
-    assert "src-123" in text
-    assert "txt-456" in text
-    assert "completed" in text
-    assert "After starting a job, refresh this page to see updates." in text
-    for header in ["Source ID", "Transcript", "Attempts", "Created", "Updated", "Processed"]:
-        assert header in text
-
-
-def test_jobs_page_shows_error_message_for_failed_job(tmp_path):
-    settings = _settings(tmp_path)
-    user = _seed_admin_with_settings_and_token(settings)
-    job = db.create_job(settings.database_path, user["id"], status="pending")
-    db.update_job(
-        settings.database_path,
-        job["id"],
-        status="failed",
-        error_message="Deepgram exploded mid-transcription",
-    )
-
-    with TestClient(create_app(settings)) as client:
-        _login(client)
-        page = client.get("/jobs")
-
-    assert "failed" in page.text
-    assert "Deepgram exploded mid-transcription" in page.text
-
-
-def _seed_admin_with_settings_and_token(settings: WebSettings):
-    db.init_db(settings.database_path)
-    user = db.get_or_create_user(settings.database_path, "admin", "admin")
-    db.save_settings(settings.database_path, user["id"], "source", "dest", 60)
-    TokenStore(
-        settings.database_path, fernet_from_secret(settings.app_secret_key)
-    ).save_for_user(
-        user["id"],
-        {
-            "access_token": "access",
-            "refresh_token": "refresh",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "client_id": "client-id",
-            "client_secret": "client-secret",
-            "scopes": "https://www.googleapis.com/auth/drive",
-            "expiry": "2026-06-03T00:00:00+00:00",
-        },
-    )
-    return user
-
-
-def _login(client: TestClient) -> None:
-    response = client.post(
-        "/login",
-        data={"username": "admin", "password": "secret"},
-        follow_redirects=False,
-    )
-    assert response.status_code in {302, 303}
+from tests.fakes import build_fake_repositories
+from tests.support import FakeDriveClient, drive_file
 
 
 def _settings(tmp_path) -> WebSettings:
-    return WebSettings.from_env(
-        {
-            "ADMIN_USERNAME": "admin",
-            "ADMIN_PASSWORD": "secret",
-            "APP_SECRET_KEY": "a-long-secret-for-tests",
-            "SESSION_COOKIE_SECURE": "false",
-            "GOOGLE_WEB_CLIENT_ID": "client-id",
-            "GOOGLE_WEB_CLIENT_SECRET": "client-secret",
-            "GOOGLE_REDIRECT_URI": "http://localhost:8000/oauth/google/callback",
-            "DATABASE_URL": str(tmp_path / "app.db"),
-            "DEEPGRAM_API_KEY": "dg-key",
-            "TMP_DIR": str(tmp_path / "tmp"),
-        }
-    )
+    return WebSettings.from_env({
+        "ADMIN_USERNAME": "admin",
+        "ADMIN_PASSWORD": "secret",
+        "APP_SECRET_KEY": "a-long-secret-for-tests",
+        "SESSION_COOKIE_SECURE": "false",
+        "GOOGLE_WEB_CLIENT_ID": "client-id",
+        "GOOGLE_WEB_CLIENT_SECRET": "client-secret",
+        "GOOGLE_REDIRECT_URI": "http://localhost:8000/oauth/google/callback",
+        "DATABASE_URL": "postgresql://test",
+        "TMP_DIR": str(tmp_path / "tmp"),
+    })
+
+
+def _client(tmp_path, repos=None):
+    repos = repos or build_fake_repositories()
+    return TestClient(create_app(_settings(tmp_path), repositories=repos)), repos
+
+
+def _app_with_worker(tmp_path, *, deepgram_key="dg-key", files=None):
+    """Build the app wired to a worker (jobs) bundle and a fake Drive boundary.
+
+    Login bootstraps the admin as user id=1 in the auth bundle; the worker bundle
+    is seeded for that same id so run-once finds settings/token/Deepgram key.
+    """
+    auth = build_fake_repositories()
+    worker = build_memory_repositories()
+    worker.settings.set(WorkerSettings(1, "src-folder-id", "dst-folder-id", False, deepgram_key))
+    worker.google_tokens.set(1, WorkerGoogleToken(access_token="a", token_uri="u", client_id="c"))
+    app = create_app(_settings(tmp_path), repositories=auth, worker_repositories=worker)
+    drive = FakeDriveClient(files=list(files or []))
+    app.state.build_drive_client = lambda credentials, src, dst: drive
+    app.state.credentials_from_token = lambda token: object()
+    return app, worker
+
+
+def _login(client, username="admin", password="secret"):
+    response = client.post("/login", data={"username": username, "password": password},
+                           follow_redirects=False)
+    assert response.status_code in {302, 303}, response.text
+    return response
+
+
+def test_health_ok(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_dashboard_redirects_when_anonymous(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code in {302, 303, 307}
+        assert r.headers["location"].startswith("/login")
+
+
+def test_bootstrap_admin_login_sets_httponly_cookie(tmp_path):
+    client, repos = _client(tmp_path)
+    with client:
+        r = _login(client)
+        assert r.headers["location"] == "/"
+        assert "httponly" in r.headers["set-cookie"].lower()
+        admin = repos.users.get_by_email("admin")
+        assert admin.role == "admin"
+
+
+def test_disabled_user_cannot_login(tmp_path):
+    client, repos = _client(tmp_path)
+    with client:
+        client.get("/health")  # ensure lifespan/bootstrap ran
+        admin = repos.users.get_by_email("admin")
+        repos.users.set_active(admin.id, False)
+        r = client.post("/login", data={"username": "admin", "password": "secret"},
+                        follow_redirects=False)
+        assert r.status_code == 401
+
+
+def test_wrong_password_rejected(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        r = client.post("/login", data={"username": "admin", "password": "nope"},
+                        follow_redirects=False)
+        assert r.status_code == 401
+
+
+def test_settings_drive_save_extracts_folder_ids(tmp_path):
+    client, repos = _client(tmp_path)
+    folder = "1A2b3C4d5E6f7G8h9I0jKl"
+    with client:
+        _login(client)
+        r = client.post("/settings/drive", data={
+            "source_drive_folder_url": f"https://drive.google.com/drive/folders/{folder}?usp=sharing",
+            "destination_drive_folder_url": "",
+            "save_copy_to_drive": "true",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        admin = repos.users.get_by_email("admin")
+        saved = repos.drive_settings.get_for_user(admin.id)
+        assert saved.source_drive_folder_id == folder
+        assert saved.destination_drive_folder_id is None
+        assert saved.save_copy_to_drive is True
+
+
+def test_settings_drive_rejects_bad_url(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.post("/settings/drive", data={
+            "source_drive_folder_url": "not a url", "destination_drive_folder_url": "",
+        }, follow_redirects=False)
+        assert r.status_code == 400
+
+
+def test_deepgram_save_encrypts_and_masks(tmp_path):
+    client, repos = _client(tmp_path)
+    with client:
+        _login(client)
+        client.post("/settings/deepgram", data={"deepgram_api_key": "dg-mysecretkey"},
+                    follow_redirects=False)
+        admin = repos.users.get_by_email("admin")
+        assert repos.deepgram_credentials.get_encrypted_for_user(admin.id) != "dg-mysecretkey"
+        page = client.get("/settings/deepgram").text
+        assert "Configured" in page
+        assert "dg-mysecretkey" not in page
+
+
+def test_run_once_blocks_without_deepgram_key(tmp_path):
+    # Settings + Google connected, but no per-user Deepgram key: nothing enqueues.
+    app, worker = _app_with_worker(tmp_path, deepgram_key=None,
+                                   files=[drive_file("file-1", "meet.mp4")])
+    with TestClient(app) as client:
+        _login(client)
+        client.post("/jobs/run-once", follow_redirects=False)
+        page = client.get("/jobs").text
+    assert worker.jobs.list_jobs_for_user(1) == []
+    assert "Configure sua Deepgram API Key antes de iniciar uma transcrição." in page
+
+
+def test_run_once_enqueues_pending_when_ready(tmp_path):
+    # Web layer only creates a pending job (no download/transcribe/upload here).
+    app, worker = _app_with_worker(tmp_path, deepgram_key="dg-key",
+                                   files=[drive_file("file-1", "meet.mp4")])
+    with TestClient(app) as client:
+        _login(client)
+        client.post("/jobs/run-once", follow_redirects=False)
+    jobs = worker.jobs.list_jobs_for_user(1)
+    assert len(jobs) == 1 and jobs[0].status == "pending"
+    assert jobs[0].source_file_id == "file-1"
+
+
+def test_connect_google_redirects_with_state(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/connect-google", follow_redirects=False)
+        assert "accounts.google.com" in r.headers["location"]
+        assert "state=" in r.headers["location"]
+
+
+def test_oauth_callback_saves_token_and_identity(tmp_path, monkeypatch):
+    client, repos = _client(tmp_path)
+    monkeypatch.setattr("app.web.main.exchange_google_code", lambda s, code: {
+        "access_token": "access-token", "refresh_token": "refresh-token",
+        "token_uri": "https://oauth2.googleapis.com/token", "client_id": "client-id",
+        "client_secret": "client-secret", "scopes": "https://www.googleapis.com/auth/drive",
+        "expiry": "2026-06-03T00:00:00+00:00",
+    })
+    monkeypatch.setattr("app.web.main.fetch_google_userinfo",
+                        lambda token: {"email": "me@gmail.com", "name": "Me"})
+    with client:
+        _login(client)
+        connect = client.get("/connect-google", follow_redirects=False)
+        state = parse_qs(urlparse(connect.headers["location"]).query)["state"][0]
+        r = client.get(f"/oauth/google/callback?code=abc&state={state}", follow_redirects=False)
+        assert r.status_code in {302, 303}
+        admin = repos.users.get_by_email("admin")
+        assert repos.google_tokens.get_for_user(admin.id) is not None
+        assert repos.users.get_by_id(admin.id).google_email == "me@gmail.com"
+
+
+def test_oauth_callback_rejects_bad_state(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        client.get("/connect-google", follow_redirects=False)
+        r = client.get("/oauth/google/callback?code=abc&state=wrong")
+        assert r.status_code == 400

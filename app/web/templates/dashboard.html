@@ -4,20 +4,57 @@
   <div>
     <p class="eyebrow">Dashboard</p>
     <h1>Meeting transcription control panel</h1>
-    <p>Connect Google Drive, configure folders, and run a manual transcription.</p>
+    <p>Connect Google Drive, configure folders, save your Deepgram key, and enqueue a run.</p>
   </div>
-  <a class="button" href="/connect-google">Connect Google</a>
+  {% if not google_connected %}<a class="button" href="/connect-google">Connect Google</a>{% endif %}
 </section>
+
 <section class="grid">
-  <article class="card"><h2>Google</h2><p>{{ "Connected" if google_connected else "Not connected" }}</p></article>
-  <article class="card"><h2>Source Folder</h2><p>{{ settings["source_drive_folder_id"] if settings else "Not configured" }}</p></article>
-  <article class="card"><h2>Destination Folder</h2><p>{{ settings["destination_drive_folder_id"] if settings else "Not configured" }}</p></article>
+  <article class="card">
+    <h2>Google</h2>
+    <p class="{{ 'ok' if google_connected else 'off' }}">{{ "Connected" if google_connected else "Not connected" }}</p>
+    {% if not google_connected %}<p><a href="/connect-google">Connect now</a></p>{% endif %}
+  </article>
+  <article class="card">
+    <h2>Drive source</h2>
+    {% if settings and settings.source_drive_folder_id %}
+    <p class="ok">Configured</p>
+    <p class="mono hint" title="{{ settings.source_drive_folder_id }}">{{ settings.source_drive_folder_id | mid }}</p>
+    {% else %}
+    <p class="off">Not configured</p><p><a href="/settings/drive">Set folder</a></p>
+    {% endif %}
+  </article>
+  <article class="card">
+    <h2>Deepgram</h2>
+    <p class="{{ 'ok' if deepgram_configured else 'off' }}">{{ "Configured" if deepgram_configured else "Not configured" }}</p>
+    <p><a href="/settings/deepgram">Manage key</a></p>
+  </article>
 </section>
+
+<section class="grid">
+  <article class="card"><h2>Total jobs</h2><p>{{ total_jobs }}</p></article>
+  <article class="card">
+    <h2>Last job</h2>
+    {% if last_job %}
+    <p><span class="badge badge-{{ last_job.status }}">{{ last_job.status }}</span></p>
+    <p class="hint">{{ last_job.source_file_name or 'Manual run' }} · {{ last_job.created_at | dt }}</p>
+    {% else %}<p class="muted">No jobs yet</p>{% endif %}
+  </article>
+  <article class="card">
+    <h2>Quick actions</h2>
+    <div class="cta-row">
+      <a class="button button-sm" href="/jobs">Jobs</a>
+      <a class="button button-sm button-ghost" href="/settings">Settings</a>
+      <a class="button button-sm button-ghost" href="/settings/deepgram">Deepgram</a>
+    </div>
+  </article>
+</section>
+
 <section class="card">
   <h2>Recent jobs</h2>
   {% if jobs %}
   <ul class="list">
-    {% for job in jobs %}<li>{{ job["source_file_name"] or "Manual run" }} — {{ job["status"] }}</li>{% endfor %}
+    {% for job in jobs %}<li><a href="/jobs/{{ job.id }}">{{ job.source_file_name or "Manual run" }}</a> — {{ job.status }}</li>{% endfor %}
   </ul>
   {% else %}<p>No jobs yet.</p>{% endif %}
 </section>

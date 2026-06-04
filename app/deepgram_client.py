@@ -41,13 +41,35 @@ class DeepgramClient:
             session=getattr(settings, "session", None),
         )
 
-    def transcribe(self, video_path: str | Path) -> dict[str, Any]:
+    @classmethod
+    def from_api_key(
+        cls,
+        api_key: str,
+        *,
+        model: str = "nova-3",
+        language: str = "pt-BR",
+        smart_format: bool = True,
+        punctuate: bool = True,
+        diarize: bool = True,
+        utterances: bool = True,
+        session: Any | None = None,
+    ) -> "DeepgramClient":
+        return cls(
+            api_key=api_key, model=model, language=language,
+            smart_format=smart_format, punctuate=punctuate, diarize=diarize,
+            utterances=utterances, session=session,
+        )
+
+    def transcribe(self, video_path: str | Path, api_key: str | None = None) -> dict[str, Any]:
+        key = api_key or self.api_key
+        if not key:
+            raise DeepgramError("Deepgram API key is required")
         path = Path(video_path)
         with path.open("rb") as video_file:
             response = self.session.post(
                 self.endpoint,
                 headers={
-                    "Authorization": f"Token {self.api_key}",
+                    "Authorization": f"Token {key}",
                     "Content-Type": "video/mp4",
                 },
                 params=self._params(),
