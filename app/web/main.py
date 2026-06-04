@@ -18,10 +18,13 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.drive_client import DriveClient
 from app.google_auth import credentials_from_token
 from app.logger import setup_logging
+from app.queue import QueueSettings, build_queue
 from app.repositories import RepositoryBackendError
 from app.repositories import build_repositories as build_worker_repositories
 from app.services.download_service import DownloadError, get_downloadable_transcript
 from app.services.job_service import create_next_pending_job
+from app.transcription.config import TranscriptionConfig
+from app.transcription.provider import get_transcription_provider_status
 from app.web import helpers
 from app.web.config import WebSettings
 from app.web.deepgram_key import DeepgramKeyStore, verify_deepgram_key
@@ -57,7 +60,9 @@ DEEPGRAM_TEST_MESSAGES = {
 
 def create_app(settings: WebSettings | None = None,
                repositories: RepositoryBundle | None = None,
-               worker_repositories=None) -> FastAPI:
+               worker_repositories=None,
+               transcription_status=None,
+               queue=None) -> FastAPI:
     setup_logging()
     web_settings = settings or WebSettings.from_env()
     repos = repositories or build_repositories(web_settings)
@@ -82,6 +87,14 @@ def create_app(settings: WebSettings | None = None,
     # Worker bundle (jobs/transcripts over the same PostgreSQL) — injected in
     # tests; built lazily from the environment in production.
     app.state.worker_repositories = worker_repositories
+    # Local-vs-Deepgram posture for the UI + run-once gating, and the queue the web
+    # layer enqueues to. Both default from the environment; tests inject them.
+    app.state.transcription_status = (
+        transcription_status
+        if transcription_status is not None
+        else get_transcription_provider_status(TranscriptionConfig.from_env())
+    )
+    app.state.queue = queue if queue is not None else build_queue(QueueSettings.from_env())
     # The worker owns download/transcribe/upload. The web layer only lists Drive
     # videos to enqueue a pending job; these hooks isolate that Drive boundary.
     app.state.build_drive_client = (
@@ -113,6 +126,17 @@ def create_app(settings: WebSettings | None = None,
             return app.state.worker_repositories, None
         except RepositoryBackendError as exc:
             return None, str(exc)
+
+    def _queue_status() -> dict:
+        """UI-facing queue health: poll mode (no Redis), online, or unavailable."""
+        queue = app.state.queue
+        if queue is None:
+            return {"mode": "poll", "available": None}
+        try:
+            available = queue.health()
+        except Exception:  # noqa: BLE001 - a status probe must never 500 the page
+            available = False
+        return {"mode": "queue", "available": available}
 
     @app.get("/health")
     def health():
@@ -148,6 +172,8 @@ def create_app(settings: WebSettings | None = None,
             "settings": repos.drive_settings.get_for_user(user.id),
             "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
             "deepgram_configured": deepgram_store.has_key(user.id),
+            "transcription_status": app.state.transcription_status,
+            "queue_status": _queue_status(),
             "total_jobs": len(jobs),
             "last_job": jobs[0] if jobs else None,
             "jobs": jobs[:5],
@@ -232,6 +258,8 @@ def create_app(settings: WebSettings | None = None,
             "jobs": jobs,
             "message": _pop_flash(request),
             "backend_error": error,
+            "transcription_status": app.state.transcription_status,
+            "queue_status": _queue_status(),
         })
 
     @app.post("/jobs/run-once")
@@ -246,12 +274,32 @@ def create_app(settings: WebSettings | None = None,
                 build_drive_client=app.state.build_drive_client,
                 credentials_from_token=app.state.credentials_from_token,
                 user_id=user.id,
+                # A valid local engine drops the Deepgram-key requirement.
+                deepgram_required=app.state.transcription_status.deepgram_required,
             )
         except Exception:  # noqa: BLE001 - surface Drive/credential errors as a flash, not a 500.
             logging.exception("run-once failed to create a job for user_id=%s", user.id)
             _set_flash(request, "Não foi possível iniciar a transcrição agora. Tente novamente.")
             return RedirectResponse("/jobs", status_code=303)
-        _set_flash(request, RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado."))
+        flash_message = RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado.")
+        # Enqueue the pending job for the worker. Best-effort: if Redis is down the
+        # job stays pending in Postgres and the worker reconciles it on startup/idle.
+        if result.status == "created" and result.job is not None and app.state.queue is not None:
+            try:
+                app.state.queue.enqueue(result.job.id)
+                logging.getLogger(__name__).info(
+                    "Enqueued job_id=%s user_id=%s", result.job.id, user.id
+                )
+            except Exception:  # noqa: BLE001 - Postgres is the source of truth; never 500 here.
+                logging.getLogger(__name__).exception(
+                    "Could not enqueue job_id=%s; it stays pending for the worker to reconcile",
+                    result.job.id,
+                )
+                flash_message = (
+                    "Fila indisponível no momento: a transcrição foi registrada e será "
+                    "processada assim que a fila voltar."
+                )
+        _set_flash(request, flash_message)
         return RedirectResponse("/jobs", status_code=303)
 
     @app.get("/jobs/{job_id}/download")

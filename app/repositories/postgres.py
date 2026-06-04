@@ -154,6 +154,38 @@ class PgJobRepository(_Bound):
             s.flush()
             return _to_job(job)
 
+    def claim_job(self, job_id: int, worker_id: str, now: datetime) -> Job | None:
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.TranscriptionJob)
+                .where(
+                    models.TranscriptionJob.id == job_id,
+                    models.TranscriptionJob.status == "pending",
+                )
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            job = s.scalar(stmt)
+            if job is None:
+                return None
+            job.status = "processing"
+            job.attempts = job.attempts + 1
+            job.started_at = now
+            job.updated_at = now
+            s.flush()
+            return _to_job(job)
+
+    def list_pending_jobs(self) -> list[Job]:
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.TranscriptionJob)
+                .where(models.TranscriptionJob.status == "pending")
+                .order_by(
+                    models.TranscriptionJob.created_at, models.TranscriptionJob.id
+                )
+            )
+            return [_to_job(j) for j in s.scalars(stmt)]
+
     def create_job(
         self,
         user_id: int,

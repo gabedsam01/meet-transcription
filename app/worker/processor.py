@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.models import Job
-from app.processor import format_transcript, sanitize_filename
+from app.errors import AppError, DriveFolderMissingError, GoogleTokenMissingError
+from app.processor import sanitize_filename
+from app.transcription.config import TranscriptionConfig
+from app.transcription.deepgram_provider import DeepgramProvider
+from app.transcription.factory import build_local_provider, resolve_provider
 from app.worker.container import WorkerContainer
 
 LOGGER = logging.getLogger(__name__)
@@ -24,17 +29,26 @@ class JobProcessor:
     def process(self, job: Job) -> None:
         repos = self.container.repositories
         job_dir = Path(self.container.settings.tmp_dir) / "jobs" / str(job.id)
+        started = time.monotonic()
         try:
             settings = repos.settings.get(job.user_id)
             if settings is None:
-                raise RuntimeError("User settings are required before transcription")
+                raise DriveFolderMissingError("User settings are required before transcription")
             token = repos.google_tokens.get(job.user_id)
             if token is None:
-                raise RuntimeError("Google token is required before transcription")
-            if not settings.deepgram_api_key:
-                raise RuntimeError("A per-user Deepgram API key is required")
+                raise GoogleTokenMissingError("Google token is required before transcription")
             if not job.source_file_id:
-                raise RuntimeError("Job has no source_file_id to download")
+                raise DriveFolderMissingError("Job has no source_file_id to download")
+
+            # Pick the transcription provider per the local/Deepgram product rule.
+            # A valid local engine needs no Deepgram key; otherwise a per-user key is
+            # required and its absence raises a clear, Deepgram-mentioning error.
+            provider, status = self._resolve_provider(settings)
+            label = status.summary if status.local_valid else "deepgram"
+            LOGGER.info(
+                "Transcription started: job_id=%s user_id=%s provider=%s",
+                job.id, job.user_id, label,
+            )
 
             credentials = self.container.credentials_from_token(token)
             drive = self.container.build_drive_client(
@@ -42,17 +56,18 @@ class JobProcessor:
                 settings.source_drive_folder_id,
                 settings.destination_drive_folder_id,
             )
-            deepgram = self.container.build_deepgram_client(settings.deepgram_api_key)
 
             job_dir.mkdir(parents=True, exist_ok=True)
             safe_base = sanitize_filename(job.source_file_name or job.source_file_id)
             video_path = job_dir / f"{safe_base}.mp4"
             drive.download_by_id(job.source_file_id, video_path)
 
-            deepgram_response = deepgram.transcribe(video_path)
-            transcript_text = format_transcript(
-                deepgram_response, job.source_file_name or "", job.source_file_id
+            result = provider.transcribe(
+                video_path,
+                original_name=job.source_file_name or "",
+                file_id=job.source_file_id,
             )
+            transcript_text = result.text
 
             transcript_drive_file_id = None
             if settings.save_copy_to_drive and settings.destination_drive_folder_id:
@@ -65,18 +80,42 @@ class JobProcessor:
 
             repos.transcripts.create(
                 job_id=job.id, user_id=job.user_id, text=transcript_text,
-                json_payload=deepgram_response, drive_file_id=transcript_drive_file_id,
+                json_payload=result.payload, drive_file_id=transcript_drive_file_id,
                 now=self._now(),
             )
             repos.jobs.mark_completed(
                 job.id, self._now(), transcript_drive_file_id=transcript_drive_file_id
             )
-            LOGGER.info("Job completed job_id=%s", job.id)
+            LOGGER.info(
+                "Transcription completed: job_id=%s provider=%s duration_seconds=%.1f",
+                job.id, label, time.monotonic() - started,
+            )
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
-            LOGGER.exception("Job failed job_id=%s", job.id)
-            repos.jobs.mark_failed(job.id, str(exc), self._now())
+            # Friendly message for the UI; full traceback only in the logs.
+            user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
+            LOGGER.exception("Transcription failed: job_id=%s reason=%s", job.id, exc)
+            repos.jobs.mark_failed(job.id, user_message, self._now())
         finally:
             _cleanup_job_dir(job_dir)
+
+    def _resolve_provider(self, settings):
+        config = self.container.transcription_config or TranscriptionConfig.disabled()
+
+        def build_deepgram_provider():
+            client = self.container.build_deepgram_client(settings.deepgram_api_key)
+            return DeepgramProvider(
+                client,
+                model=self.container.settings.deepgram_model,
+                language=self.container.settings.deepgram_language,
+            )
+
+        return resolve_provider(
+            config,
+            has_deepgram_key=bool(settings.deepgram_api_key),
+            build_local_provider=self.container.build_local_provider or build_local_provider,
+            build_deepgram_provider=build_deepgram_provider,
+            probes=self.container.transcription_probes,
+        )
 
 
 def _cleanup_job_dir(job_dir: Path) -> None:

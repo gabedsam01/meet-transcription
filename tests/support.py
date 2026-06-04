@@ -69,7 +69,16 @@ def make_worker_settings(tmp_dir, **overrides) -> WorkerSettings:
     return WorkerSettings(**base)
 
 
-def make_worker_container(tmp_dir, repositories=None, drive=None, deepgram=None):
+def make_worker_container(
+    tmp_dir,
+    repositories=None,
+    drive=None,
+    deepgram=None,
+    transcription_config=None,
+    transcription_probes=None,
+    build_local_provider=None,
+    queue=None,
+):
     repositories = repositories if repositories is not None else build_memory_repositories()
     drive = drive if drive is not None else FakeDriveClient()
     deepgram = deepgram if deepgram is not None else FakeDeepgramClient()
@@ -84,4 +93,8 @@ def make_worker_container(tmp_dir, repositories=None, drive=None, deepgram=None)
         build_drive_client=lambda credentials, src, dst: drive,
         build_deepgram_client=build_deepgram,
         credentials_from_token=lambda token: object(),
+        transcription_config=transcription_config,
+        transcription_probes=transcription_probes,
+        build_local_provider=build_local_provider,
+        queue=queue,
     )

@@ -26,6 +26,7 @@ input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding
 button, .button { border: 0; border-radius: 999px; padding: .75rem 1rem; background: var(--accent); color: white; font: inherit; cursor: pointer; display: inline-block; }
 .error { color: #9d2b22; }
 .notice { margin: 1rem 0 .25rem; padding: .75rem 1rem; border: 1px solid var(--accent); border-radius: 12px; background: rgba(31, 111, 91, .08); color: var(--ink); }
+.notice-warn { border-color: #9d6b22; background: rgba(157, 107, 34, .1); color: #6e4a14; }
 .hint { color: var(--muted); font-size: .9rem; margin: .25rem 0 1rem; }
 .list { padding-left: 1.25rem; }
 .row-between { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }

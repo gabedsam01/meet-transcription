@@ -1,8 +1,47 @@
 from datetime import datetime, timezone
 
 from app.core.models import GoogleToken, JobStatus, Settings
+from app.transcription.config import TranscriptionConfig
+from app.transcription.local_validation import ValidationProbes
+from app.transcription.provider import TranscriptionResult
 from app.worker.processor import JobProcessor
 from tests.support import FakeDeepgramClient, FakeDriveClient, make_worker_container
+
+
+def _local_cfg(**over):
+    env = {"LOCAL_TRANSCRIPTION_ENABLED": "true", "LOCAL_TRANSCRIPTION_ENGINE": "faster-whisper"}
+    env.update(over)
+    return TranscriptionConfig.from_env(env)
+
+
+def _probes(valid):
+    return ValidationProbes(
+        module_available=lambda name: valid,
+        path_exists=lambda p: True,
+        is_executable=lambda p: True,
+    )
+
+
+class FakeLocalProvider:
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, source_path, *, original_name, file_id):
+        self.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="LOCAL TXT Olá",
+            payload={
+                "provider": "local",
+                "engine": "faster-whisper",
+                "model": "small",
+                "language": "pt",
+                "text": "Olá",
+                "segments": [],
+                "words": [],
+                "utterances": [],
+                "raw": {},
+            },
+        )
 
 
 def _now():
@@ -35,7 +74,10 @@ def test_process_completes_and_persists_transcript(tmp_path):
     assert done.status == JobStatus.COMPLETED.value
     transcript = container.repositories.transcripts.get_by_job(job.id)
     assert "Ola mundo." in transcript.text
-    assert transcript.json_payload == deepgram.response
+    # json_payload is now the normalized schema; the raw Deepgram response is kept
+    # verbatim under "raw".
+    assert transcript.json_payload["provider"] == "deepgram"
+    assert transcript.json_payload["raw"] == deepgram.response
     assert deepgram.api_key == "user-dg-key"   # per-user key used
     assert drive.downloaded == ["src-1"]
 
@@ -91,6 +133,64 @@ def test_process_marks_failed_on_transcription_error(tmp_path):
     assert done.status == JobStatus.FAILED.value
     assert "deepgram failed" in done.error_message
     assert container.repositories.transcripts.get_by_job(job.id) is None
+
+
+def test_process_uses_local_provider_when_valid_without_deepgram_key(tmp_path):
+    local = FakeLocalProvider()
+    drive = FakeDriveClient()
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, drive=drive, deepgram=deepgram,
+        transcription_config=_local_cfg(), transcription_probes=_probes(valid=True),
+        build_local_provider=lambda cfg: local,
+    )
+    _seed(container.repositories, deepgram_key=None)  # local valid -> no key needed
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert local.calls and drive.downloaded == ["src-1"]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.text == "LOCAL TXT Olá"
+    assert transcript.json_payload["provider"] == "local"
+    assert deepgram.api_key is None  # Deepgram was never built/called
+
+
+def test_process_fails_clearly_when_local_invalid_and_no_deepgram_key(tmp_path):
+    container = make_worker_container(
+        tmp_path,
+        transcription_config=_local_cfg(LOCAL_TRANSCRIPTION_DOC_URL="https://docs/local"),
+        transcription_probes=_probes(valid=False),  # faster-whisper "not installed"
+    )
+    _seed(container.repositories, deepgram_key=None)
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "Deepgram" in done.error_message
+    assert "https://docs/local" in done.error_message
+
+
+def test_process_falls_back_to_deepgram_when_local_invalid_with_key(tmp_path):
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, deepgram=deepgram,
+        transcription_config=_local_cfg(), transcription_probes=_probes(valid=False),
+    )
+    _seed(container.repositories, deepgram_key="user-dg-key")
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["provider"] == "deepgram"
+    assert deepgram.api_key == "user-dg-key"
 
 
 def test_process_cleans_only_its_own_job_dir(tmp_path):

@@ -53,6 +53,23 @@ def test_reports_no_deepgram_key():
     assert repos.jobs.list_jobs_for_user(7) == []
 
 
+def test_allows_creation_without_deepgram_key_when_not_required():
+    # A valid local engine means deepgram_required=False: no key needed to enqueue.
+    repos = build_memory_repositories()
+    repos.settings.set(Settings(7, "src", "dst", False, None))
+    repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
+    drive = FakeDriveClient(files=[drive_file("file-1", "a.mp4")])
+    result = create_next_pending_job(
+        repos,
+        build_drive_client=lambda credentials, src, dst: drive,
+        credentials_from_token=lambda token: object(),
+        user_id=7,
+        deepgram_required=False,
+    )
+    assert result.status == "created"
+    assert result.job.source_file_id == "file-1"
+
+
 def test_creates_pending_job_for_first_new_video():
     repos, drive = _build([drive_file("file-1", "a.mp4"), drive_file("file-2", "b.mp4")])
     result = _call(repos, drive)

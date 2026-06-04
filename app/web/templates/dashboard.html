@@ -29,6 +29,30 @@
     <p class="{{ 'ok' if deepgram_configured else 'off' }}">{{ "Configured" if deepgram_configured else "Not configured" }}</p>
     <p><a href="/settings/deepgram">Manage key</a></p>
   </article>
+  <article class="card">
+    <h2>Transcription</h2>
+    {% if transcription_status and transcription_status.local_valid %}
+    <p class="ok">{{ transcription_status.message }}</p>
+    <p class="hint">Deepgram opcional, modelo local será usado.</p>
+    {% elif transcription_status and transcription_status.enabled %}
+    <p class="off">{{ transcription_status.message }}</p>
+    {% if transcription_status.doc_url %}<p><a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Documentação de modelos locais</a></p>{% endif %}
+    {% else %}
+    <p class="hint">Deepgram (transcrição local desativada).</p>
+    {% endif %}
+  </article>
+  <article class="card">
+    <h2>Queue</h2>
+    {% if not queue_status or queue_status.mode == 'poll' %}
+    <p class="hint">Polling (sem Redis)</p>
+    {% elif queue_status.available %}
+    <p class="ok">Online</p>
+    <p class="hint">Redis · processamento sequencial</p>
+    {% else %}
+    <p class="off">Indisponível</p>
+    <p class="hint">Jobs ficam pendentes até o Redis voltar.</p>
+    {% endif %}
+  </article>
 </section>
 
 <section class="grid">
