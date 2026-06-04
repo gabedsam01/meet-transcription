@@ -2,12 +2,12 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
+from app.core.models import GoogleToken as WorkerGoogleToken, Settings as WorkerSettings
+from app.repositories.memory import build_memory_repositories
 from app.web.config import WebSettings
-from app.web.deepgram_key import DeepgramKeyStore
 from app.web.main import create_app
-from app.web.repositories import DriveSettings, GoogleToken
-from app.web.security import fernet_from_secret
 from tests.fakes import build_fake_repositories
+from tests.support import FakeDriveClient, drive_file
 
 
 def _settings(tmp_path) -> WebSettings:
@@ -27,6 +27,23 @@ def _settings(tmp_path) -> WebSettings:
 def _client(tmp_path, repos=None):
     repos = repos or build_fake_repositories()
     return TestClient(create_app(_settings(tmp_path), repositories=repos)), repos
+
+
+def _app_with_worker(tmp_path, *, deepgram_key="dg-key", files=None):
+    """Build the app wired to a worker (jobs) bundle and a fake Drive boundary.
+
+    Login bootstraps the admin as user id=1 in the auth bundle; the worker bundle
+    is seeded for that same id so run-once finds settings/token/Deepgram key.
+    """
+    auth = build_fake_repositories()
+    worker = build_memory_repositories()
+    worker.settings.set(WorkerSettings(1, "src-folder-id", "dst-folder-id", False, deepgram_key))
+    worker.google_tokens.set(1, WorkerGoogleToken(access_token="a", token_uri="u", client_id="c"))
+    app = create_app(_settings(tmp_path), repositories=auth, worker_repositories=worker)
+    drive = FakeDriveClient(files=list(files or []))
+    app.state.build_drive_client = lambda credentials, src, dst: drive
+    app.state.credentials_from_token = lambda token: object()
+    return app, worker
 
 
 def _login(client, username="admin", password="secret"):
@@ -121,32 +138,27 @@ def test_deepgram_save_encrypts_and_masks(tmp_path):
 
 
 def test_run_once_blocks_without_deepgram_key(tmp_path):
-    client, repos = _client(tmp_path)
-    folder = "1A2b3C4d5E6f7G8h9I0jKl"
-    with client:
+    # Settings + Google connected, but no per-user Deepgram key: nothing enqueues.
+    app, worker = _app_with_worker(tmp_path, deepgram_key=None,
+                                   files=[drive_file("file-1", "meet.mp4")])
+    with TestClient(app) as client:
         _login(client)
-        admin = repos.users.get_by_email("admin")
-        repos.drive_settings.save_for_user(admin.id, DriveSettings("url", folder, None, None, False))
-        repos.google_tokens.save_for_user(admin.id, GoogleToken("a", "r", "u", "c", "s", "sc", None))
         client.post("/jobs/run-once", follow_redirects=False)
-        assert repos.jobs.list_jobs_for_user(admin.id) == []
         page = client.get("/jobs").text
-        assert "Configure sua Deepgram API Key antes de iniciar uma transcrição." in page
+    assert worker.jobs.list_jobs_for_user(1) == []
+    assert "Configure sua Deepgram API Key antes de iniciar uma transcrição." in page
 
 
 def test_run_once_enqueues_pending_when_ready(tmp_path):
-    client, repos = _client(tmp_path)
-    folder = "1A2b3C4d5E6f7G8h9I0jKl"
-    with client:
+    # Web layer only creates a pending job (no download/transcribe/upload here).
+    app, worker = _app_with_worker(tmp_path, deepgram_key="dg-key",
+                                   files=[drive_file("file-1", "meet.mp4")])
+    with TestClient(app) as client:
         _login(client)
-        admin = repos.users.get_by_email("admin")
-        repos.drive_settings.save_for_user(admin.id, DriveSettings("url", folder, None, None, False))
-        repos.google_tokens.save_for_user(admin.id, GoogleToken("a", "r", "u", "c", "s", "sc", None))
-        DeepgramKeyStore(repos.deepgram_credentials,
-                         fernet_from_secret("a-long-secret-for-tests")).save_for_user(admin.id, "dg-key")
         client.post("/jobs/run-once", follow_redirects=False)
-        jobs = repos.jobs.list_jobs_for_user(admin.id)
-        assert len(jobs) == 1 and jobs[0].status == "pending"
+    jobs = worker.jobs.list_jobs_for_user(1)
+    assert len(jobs) == 1 and jobs[0].status == "pending"
+    assert jobs[0].source_file_id == "file-1"
 
 
 def test_connect_google_redirects_with_state(tmp_path):

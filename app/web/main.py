@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -9,13 +10,18 @@ from urllib.parse import urlencode
 
 import requests
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.drive_client import DriveClient
+from app.google_auth import credentials_from_token
 from app.logger import setup_logging
-from app.web import services
+from app.repositories import RepositoryBackendError
+from app.repositories import build_repositories as build_worker_repositories
+from app.services.download_service import DownloadError, get_downloadable_transcript
+from app.services.job_service import create_next_pending_job
 from app.web.config import WebSettings
 from app.web.deepgram_key import DeepgramKeyStore, verify_deepgram_key
 from app.web.drive_links import extract_google_drive_folder_id
@@ -28,11 +34,13 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
+# Run-once only creates a pending job; the worker does the processing. Keys match
+# JobCreationResult.status from app.services.job_service.create_next_pending_job.
 RUN_ONCE_MESSAGES = {
-    "missing_settings": "Configure a pasta de origem em Drive Settings primeiro.",
+    "no_settings": "Configure a pasta de origem em Drive Settings primeiro.",
     "not_connected": "Conecte o Google antes de rodar uma transcrição.",
     "no_deepgram_key": "Configure sua Deepgram API Key antes de iniciar uma transcrição.",
-    "already_running": "Já existe um job em execução.",
+    "no_new_videos": "Nenhum vídeo novo para transcrever.",
     "created": "Job enfileirado; o worker fará o processamento.",
 }
 DEEPGRAM_TEST_MESSAGES = {
@@ -43,7 +51,8 @@ DEEPGRAM_TEST_MESSAGES = {
 
 
 def create_app(settings: WebSettings | None = None,
-               repositories: RepositoryBundle | None = None) -> FastAPI:
+               repositories: RepositoryBundle | None = None,
+               worker_repositories=None) -> FastAPI:
     setup_logging()
     web_settings = settings or WebSettings.from_env()
     repos = repositories or build_repositories(web_settings)
@@ -61,9 +70,19 @@ def create_app(settings: WebSettings | None = None,
 
     app = FastAPI(title="Meet Transcription", lifespan=lifespan)
     app.state.settings = web_settings
+    # Auth bundle (users/settings/tokens/deepgram) — also used by require_user.
     app.state.repositories = repos
     app.state.token_store = token_store
     app.state.deepgram_store = deepgram_store
+    # Worker bundle (jobs/transcripts over the same PostgreSQL) — injected in
+    # tests; built lazily from the environment in production.
+    app.state.worker_repositories = worker_repositories
+    # The worker owns download/transcribe/upload. The web layer only lists Drive
+    # videos to enqueue a pending job; these hooks isolate that Drive boundary.
+    app.state.build_drive_client = (
+        lambda credentials, src, dst: DriveClient.from_credentials(credentials, src, dst)
+    )
+    app.state.credentials_from_token = credentials_from_token
     app.add_middleware(
         SessionMiddleware,
         secret_key=web_settings.app_secret_key,
@@ -71,6 +90,24 @@ def create_app(settings: WebSettings | None = None,
         same_site="lax",
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    def _resolve_worker_repositories():
+        """Return ``(worker Repositories, None)`` or ``(None, error_message)``.
+
+        PostgreSQL is the single source of truth: in production the worker bundle
+        is built once from the environment and cached on app.state. An unknown
+        WORKER_REPOSITORY_BACKEND degrades gracefully (RepositoryBackendError);
+        genuine misconfiguration (e.g. a missing DATABASE_URL) surfaces loudly.
+        """
+        if app.state.worker_repositories is not None:
+            return app.state.worker_repositories, None
+        try:
+            app.state.worker_repositories = build_worker_repositories(
+                os.environ.get("WORKER_REPOSITORY_BACKEND")
+            )
+            return app.state.worker_repositories, None
+        except RepositoryBackendError as exc:
+            return None, str(exc)
 
     @app.get("/health")
     def health():
@@ -99,12 +136,14 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, user=Depends(require_user)):
+        worker_repos, _ = _resolve_worker_repositories()
+        jobs = worker_repos.jobs.list_jobs_for_user(user.id)[:5] if worker_repos else []
         return templates.TemplateResponse(request, "dashboard.html", {
             "user": user,
             "settings": repos.drive_settings.get_for_user(user.id),
             "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
             "deepgram_configured": deepgram_store.has_key(user.id),
-            "jobs": repos.jobs.list_jobs_for_user(user.id, limit=5),
+            "jobs": jobs,
         })
 
     @app.get("/settings")
@@ -178,17 +217,55 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
+        worker_repos, error = _resolve_worker_repositories()
+        jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
         return templates.TemplateResponse(request, "jobs.html", {
             "user": user,
-            "jobs": repos.jobs.list_jobs_for_user(user.id),
+            "jobs": jobs,
             "message": _pop_flash(request),
+            "backend_error": error,
         })
 
     @app.post("/jobs/run-once")
     def run_once(request: Request, user=Depends(require_user)):
-        result = services.enqueue_run_once_job(repos, deepgram_store, user.id)
-        _set_flash(request, RUN_ONCE_MESSAGES[result.status])
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None:
+            _set_flash(request, error)
+            return RedirectResponse("/jobs", status_code=303)
+        try:
+            result = create_next_pending_job(
+                worker_repos,
+                build_drive_client=app.state.build_drive_client,
+                credentials_from_token=app.state.credentials_from_token,
+                user_id=user.id,
+            )
+        except Exception:  # noqa: BLE001 - surface Drive/credential errors as a flash, not a 500.
+            logging.exception("run-once failed to create a job for user_id=%s", user.id)
+            _set_flash(request, "Não foi possível iniciar a transcrição agora. Tente novamente.")
+            return RedirectResponse("/jobs", status_code=303)
+        _set_flash(request, RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado."))
         return RedirectResponse("/jobs", status_code=303)
+
+    @app.get("/jobs/{job_id}/download")
+    def download_transcript(job_id: int, request: Request, user=Depends(require_user)):
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None:
+            raise HTTPException(status_code=503, detail=error)
+        # Strict per-user ownership: even an admin gets 404 for another user's job,
+        # so existence of other users' jobs never leaks (requirement 8d).
+        try:
+            result = get_downloadable_transcript(worker_repos, job_id, user.id, is_admin=False)
+        except DownloadError as exc:
+            status = {"not_found": 404, "not_completed": 409, "no_transcript": 404}.get(
+                exc.code, 400
+            )
+            raise HTTPException(status_code=status, detail=str(exc))
+        return PlainTextResponse(
+            result.text,
+            headers={
+                "Content-Disposition": f'attachment; filename="{result.filename}"'
+            },
+        )
 
     @app.get("/admin/users", response_class=HTMLResponse)
     def admin_users(request: Request, admin=Depends(require_admin)):

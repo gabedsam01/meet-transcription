@@ -3,6 +3,13 @@ x-app: &app
   env_file:
     - path: .env
       required: false
+  environment:
+    # PostgreSQL is the single source of truth for both services. DATABASE_URL
+    # defaults to the bundled `postgres` service; override it (and APP_SECRET_KEY)
+    # in .env. The user/password/db must match the POSTGRES_* values below.
+    DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
+    APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+    WORKER_REPOSITORY_BACKEND: ${WORKER_REPOSITORY_BACKEND:-postgres}
   restart: unless-stopped
   depends_on:
     postgres:
@@ -24,19 +31,21 @@ services:
       timeout: 5s
       retries: 10
 
-  worker:
-    <<: *app
-    command: ["python", "-m", "app.main", "--watch"]
-    volumes:
-      - ./data:/app/data
-      - ./tmp:/app/tmp
-      - ./secrets:/app/secrets
-
   web:
     <<: *app
     command: ["uvicorn", "app.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./tmp:/app/tmp
+      - ./secrets:/app/secrets:ro
+
+  # Owns all processing: claims pending jobs from PostgreSQL, downloads the MP4,
+  # transcribes with the user's Deepgram key, and (optionally) uploads to Drive.
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker.main"]
     volumes:
       - ./data:/app/data
       - ./tmp:/app/tmp

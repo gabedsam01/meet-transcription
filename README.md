@@ -134,19 +134,25 @@ docker compose up -d web
 
 Open `http://localhost:8000`, sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`, connect Google, and configure the Drive folders in the UI.
 
-The `worker` service is still the legacy env-driven worker. It does not read Web UI database settings or Web UI OAuth tokens. Run `worker` alongside `web` only if you intentionally want the separate `.env`-configured worker processing its own configured folders.
+### Compose Architecture
 
-### Run Once And Background Processing
+The final architecture is three services, with **PostgreSQL as the single source of truth** for users, settings, jobs, transcripts, and encrypted Google tokens:
 
-The Web UI **Run once** button does not block the HTTP request. When you click it:
+- **postgres** — PostgreSQL; the only datastore. There is no SQLite path.
+- **web** — `uvicorn app.web.main:app --host 0.0.0.0 --port 8000`. Creates `pending` jobs only; it never downloads, transcribes, or uploads.
+- **worker** — `python -m app.worker.main`. Owns all processing: claims `pending` jobs, downloads the MP4, transcribes with the user's own (encrypted, per-user) Deepgram key, saves the transcript to PostgreSQL, and optionally uploads a backup copy to Drive.
 
-1. The request validates your settings and Google connection, creates a `pending` job, and returns to `/jobs` immediately (well under a second).
-2. The transcription itself — download, Deepgram, and upload — runs in a local **FastAPI background task** inside the same web container.
-3. Refresh `/jobs` to follow the job through `pending` → `processing` → `completed`/`failed`.
+The legacy CLI worker (`python -m app.main --watch`) still exists for the standalone "Simple Worker Mode" above, but it is **no longer the main Compose worker** — the Compose `worker` service runs `python -m app.worker.main`.
 
-Each Run once transcribes the next recording found in the source folder as a single background job. If a job is already `pending` or `processing` for your user, a second Run once is rejected with "There is already a job running." This is what avoids the Cloudflare `524` timeout that happened when the request processed the whole transcription synchronously.
+### Run Once And Job Processing
 
-This background task is local to one container and is intentionally simple for the MVP. It does not survive a process restart and does not scale across multiple web replicas. For production with many users, evolve it into a dedicated worker or queue (for example the legacy CLI worker, or a real job queue) instead of in-process background tasks.
+The Web UI **Run once** button does not process anything itself — the web container never downloads, transcribes, or uploads, and there are no in-process background tasks. When you click it:
+
+1. The web request validates your Drive settings, Google connection, and per-user Deepgram key, then creates a single `pending` job in PostgreSQL for the next unprocessed recording in your source folder and returns to `/jobs` immediately.
+2. The **worker** (`python -m app.worker.main`) claims the job safely (`FOR UPDATE SKIP LOCKED`), downloads the MP4, transcribes it with your encrypted per-user Deepgram key, and saves the transcript to PostgreSQL.
+3. Refresh `/jobs` to follow the job through `pending` → `processing` → `completed`/`failed`. A **Download TXT** link appears in the UI for each completed job.
+
+Google Drive is the **input** (the source folder the worker reads) and an optional **backup** (when `save_copy_to_drive` is enabled and a destination folder is set, the worker uploads a TXT copy and the UI links to it). Each Run once enqueues the next unprocessed recording; videos already `pending`, `processing`, or `completed` for your user are skipped, so a repeated Run once never duplicates a job.
 
 ### Required Web Env Vars
 
@@ -166,7 +172,7 @@ DATABASE_URL=postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcr
 
 `DATABASE_URL` is a required PostgreSQL SQLAlchemy URL using the psycopg 3 driver. Inside Docker Compose use host `postgres`, and make its user/password/database match the `POSTGRES_*` values. Create the schema once before first use with `docker compose run --rm web alembic upgrade head`.
 
-`DEEPGRAM_API_KEY` remains global and is used by both worker and Web UI-triggered transcription flows.
+The Web UI does **not** use a global Deepgram key. Each user saves their own Deepgram API key in the UI; it is encrypted at rest (Fernet key derived from `APP_SECRET_KEY`) and used only by the worker when processing that user's jobs. The `DEEPGRAM_API_KEY` env var is consumed solely by the legacy CLI worker (`python -m app.main`), never by the Web UI flow.
 
 ### Single User
 
@@ -175,6 +181,40 @@ The current Web UI is intended for a single admin user. `ADMIN_USERNAME` and `AD
 ### Multi User Roadmap
 
 Multi-user support is planned but not complete. Future work should add user provisioning, per-user authorization boundaries, background job isolation, and operational controls before exposing this to multiple independent users.
+
+## PostgreSQL Multiuser Worker
+
+`python -m app.worker.main` runs a standalone worker that processes transcription
+jobs created by the web UI. The UI creates a `pending` job; the worker claims it
+safely (`FOR UPDATE SKIP LOCKED`), transcribes with the user's own Deepgram key,
+stores the transcript in PostgreSQL, and optionally uploads a copy to Drive. The
+UI offers a TXT download for completed jobs.
+
+### Backend selection
+
+- `WORKER_REPOSITORY_BACKEND` defaults to `postgres` (production).
+- `WORKER_REPOSITORY_BACKEND=memory` is for local development and tests ONLY and
+  is **forbidden in production** — it is in-memory and non-persistent.
+- The PostgreSQL adapter is integrated; selecting `postgres` without a valid
+  `DATABASE_URL` fails fast with a clear configuration error.
+
+### Worker configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKER_REPOSITORY_BACKEND` | `postgres` | `postgres` (prod) or `memory` (dev/test only) |
+| `WORKER_POLL_INTERVAL_SECONDS` | `10` | Idle poll interval |
+| `WORKER_CONCURRENCY` | `1` | Parallel job workers (safe via SKIP LOCKED) |
+| `STALE_JOB_TIMEOUT_MINUTES` | `60` | `processing` jobs older than this are failed at startup |
+| `DATABASE_URL` | — | PostgreSQL DSN (used by the postgres adapter) |
+
+### Integration status
+
+Fully integrated on `integration/postgres-platform`: the worker, job/download
+services, and repository ports run against the real PostgreSQL repositories and
+schema, alongside the auth layer — per-user settings, the encrypted per-user
+Deepgram key, `save_copy_to_drive`, and OAuth tokens, all stored in PostgreSQL as
+the single source of truth.
 
 ## Google OAuth Setup
 
@@ -287,10 +327,9 @@ POSTGRES_DB=meet_transcription
 POSTGRES_USER=meet_user
 POSTGRES_PASSWORD=change_me
 DATABASE_URL=postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription
-DEEPGRAM_API_KEY=
 ```
 
-The Google Cloud authorized redirect URI must exactly match `GOOGLE_REDIRECT_URI`.
+The Web UI uses per-user Deepgram keys saved (encrypted) in the app, so it needs no global `DEEPGRAM_API_KEY`. The Google Cloud authorized redirect URI must exactly match `GOOGLE_REDIRECT_URI`.
 Run a PostgreSQL service (the bundled `postgres` Compose service or a managed database), point `DATABASE_URL` at it, and apply migrations with `docker compose run --rm web alembic upgrade head`.
 
 ## Security
