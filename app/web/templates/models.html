@@ -83,9 +83,9 @@
         </div>
         {% if p.id == "assemblyai" %}
         <div class="form-field">
-          <label class="form-label checkbox" style="grid-auto-flow:column; justify-content:start; align-items:center; gap:.5rem; color:var(--text)">
+          <label class="form-label form-checkbox">
             <input type="checkbox" name="speaker_labels" value="true" checked>
-            Ativar identificação de locutores (Speaker Labels)
+            <span>Ativar identificação de locutores (Speaker Labels)</span>
           </label>
         </div>
         <div class="form-field">
@@ -117,9 +117,9 @@
   <form method="post" action="/models/fallback" class="form-grid">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <div class="form-field">
-      <label class="form-label checkbox" style="grid-auto-flow:column; justify-content:start; align-items:center; gap:.5rem; color:var(--text)">
+      <label class="form-label form-checkbox">
         <input type="checkbox" name="fallback_enabled" value="true" {{ "checked" if model_settings.fallback_enabled else "" }}>
-        Ativar fallback
+        <span>Ativar fallback</span>
       </label>
     </div>
     <div class="form-field">

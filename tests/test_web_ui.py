@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,6 +66,10 @@ def test_drive_download_url():
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+def _settings_path() -> Path:
+    return Path(__file__).resolve().parent.parent
 
 
 def _settings(tmp_path) -> WebSettings:
@@ -373,3 +378,56 @@ def test_job_detail_back_link_to_transcricoes(tmp_path):
         _login(client)
         text = client.get(f"/jobs/{job.id}").text
     assert "/transcricoes" in text
+
+
+# --- mobile responsive ------------------------------------------------------
+
+
+def test_css_has_390px_breakpoint():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert "@media (max-width: 390px)" in css
+
+
+def test_base_html_has_nav_toggle_with_aria():
+    html = (_settings_path() / "app" / "web" / "templates" / "base.html").read_text()
+    assert 'aria-expanded="false"' in html
+    assert 'aria-controls="mainNav"' in html
+    assert 'id="navToggle"' in html
+
+
+def test_css_has_min_height_for_inputs_and_buttons():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert ".input, .select, .textarea {" in css
+    assert "min-height: 44px" in css
+    assert ".btn {" in css
+    assert "min-height: 44px" in css
+
+
+def test_css_has_table_wrapper():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert ".table-wrapper {" in css
+    assert "overflow-x: auto" in css
+
+
+def test_login_card_is_centered_and_narrow(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        text = client.get("/login").text
+    assert 'class="card narrow"' in text
+    assert "max-width:420px" in text
+    assert "margin:0 auto" in text
+
+
+def test_models_page_uses_form_checkbox(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/models").text
+    assert "form-checkbox" in text
+
+
+def test_extension_tokens_table_has_min_width(tmp_path):
+    auth = build_fake_repositories()
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/extensao").text
+    assert 'style="min-width:640px"' in text

@@ -559,6 +559,16 @@ Follow-up commit range on top of the four merges above that turns the
 - `app/web/main.py` — `/configuracoes`, `/admin/system`, onboarding context in dashboard.
 - `tests/test_web_ui.py`, `tests/test_web_routes.py` — nav, onboarding, mobile, legacy route tests.
 
+### Mobile staging checklist
+
+- [x] 390px: login não estoura (card narrow centralizado, max-width 420px).
+- [x] 390px: nav não fica espremida (hamburger 36px, links 44px tap target).
+- [x] 390px: Transcrições permite buscar (search-form flex-direction column, inputs 100%).
+- [x] 390px: export buttons aparecem usáveis (job-card-actions flex:1, min-height 48px).
+- [x] 390px: Modelos não tem selects gigantes quebrados (provider-grid 1fr, checkbox label wrap).
+- [x] 390px: Extensão/token é copiável (table-wrapper scroll horizontal, min-width 640px na tabela).
+- [x] 390px: não há scroll horizontal no body (table-wrapper margin negativo, overflow-x auto).
+
 ### Validation
 
 - pytest: updated tests for new nav structure and onboarding behavior.
