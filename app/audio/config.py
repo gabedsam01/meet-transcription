@@ -8,6 +8,64 @@ from app.config import parse_bool
 
 
 @dataclass(frozen=True)
+class ProviderCapabilities:
+    provider: str
+    max_upload_mb: int
+    free_tier_upload_mb: int | None = None
+    preferred_format: str = "flac"
+    supports_chunking: bool = True
+    supports_url: bool = False
+    supports_diarization: bool = False
+
+
+def get_provider_capabilities(provider_name: str, config: AudioConfig) -> ProviderCapabilities:
+    p = (provider_name or "").strip().lower()
+    if p == "openrouter":
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=config.openrouter_max_upload_mb,
+            preferred_format="flac",
+            supports_chunking=True,
+        )
+    elif p == "gemini":
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=config.gemini_max_file_api_mb,
+            preferred_format="flac",
+            supports_chunking=True,
+        )
+    elif p == "groq":
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=config.groq_max_upload_mb,
+            preferred_format="mp3",
+            supports_chunking=True,
+        )
+    elif p == "deepgram":
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=2048,  # 2 GB
+            preferred_format="flac",
+            supports_chunking=True,
+        )
+    elif p == "assemblyai":
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=config.provider_limit_default_mb,
+            preferred_format="flac",
+            supports_chunking=True,
+        )
+    else:
+        # local or unknown
+        return ProviderCapabilities(
+            provider=provider_name,
+            max_upload_mb=999999,
+            preferred_format="wav",
+            supports_chunking=False,
+        )
+
+
+@dataclass(frozen=True)
 class AudioConfig:
     """Audio preprocessing configuration loaded from the environment.
 
@@ -25,6 +83,13 @@ class AudioConfig:
     chunk_overlap_seconds: int
     max_inline_mb: int
     max_file_api_mb: int
+    compression_enabled: bool
+    compression_target_mb: int
+    cloud_chunk_target_mb: int
+    provider_limit_default_mb: int
+    openrouter_max_upload_mb: int
+    gemini_max_file_api_mb: int
+    groq_max_upload_mb: int
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "AudioConfig":
@@ -40,6 +105,13 @@ class AudioConfig:
             chunk_overlap_seconds=_int(values, "AUDIO_CHUNK_OVERLAP_SECONDS", 2),
             max_inline_mb=_int(values, "AUDIO_MAX_INLINE_MB", 70),
             max_file_api_mb=_int(values, "AUDIO_MAX_FILE_API_MB", 99),
+            compression_enabled=_bool(values, "AUDIO_COMPRESSION_ENABLED", True),
+            compression_target_mb=_int(values, "AUDIO_COMPRESSION_TARGET_MB", 99),
+            cloud_chunk_target_mb=_int(values, "AUDIO_CLOUD_CHUNK_TARGET_MB", 24),
+            provider_limit_default_mb=_int(values, "AUDIO_PROVIDER_LIMIT_DEFAULT_MB", 99),
+            openrouter_max_upload_mb=_int(values, "OPENROUTER_MAX_UPLOAD_MB", 99),
+            gemini_max_file_api_mb=_int(values, "GEMINI_MAX_FILE_API_MB", 99),
+            groq_max_upload_mb=_int(values, "GROQ_MAX_UPLOAD_MB", 25),
         )
 
     @classmethod

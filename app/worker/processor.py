@@ -8,7 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.audio.config import AudioConfig
+from app.audio.config import AudioConfig, get_provider_capabilities, ProviderCapabilities
+from app.audio.errors import FfmpegError
+from app.audio.chunking import chunk_audio
+from app.audio.stitch import stitch_transcript_chunks
 from app.audio.probe import probe_audio
 from app.core.models import Job
 from app.diarization.align import diarize_and_align
@@ -20,6 +23,7 @@ from app.errors import (
     GoogleTokenMissingError,
     ProviderUnavailableError,
     RecordingNotFoundError,
+    ProviderFileTooLargeError,
     classify_error,
     error_code,
     is_retryable,
@@ -75,6 +79,7 @@ class ResolvedProvider:
     settings: Any
     token: Any
     label: str = ""
+    model: str = ""
 
 
 class JobProcessor:
@@ -98,10 +103,10 @@ class JobProcessor:
         token = repos.google_tokens.get(job.user_id)
         if token is None and not is_upload:
             raise GoogleTokenMissingError("Google token is required before transcription")
-        provider, label, name = self._resolve_provider(settings)
+        provider, label, name, model = self._resolve_provider(settings)
         return ResolvedProvider(
             provider=provider, name=name, kind=classify_provider_kind(name),
-            status=None, settings=settings, token=token, label=label,
+            status=None, settings=settings, token=token, label=label, model=model,
         )
 
     def process(self, job: Job, resolved: ResolvedProvider | None = None) -> None:
@@ -157,13 +162,43 @@ class JobProcessor:
             # no audio track. OFF by default — zero impact on the Drive+Deepgram path.
             self._check_audio(media_path)
 
-            result = provider.transcribe(
-                media_path,
-                original_name=original_name,
-                file_id=job.source_file_id,
-            )
-            transcript_text = result.text
-            payload = result.payload
+            preprocessed = self._preprocess_media_if_needed(media_path, resolved, job_dir)
+            if isinstance(preprocessed, Path):
+                result = provider.transcribe(
+                    preprocessed,
+                    original_name=original_name,
+                    file_id=job.source_file_id,
+                )
+                transcript_text = result.text
+                payload = result.payload
+            else:
+                chunk_payloads = []
+                for chunk_path, start_sec in preprocessed:
+                    LOGGER.info("Transcribing chunk at offset %s seconds: %s", start_sec, chunk_path.name)
+                    chunk_res = provider.transcribe(
+                        chunk_path,
+                        original_name=chunk_path.name,
+                        file_id=job.source_file_id,
+                    )
+                    chunk_payloads.append({
+                        "start_offset": start_sec,
+                        "segments": chunk_res.payload.get("segments") or [],
+                        "text": chunk_res.payload.get("text") or "",
+                        "raw": chunk_res.payload.get("raw") or {},
+                    })
+                
+                stitched = stitch_transcript_chunks(chunk_payloads)
+                from app.transcription.normalizer import normalized_payload, render_transcript_text
+                payload = normalized_payload(
+                    provider=resolved.name,
+                    engine=resolved.name,
+                    model=resolved.model,
+                    language=None,
+                    text=stitched["text"],
+                    segments=stitched["segments"],
+                    raw={"chunks": [p["raw"] for p in chunk_payloads]}
+                )
+                transcript_text = render_transcript_text(payload, original_name or "", job.source_file_id or "")
 
             # Optional local diarization (OFF by default). When it assigns speakers,
             # re-render the .txt so the download reflects them.
@@ -360,7 +395,7 @@ class JobProcessor:
         return render_local_text(payload, original_name, file_id or ""), payload
 
     def _resolve_provider(self, settings):
-        """Return ``(provider, label, name)`` for the job's settings.
+        """Return ``(provider, label, name, model)`` for the job's settings.
 
         Explicit OpenRouter/Gemini selection goes through the cloud resolver (with
         fallback); everything else (no selection, or Deepgram) keeps the legacy
@@ -376,7 +411,7 @@ class JobProcessor:
             resolved = resolve_cloud_provider(
                 ms, self._cloud_credentials(settings), build=self._build_cloud_provider
             )
-            return resolved.provider, resolved.label, resolved.provider_id
+            return resolved.provider, resolved.label, resolved.provider_id, resolved.model
         # Honour an explicit per-user Deepgram model from the Models tab; the
         # local-vs-Deepgram product rule and its messages stay on the legacy path.
         deepgram_model = self.container.settings.deepgram_model
@@ -385,8 +420,8 @@ class JobProcessor:
         provider, status = self._resolve_legacy(settings, config, deepgram_model)
         if getattr(status, "local_valid", False):
             # A valid local engine: its config.engine name drives LOCAL concurrency.
-            return provider, status.summary, config.engine
-        return provider, f"deepgram:{deepgram_model}", "deepgram"
+            return provider, status.summary, config.engine, config.model
+        return provider, f"deepgram:{deepgram_model}", "deepgram", deepgram_model
 
     def _resolve_legacy(self, settings, config, deepgram_model):
         def build_deepgram_provider():
@@ -428,6 +463,160 @@ class JobProcessor:
                 provider=provider_id,
             )
         return builder(provider_id, api_key=api_key, model=model)
+
+    def _preprocess_media_if_needed(
+        self,
+        media_path: Path,
+        resolved: ResolvedProvider,
+        job_dir: Path,
+    ) -> Path | list[tuple[Path, float]]:
+        config = self.container.audio_config or AudioConfig.disabled()
+        capabilities = get_provider_capabilities(resolved.name, config)
+        limit_bytes = capabilities.max_upload_mb * 1024 * 1024
+        
+        # Check initial file size
+        size_bytes = media_path.stat().st_size if media_path.exists() else 0
+        
+        # If the file is small enough, no preprocessing for size is needed.
+        if size_bytes <= limit_bytes:
+            return media_path
+            
+        # If preprocessing is disabled, raise ProviderFileTooLargeError immediately
+        if not config.enabled:
+            if resolved.name.lower() == "groq":
+                user_msg = "No free tier do Groq, cada upload deve ficar abaixo de 25 MB. O sistema tentará compactar e dividir automaticamente."
+            else:
+                user_msg = "O arquivo é grande demais para este provedor. Ative compressão/chunking ou escolha Deepgram/local."
+            raise ProviderFileTooLargeError(
+                f"File size {size_bytes} exceeds provider limit {limit_bytes}",
+                provider=resolved.name,
+                user_message=user_msg
+            )
+            
+        # If we reach here, size > limit and preprocessing is enabled.
+        # Let's try compression if enabled.
+        runner = self.container.audio_runner
+        
+        # We start by compressing/extracting to FLAC or MP3.
+        # 1. Try FLAC first:
+        flac_path = job_dir / "preprocessed.flac"
+        try:
+            cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(media_path), "-vn", "-ar", "16000", "-ac", "1", "-map", "0:a:0", str(flac_path)]
+            try:
+                _run_ffmpeg(cmd, runner)
+            except FfmpegError:
+                cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(media_path), "-vn", "-ar", "16000", "-ac", "1", str(flac_path)]
+                _run_ffmpeg(cmd, runner)
+                
+            flac_size = flac_path.stat().st_size if flac_path.exists() else 0
+            if flac_size <= limit_bytes:
+                return flac_path
+        except Exception as exc:
+            LOGGER.warning("FLAC compression/extraction failed: %s", exc)
+            
+        # 2. Try MP3 second (24k bitrate):
+        mp3_path = job_dir / "preprocessed.mp3"
+        try:
+            cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(media_path), "-vn", "-ar", "16000", "-ac", "1", "-b:a", "24k", str(mp3_path)]
+            _run_ffmpeg(cmd, runner)
+            
+            mp3_size = mp3_path.stat().st_size if mp3_path.exists() else 0
+            if mp3_size <= limit_bytes:
+                return mp3_path
+        except Exception as exc:
+            LOGGER.warning("MP3 compression failed: %s", exc)
+            
+        # 3. If still exceeds limit and chunking is supported:
+        if capabilities.supports_chunking:
+            # Extract to WAV first, since chunk_audio requires WAV for -c copy:
+            wav_path = job_dir / "to_chunk.wav"
+            cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(media_path), "-vn", "-ar", "16000", "-ac", "1", str(wav_path)]
+            _run_ffmpeg(cmd, runner)
+            
+            chunk_dir = job_dir / "chunks"
+            chunks = chunk_audio(
+                wav_path,
+                chunk_dir,
+                max_duration_seconds=config.chunk_max_duration_seconds,
+                overlap_seconds=config.chunk_overlap_seconds,
+                runner=runner
+            )
+            
+            # Now, for each chunk (WAV), compress it to preferred format (FLAC or MP3)
+            processed_chunks = []
+            for chunk in chunks:
+                chunk_dest = chunk_dir / f"chunk_{chunk.index:04d}_compressed.{capabilities.preferred_format}"
+                
+                # Try preferred format (typically flac or mp3).
+                if capabilities.preferred_format == "flac":
+                    try:
+                        cmd = ["ffmpeg", "-nostdin", "-y", "-i", chunk.path, "-vn", "-ar", "16000", "-ac", "1", str(chunk_dest)]
+                        _run_ffmpeg(cmd, runner)
+                        c_size = chunk_dest.stat().st_size if chunk_dest.exists() else 0
+                        if c_size > limit_bytes:
+                            chunk_dest = chunk_dir / f"chunk_{chunk.index:04d}_compressed.mp3"
+                            cmd = ["ffmpeg", "-nostdin", "-y", "-i", chunk.path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "24k", str(chunk_dest)]
+                            _run_ffmpeg(cmd, runner)
+                            c_size = chunk_dest.stat().st_size if chunk_dest.exists() else 0
+                            if c_size > limit_bytes:
+                                for br in ["16k", "8k"]:
+                                    cmd = ["ffmpeg", "-nostdin", "-y", "-i", chunk.path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", br, str(chunk_dest)]
+                                    _run_ffmpeg(cmd, runner)
+                                    if chunk_dest.stat().st_size <= limit_bytes:
+                                        break
+                    except Exception as exc:
+                        raise FfmpegError(f"Failed to compress chunk {chunk.index} to FLAC/MP3: {exc}")
+                else:
+                    # Preferred is mp3:
+                    try:
+                        cmd = ["ffmpeg", "-nostdin", "-y", "-i", chunk.path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "24k", str(chunk_dest)]
+                        _run_ffmpeg(cmd, runner)
+                        c_size = chunk_dest.stat().st_size if chunk_dest.exists() else 0
+                        if c_size > limit_bytes:
+                            for br in ["16k", "8k"]:
+                                cmd = ["ffmpeg", "-nostdin", "-y", "-i", chunk.path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", br, str(chunk_dest)]
+                                _run_ffmpeg(cmd, runner)
+                                if chunk_dest.stat().st_size <= limit_bytes:
+                                    break
+                    except Exception as exc:
+                        raise FfmpegError(f"Failed to compress chunk {chunk.index} to MP3: {exc}")
+                
+                final_size = chunk_dest.stat().st_size if chunk_dest.exists() else 0
+                if final_size > limit_bytes:
+                    if resolved.name.lower() == "groq":
+                        user_msg = "No free tier do Groq, cada upload deve ficar abaixo de 25 MB. O sistema tentará compactar e dividir automaticamente."
+                    else:
+                        user_msg = "O arquivo é grande demais para este provedor. Ative compressão/chunking ou escolha Deepgram/local."
+                    raise ProviderFileTooLargeError(
+                        f"Chunk size {final_size} exceeds provider limit {limit_bytes}",
+                        provider=resolved.name,
+                        user_message=user_msg
+                    )
+                processed_chunks.append((chunk_dest, chunk.start_seconds))
+            return processed_chunks
+            
+        if resolved.name.lower() == "groq":
+            user_msg = "No free tier do Groq, cada upload deve ficar abaixo de 25 MB. O sistema tentará compactar e dividir automaticamente."
+        else:
+            user_msg = "O arquivo é grande demais para este provedor. Ative compressão/chunking ou escolha Deepgram/local."
+        raise ProviderFileTooLargeError(
+            f"File size exceeds limit after compression attempts",
+            provider=resolved.name,
+            user_message=user_msg
+        )
+
+
+def _run_ffmpeg(cmd: list[str], runner=None) -> None:
+    runner = runner or _default_runner
+    res = runner(cmd)
+    if getattr(res, "returncode", 0) != 0:
+        stderr = (getattr(res, "stderr", "") or "")[:500]
+        raise FfmpegError(f"ffmpeg failed: {stderr}")
+
+
+def _default_runner(cmd: list[str]):
+    import subprocess
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def _backoff(attempts: int, base: int, maximum: int, retry_after: int | None) -> int:

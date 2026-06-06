@@ -389,3 +389,347 @@ def test_process_cleans_only_its_own_job_dir(tmp_path):
 
     assert not (tmp_path / "jobs" / str(job.id)).exists()
     assert (sibling / "keep.txt").exists()
+
+
+def _make_audio_runner(flac_size=10, mp3_size=10, chunk_size=10, duration=1800, fail_ffmpeg=False):
+    import json
+    from pathlib import Path
+
+    def runner(cmd):
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        if fail_ffmpeg and "ffmpeg" in cmd[0]:
+            _R.returncode = 1
+            _R.stderr = "ffmpeg mock failure"
+            return _R()
+
+        if "ffprobe" in cmd[0]:
+            _R.stdout = json.dumps({
+                "streams": [{"codec_type": "audio", "sample_rate": "16000", "channels": 1, "codec_name": "aac"}],
+                "format": {"duration": str(duration), "size": "1000"}
+            })
+            return _R()
+
+        # ffmpeg commands
+        dest = Path(cmd[-1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if "preprocessed.flac" in str(dest):
+            dest.write_bytes(b"a" * flac_size)
+        elif "preprocessed.mp3" in str(dest):
+            dest.write_bytes(b"a" * mp3_size)
+        elif "to_chunk.wav" in str(dest):
+            dest.write_bytes(b"a" * 100)
+        elif "chunk_" in str(dest):
+            dest.write_bytes(b"a" * chunk_size)
+
+        return _R()
+
+    return runner
+
+
+def test_openrouter_small_file_no_compress(tmp_path):
+    import json
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25,
+    )
+    runner_called = []
+    def runner(cmd):
+        runner_called.append(cmd)
+        class _R:
+            returncode = 0
+            stdout = json.dumps({"streams": [{"codec_type": "audio"}], "format": {"duration": "10.0"}})
+            stderr = ""
+        return _R()
+
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 1
+    assert not any("preprocessed" in str(c) for c in runner_called)
+
+
+def test_openrouter_large_file_compressed_fits(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25,
+    )
+    runner = _make_audio_runner(flac_size=50 * 1024 * 1024)
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 1
+    assert "preprocessed.flac" in cloud.calls[0][0]
+
+
+def test_openrouter_oversized_file_chunked_stitched(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    def custom_transcribe(source_path, *, original_name, file_id):
+        from app.transcription.provider import TranscriptionResult
+        cloud.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="Olá",
+            payload={
+                "provider": "openrouter", "engine": "openrouter",
+                "model": "m", "language": "pt", "text": "Olá",
+                "segments": [{"start": 0.0, "end": 2.0, "text": "Olá"}],
+                "words": [], "utterances": [], "raw": {},
+            }
+        )
+    cloud.transcribe = custom_transcribe
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25,
+    )
+    runner = _make_audio_runner(
+        flac_size=150 * 1024 * 1024,
+        mp3_size=120 * 1024 * 1024,
+        chunk_size=10 * 1024 * 1024,
+        duration=1800
+    )
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 300 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 3
+    assert "chunk_0000_compressed.flac" in cloud.calls[0][0]
+    assert "chunk_0001_compressed.flac" in cloud.calls[1][0]
+    assert "chunk_0002_compressed.flac" in cloud.calls[2][0]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert "Olá" in transcript.text
+
+
+def test_groq_capabilities_limit_overrides():
+    from app.audio.config import AudioConfig, get_provider_capabilities
+
+    cfg_default = AudioConfig.from_env({})
+    caps_default = get_provider_capabilities("groq", cfg_default)
+    assert caps_default.max_upload_mb == 25
+
+    cfg_overridden = AudioConfig.from_env({"GROQ_MAX_UPLOAD_MB": "100"})
+    caps_overridden = get_provider_capabilities("groq", cfg_overridden)
+    assert caps_overridden.max_upload_mb == 100
+
+
+def test_ffmpeg_failure_fails_job_friendly(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25,
+    )
+    runner = _make_audio_runner(fail_ffmpeg=True)
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "processar" in done.error_message
+
+
+def test_preprocessing_disabled_raises_friendly_error(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig.disabled()
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "grande demais" in done.error_message
+    assert "Ative compressão" in done.error_message
+
+
+def test_preprocessing_disabled_raises_friendly_error_groq(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    from app.worker.processor import ResolvedProvider
+    cloud = FakeCloudProvider(provider_id="groq")
+    audio_cfg = AudioConfig.disabled()
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    # Mock resolve to return a ResolvedProvider with name "groq"
+    original_resolve = JobProcessor.resolve
+    def fake_resolve(self, j):
+        res = original_resolve(self, j)
+        return ResolvedProvider(
+            provider=res.provider, name="groq", kind=res.kind,
+            status=res.status, settings=res.settings, token=res.token, label=res.label
+        )
+
+    with patch.object(Path, "stat", fake_stat), patch.object(JobProcessor, "resolve", fake_resolve):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "No free tier do Groq" in done.error_message

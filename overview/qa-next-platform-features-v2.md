@@ -206,3 +206,18 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - [ ] Legacy CLI (`python -m app.main --once/--watch/--reprocess`) still imports/runs.
 - [ ] All new features confirmed OFF by default; enable intentionally per flag/secret.
 - [ ] GHCR image still publishes (CI/GHA unbroken).
+
+
+## 15. Runtime staging fixes (PR #7)
+
+- **Redis Connection & Idle Timeouts**: The worker's blocking dequeue (`brpop`) now runs on a dedicated Redis client (`blocking_client`) initialized with `socket_timeout=None`. The primary client retains `socket_timeout=3` to keep UI health checks and enqueuing fast. Idle socket timeout errors during `brpop` are caught and return `None` with `DEBUG` logging, preventing messy traceback logs.
+- **Capabilities-Aware Audio Preprocessing**: Cloud providers now run audio preprocessing (extracting, compressing, and chunking) before hitting their respective upload limits.
+  - If a file exceeds the provider limit, it is compressed to FLAC or MP3.
+  - If it still exceeds the limit, it is split into overlapping chunks, each compressed to fit the limit (with automatic fallback to lower bitrates if needed), and then transcribed individually.
+  - Per-chunk transcripts are combined using the overlap-aware `stitch_transcript_chunks` helper.
+- **Provider Capabilities**: Introduced a `ProviderCapabilities` mapping. Groq defaults to a conservative 25 MB upload limit (configurable via `GROQ_MAX_UPLOAD_MB` environment variable), Gemini files API limits are set to 99 MB, and OpenRouter is set to 99 MB.
+- **Errors and UI/UX**:
+  - Groq size failures show: `"No free tier do Groq, cada upload deve ficar abaixo de 25 MB. O sistema tentará compactar e dividir automaticamente."`
+  - Other providers size failures show: `"O arquivo é grande demais para este provedor. Ative compressão/chunking ou escolha Deepgram/local."`
+  - If preprocessing is disabled, `ProviderFileTooLargeError` is raised immediately with the friendly suggestion message.
+

@@ -175,3 +175,65 @@ def test_terminal_resolution_error_dead_letters_without_a_slot(tmp_path):
     done = container.repositories.jobs.get_job(job.id)
     assert done.status == JobStatus.FAILED.value
     assert queue.dead_job_ids() == {job.id}
+
+
+def test_run_queue_loop_survives_idle_timeout(tmp_path, caplog):
+    import logging
+    import redis
+    from app.queue.redis_queue import RedisTranscriptionQueue
+
+    class FakeRedisTimeout:
+        def brpop(self, key, timeout=0):
+            raise redis.exceptions.TimeoutError("Timeout reading from socket")
+
+    q = RedisTranscriptionQueue(FakeRedisTimeout(), queue_name="t")
+    container = make_worker_container(tmp_path, queue=q)
+    stop = threading.Event()
+    proc = FakeProc(container.repositories)
+
+    calls = []
+    def on_idle():
+        calls.append(True)
+        stop.set()
+
+    with caplog.at_level(logging.DEBUG):
+        run_queue_loop(
+            container, stop, "w1", processor=proc, dequeue_timeout=1,
+            on_idle=on_idle
+        )
+
+    assert len(calls) == 1
+    # Check that there is no ERROR log and no traceback
+    for record in caplog.records:
+        assert record.levelname != "ERROR"
+        assert "Queue worker iteration failed" not in record.message
+        assert "Traceback" not in record.message
+
+
+def test_run_queue_loop_logs_other_errors(tmp_path, caplog):
+    import logging
+    from app.queue.redis_queue import RedisTranscriptionQueue
+
+    class FakeRedisHiccup:
+        def brpop(self, key, timeout=0):
+            raise RuntimeError("other redis error")
+
+    q = RedisTranscriptionQueue(FakeRedisHiccup(), queue_name="t")
+    container = make_worker_container(tmp_path, queue=q)
+    stop = threading.Event()
+    proc = FakeProc(container.repositories)
+
+    calls = []
+    def on_error():
+        calls.append(True)
+        stop.set()
+
+    with caplog.at_level(logging.ERROR):
+        run_queue_loop(
+            container, stop, "w1", processor=proc, dequeue_timeout=1,
+            on_error=on_error
+        )
+
+    assert len(calls) == 1
+    # Should have log entry for the failure
+    assert any("Queue worker iteration failed" in record.message for record in caplog.records)

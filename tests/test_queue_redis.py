@@ -230,3 +230,14 @@ def test_processing_dead_sets_and_stats():
     stats = q.queue_stats()
     assert stats == {"queued": 2, "processing": 1, "dead": 1}
     assert q.dead_job_ids() == {20}
+
+
+def test_redis_dequeue_socket_timeout():
+    import redis
+
+    class FakeRedisTimeout(FakeRedis):
+        def brpop(self, key, timeout=0):
+            raise redis.exceptions.TimeoutError("Timeout reading from socket")
+
+    q = RedisTranscriptionQueue(FakeRedisTimeout(), queue_name="t")
+    assert q.dequeue(timeout=5) is None

@@ -54,8 +54,10 @@ class RedisTranscriptionQueue:
         queue_name: str = "transcription",
         cloud_concurrency: int = 5,
         time_fn=time.time,
+        blocking_client=None,
     ) -> None:
         self._r = client
+        self._blocking_r = blocking_client or client
         self._list_key = f"{queue_name}:queue"
         self._set_key = f"{queue_name}:queued"
         self._processing_key = f"{queue_name}:processing"
@@ -86,7 +88,18 @@ class RedisTranscriptionQueue:
             socket_connect_timeout=3,
             socket_timeout=3,
         )
-        return cls(client, queue_name=queue_name, cloud_concurrency=cloud_concurrency)
+        blocking_client = Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=None,
+        )
+        return cls(
+            client,
+            queue_name=queue_name,
+            cloud_concurrency=cloud_concurrency,
+            blocking_client=blocking_client,
+        )
 
     # --- queue ---------------------------------------------------------------
 
@@ -98,13 +111,26 @@ class RedisTranscriptionQueue:
         return False
 
     def dequeue(self, timeout: float = 0) -> int | None:
-        result = self._r.brpop(self._list_key, timeout=int(timeout or 0))
-        if result is None:
+        try:
+            import redis
+        except ImportError:
+            class DummyTimeoutError(Exception):
+                pass
+            redis = object()
+            redis.exceptions = object()
+            redis.exceptions.TimeoutError = DummyTimeoutError
+
+        try:
+            result = self._blocking_r.brpop(self._list_key, timeout=int(timeout or 0))
+            if result is None:
+                return None
+            _key, raw = result
+            job_id = int(raw)
+            self._r.srem(self._set_key, job_id)
+            return job_id
+        except redis.exceptions.TimeoutError:
+            LOGGER.debug("Redis dequeue socket read timed out (idle queue)")
             return None
-        _key, raw = result
-        job_id = int(raw)
-        self._r.srem(self._set_key, job_id)
-        return job_id
 
     def ensure_queued(self, job_id: int) -> bool:
         # Reconcile/self-heal path: trust the LIST, not the dedupe set. If a prior
