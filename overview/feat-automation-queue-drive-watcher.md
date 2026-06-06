@@ -127,15 +127,9 @@ Drive Changes API + `drive_watch_state` (pageToken), metering completo de minuto
 contabilidade de custo por provider, escala horizontal além das threads do worker.
 
 ## 13. PR
-Branch pronta e validada localmente. Push/PR a serem executados manualmente:
-
-```bash
-git push -u origin feat/automation-queue-drive-watcher
-gh pr create --base main --head feat/automation-queue-drive-watcher \
-  --title "Add automatic Drive polling and provider queue policies" \
-  --body "Adds automatic polling, Redis queue policies, provider concurrency, retries, dead-letter and cost guardrails."
-```
-(Preencher o link do PR aqui após criá-lo.)
+**https://github.com/gabedsam01/meet-transcription/pull/5** —
+"Add automatic Drive polling and provider queue policies" (base `main`).
+Aberto e MERGEABLE; CI iniciada (Analyze actions, Analyze python, test).
 
 ## 14. Confirmação explícita
 - **Não reintroduziu SQLite** — sem `sqlite3`/`app.db`/`database_path`; fakes em
