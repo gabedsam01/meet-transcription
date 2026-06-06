@@ -92,9 +92,12 @@ worktree compartilha o pacote `app`. A suíte completa de uma vez estoura memór
 no ambiente; rodada em blocos.)
 
 ## 9. Resultado dos testes
-A suíte ampla (excluindo os 3 arquivos de provider pesados, rodados à parte) passou:
-**310 passed, 37 skipped** (skips = testes que exigem PostgreSQL e pulam sem DB).
-Validação final completa registrada no PR (ver Task 16 / seção 13).
+Suíte completa (rodada em duas metades para não estourar memória):
+**333 passed, 37 skipped, 0 failed** (skips = testes que exigem PostgreSQL e
+pulam sem DB). `compileall app scripts alembic` OK; `docker compose config` OK;
+`docker compose build` OK (web/worker/migrate). Uma revisão adversarial multi-agente
+do diff encontrou 2 problemas reais (backoff Retry-After acima do teto; bookkeeping
+do check-now sem try/except) — **ambos corrigidos** com testes de regressão.
 
 ## 10. Riscos e limitações
 - Latência de retry limitada pela cadência do reconciler/auto-poll (não instantânea).
@@ -119,7 +122,15 @@ Drive Changes API + `drive_watch_state` (pageToken), metering completo de minuto
 contabilidade de custo por provider, escala horizontal além das threads do worker.
 
 ## 13. PR
-A ser preenchido após `gh pr create` (Task 16).
+Branch pronta e validada localmente. Push/PR a serem executados manualmente:
+
+```bash
+git push -u origin feat/automation-queue-drive-watcher
+gh pr create --base main --head feat/automation-queue-drive-watcher \
+  --title "Add automatic Drive polling and provider queue policies" \
+  --body "Adds automatic polling, Redis queue policies, provider concurrency, retries, dead-letter and cost guardrails."
+```
+(Preencher o link do PR aqui após criá-lo.)
 
 ## 14. Confirmação explícita
 - **Não reintroduziu SQLite** — sem `sqlite3`/`app.db`/`database_path`; fakes em
