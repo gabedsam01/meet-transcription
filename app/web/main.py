@@ -15,12 +15,16 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.database.connection import DatabaseConfigError
 from app.drive_client import DriveClient
+from app.exports import available_formats
 from app.google_auth import credentials_from_token
 from app.logger import setup_logging
 from app.queue import QueueSettings, build_queue
@@ -33,10 +37,15 @@ from app.recordings import (
 )
 from app.repositories import RepositoryBackendError
 from app.repositories import build_repositories as build_worker_repositories
-from app.services.download_service import DownloadError, get_downloadable_transcript
+from app.services.download_service import (
+    DownloadError,
+    get_downloadable_transcript,
+    get_transcript_export,
+)
 from app.services.drive_watcher import poll_user
 from app.services.guardrails import resolve_guardrails
 from app.services.job_service import create_next_pending_job
+from app.summaries import get_summary_status
 from app.transcription.config import TranscriptionConfig
 from app.transcription.provider import get_transcription_provider_status
 from app.transcription.provider_config import (
@@ -49,6 +58,7 @@ from app.transcription.provider_models import (
     get_provider_spec,
     is_cloud_provider,
 )
+from app.version import get_version_info
 from app.web import helpers
 from app.web.config import WebSettings
 from app.web.deepgram_key import DeepgramKeyStore
@@ -153,6 +163,38 @@ def create_app(settings: WebSettings | None = None,
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    def _session_user(request: Request):
+        """Best-effort current user for error pages; never raises."""
+        try:
+            user_id = request.session.get("user_id")
+            if user_id:
+                return repos.users.get_by_id(int(user_id))
+        except Exception:  # noqa: BLE001 - the error page must render regardless.
+            return None
+        return None
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """Render a friendly HTML error page for browser navigation.
+
+        Preserves the auth gate's redirect (303 + Location to /login) and keeps the
+        JSON ``{"detail": ...}`` shape for non-HTML clients (API calls, the download
+        endpoint, the test client). No tracebacks ever reach the response.
+        """
+        headers = dict(exc.headers or {})
+        location = headers.get("location") or headers.get("Location")
+        if location:
+            return RedirectResponse(location, status_code=exc.status_code)
+        wants_html = "text/html" in request.headers.get("accept", "")
+        if wants_html and exc.status_code != 405:
+            context = {"user": _session_user(request), **_http_error_context(exc.status_code, exc.detail)}
+            return templates.TemplateResponse(
+                request, "error.html", context, status_code=exc.status_code
+            )
+        return JSONResponse(
+            {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers or None
+        )
+
     def _resolve_worker_repositories():
         """Return ``(worker Repositories, None)`` or ``(None, error_message)``.
 
@@ -168,7 +210,10 @@ def create_app(settings: WebSettings | None = None,
                 os.environ.get("WORKER_REPOSITORY_BACKEND")
             )
             return app.state.worker_repositories, None
-        except RepositoryBackendError as exc:
+        except (RepositoryBackendError, DatabaseConfigError) as exc:
+            # Degrade gracefully (e.g. unset/invalid DATABASE_URL) so /ready answers
+            # 503 and the pages flash an error instead of returning a 500. The
+            # messages are operator-facing config text, never secrets.
             return None, str(exc)
 
     def _queue_status() -> dict:
@@ -209,9 +254,72 @@ def create_app(settings: WebSettings | None = None,
             return True
         return bool(provider_key_store and provider_key_store.has(user_id, model_settings.primary_provider))
 
+    def _queue_backend_name() -> str:
+        queue = app.state.queue
+        if queue is None:
+            return "none"
+        name = type(queue).__name__.lower()
+        if "redis" in name:
+            return "redis"
+        if "memory" in name:
+            return "memory"
+        return "queue"
+
     @app.get("/health")
     def health():
+        # Liveness only: the process is up. No Google OAuth, DB, or Redis required,
+        # so a load balancer can probe it cheaply. Shape is asserted by tests.
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready():
+        """Readiness: Postgres + schema (migrations) + queue backend. Never 500s.
+
+        Returns 200 with ``{"status": "ready", ...}`` only when the database is
+        reachable AND the queue is usable (or running in poll mode); otherwise 503
+        with ``{"status": "degraded", "checks": {...}}`` so orchestrators can wait.
+        """
+        checks: dict = {}
+        worker_repos, db_error = _resolve_worker_repositories()
+        if worker_repos is None:
+            checks["database"] = {"ok": False, "detail": db_error or "worker repositories unavailable"}
+        else:
+            try:
+                worker_repos.jobs.list_pending_jobs()
+                checks["database"] = {"ok": True}
+            except Exception:  # noqa: BLE001 - readiness must never raise.
+                checks["database"] = {"ok": False, "detail": "database unreachable"}
+        # A successful jobs query touches a migrated table, so it doubles as a
+        # migrations check: schema present ⇒ `alembic upgrade head` ran.
+        checks["migrations"] = {
+            "ok": checks["database"]["ok"],
+            "detail": "schema present" if checks["database"]["ok"] else "schema unverified",
+        }
+        qs = _queue_status()
+        backend = _queue_backend_name()
+        if qs["mode"] == "poll":
+            checks["queue"] = {"ok": True, "mode": "poll", "backend": backend}
+        else:
+            checks["queue"] = {"ok": bool(qs["available"]), "mode": "queue", "backend": backend}
+        is_ready = checks["database"]["ok"] and checks["queue"]["ok"]
+        return JSONResponse(
+            {"status": "ready" if is_ready else "degraded", "checks": checks},
+            status_code=200 if is_ready else 503,
+        )
+
+    @app.get("/version")
+    def version():
+        """Build + provider posture. Public, secret-free (commit/version/providers)."""
+        status = app.state.transcription_status
+        info = get_version_info()
+        info["providers"] = {
+            "local_enabled": bool(getattr(status, "enabled", False)),
+            "local_valid": bool(getattr(status, "local_valid", False)),
+            "deepgram_required": bool(getattr(status, "deepgram_required", True)),
+            "queue_backend": _queue_backend_name(),
+            "summaries_enabled": get_summary_status().enabled,
+        }
+        return info
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request):
@@ -252,6 +360,69 @@ def create_app(settings: WebSettings | None = None,
             "total_jobs": len(jobs),
             "last_job": jobs[0] if jobs else None,
             "jobs": jobs[:5],
+        })
+
+    @app.get("/onboarding", response_class=HTMLResponse)
+    def onboarding(request: Request, user=Depends(require_user)):
+        """Guided setup checklist computed from the user's real configuration state."""
+        drive = repos.drive_settings.get_for_user(user.id)
+        status = app.state.transcription_status
+        google_connected = repos.google_tokens.get_for_user(user.id) is not None
+        folder_valid = bool(drive and drive.source_drive_folder_id)
+        deepgram_configured = deepgram_store.has_key(user.id)
+        # A valid local engine needs no key; otherwise a per-user Deepgram key is it.
+        provider_ready = (not status.deepgram_required) or deepgram_configured
+        qs = _queue_status()
+        queue_online = qs["mode"] == "poll" or bool(qs["available"])
+        worker_repos, _ = _resolve_worker_repositories()
+        worker_online = worker_repos is not None
+        automation_active = all(
+            [google_connected, folder_valid, provider_ready, queue_online, worker_online]
+        )
+        checklist = [
+            {"label": "Google conectado", "done": google_connected},
+            {"label": "Pasta do Drive válida", "done": folder_valid},
+            {"label": "Provider válido", "done": provider_ready},
+            {"label": "Fila online", "done": queue_online},
+            {"label": "Worker online", "done": worker_online},
+            {"label": "Automação ativa", "done": automation_active},
+        ]
+        provider_label = (
+            "Modelo local ativo" if status.local_valid
+            else ("Deepgram configurado" if deepgram_configured else "Provider pendente")
+        )
+        test_cta = (
+            ("Testar Deepgram", "/settings/deepgram") if status.deepgram_required
+            else (("Ver documentação", status.doc_url) if status.doc_url else None)
+        )
+        steps = [
+            {"n": 1, "title": "Login / admin", "done": True,
+             "desc": f"Autenticado como {user.email} ({user.role}).", "cta": None},
+            {"n": 2, "title": "Conectar Google", "done": google_connected,
+             "desc": "Autorize o acesso ao Google Drive para ler as gravações do Meet.",
+             "cta": None if google_connected else ("Conectar Google", "/connect-google")},
+            {"n": 3, "title": "Escolher pasta do Drive", "done": folder_valid,
+             "desc": "Defina a pasta de origem onde o Meet salva as gravações.",
+             "cta": None if folder_valid else ("Configurar pasta", "/settings/drive")},
+            {"n": 4, "title": "Escolher provider / modelo", "done": provider_ready,
+             "desc": status.message,
+             "cta": None if provider_ready else ("Configurar Deepgram", "/settings/deepgram")},
+            {"n": 5, "title": "Testar provider", "done": provider_ready,
+             "desc": f"{provider_label}. Valide a chave Deepgram ou o modelo local.",
+             "cta": test_cta},
+            {"n": 6, "title": "Ativar automação", "done": automation_active,
+             "desc": "Com tudo acima verde, jobs enfileirados são processados automaticamente pelo worker.",
+             "cta": None},
+            {"n": 7, "title": "Rodar teste final", "done": False,
+             "desc": "Rode uma transcrição de teste para confirmar o fluxo ponta a ponta.",
+             "cta": ("Ir para Jobs", "/jobs")},
+        ]
+        return templates.TemplateResponse(request, "onboarding.html", {
+            "user": user,
+            "steps": steps,
+            "checklist": checklist,
+            "all_ready": automation_active,
+            "transcription_status": status,
         })
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -680,24 +851,29 @@ def create_app(settings: WebSettings | None = None,
         )
 
     @app.get("/jobs/{job_id}/download")
-    def download_transcript(job_id: int, request: Request, user=Depends(require_user)):
+    def download_transcript(
+        job_id: int, request: Request, user=Depends(require_user), format: str = "txt"
+    ):
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             raise HTTPException(status_code=503, detail=error)
+        fmt = (format or "txt").strip().lower()
         # Strict per-user ownership: even an admin gets 404 for another user's job,
         # so existence of other users' jobs never leaks (requirement 8d).
         try:
-            result = get_downloadable_transcript(worker_repos, job_id, user.id, is_admin=False)
+            export = get_transcript_export(worker_repos, job_id, user.id, fmt, is_admin=False)
         except DownloadError as exc:
-            status = {"not_found": 404, "not_completed": 409, "no_transcript": 404}.get(
-                exc.code, 400
-            )
+            status = {
+                "not_found": 404,
+                "not_completed": 409,
+                "no_transcript": 404,
+                "bad_format": 400,
+            }.get(exc.code, 400)
             raise HTTPException(status_code=status, detail=str(exc))
-        return PlainTextResponse(
-            result.text,
-            headers={
-                "Content-Disposition": f'attachment; filename="{result.filename}"'
-            },
+        return Response(
+            export.content,
+            media_type=export.media_type,
+            headers={"Content-Disposition": f'attachment; filename="{export.filename}"'},
         )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -708,10 +884,42 @@ def create_app(settings: WebSettings | None = None,
         # so the existence of another user's job never leaks.
         if job is None or job.user_id != user.id:
             return templates.TemplateResponse(
-                request, "error.html", {"user": user, "message": "Job not found."},
+                request, "error.html",
+                {
+                    "user": user,
+                    "code": "job_not_found",
+                    "message": "Job not found.",
+                    "action": "Verifique o link ou volte à lista de jobs.",
+                    "retry_url": "/jobs",
+                },
                 status_code=404,
             )
-        return templates.TemplateResponse(request, "job_detail.html", {"user": user, "job": job})
+        return templates.TemplateResponse(request, "job_detail.html", {
+            "user": user, "job": job, "export_formats": available_formats(),
+        })
+
+    @app.get("/search", response_class=HTMLResponse)
+    def search(request: Request, user=Depends(require_user), q: str = ""):
+        query = (q or "").strip()
+        worker_repos, error = _resolve_worker_repositories()
+        results = []
+        if query and worker_repos is not None:
+            try:
+                found = worker_repos.transcripts.search_transcripts(user.id, query, limit=25)
+            except Exception:  # noqa: BLE001 - search must never 500 the page.
+                found = []
+                error = error or "Busca indisponível no momento."
+            results = [
+                {
+                    "job_id": t.job_id,
+                    "snippet": helpers.search_snippet(t.text, query),
+                    "created_at": t.created_at,
+                }
+                for t in found
+            ]
+        return templates.TemplateResponse(request, "search.html", {
+            "user": user, "query": query, "results": results, "backend_error": error,
+        })
 
     @app.get("/admin/users", response_class=HTMLResponse)
     def admin_users(request: Request, admin=Depends(require_admin)):
@@ -891,6 +1099,27 @@ def _clean(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+# Status code -> (code, friendly message, suggested action, retry url). Used by the
+# friendly-error UI. Deliberately ignores the raw `detail` so no internal string can
+# leak into the page.
+_HTTP_ERROR_CATALOG = {
+    400: ("bad_request", "Requisição inválida.", "Revise os dados e tente novamente.", None),
+    401: ("unauthorized", "Você precisa entrar para acessar isto.", "Faça login e tente novamente.", "/login"),
+    403: ("forbidden", "Você não tem permissão para acessar isto.", "Entre com uma conta autorizada.", None),
+    404: ("not_found", "Página ou recurso não encontrado.", "Verifique o endereço ou volte ao início.", None),
+    409: ("conflict", "Este recurso ainda não está pronto.", "Aguarde o processamento e tente novamente.", None),
+    503: ("unavailable", "Serviço temporariamente indisponível.", "Tente novamente em instantes.", None),
+}
+
+
+def _http_error_context(status_code: int, detail) -> dict:
+    """Friendly, secret-free error-panel context for an HTTP status."""
+    code, message, action, retry_url = _HTTP_ERROR_CATALOG.get(
+        status_code, ("error", "Ocorreu um erro inesperado.", "Tente novamente.", None)
+    )
+    return {"code": code, "message": message, "action": action, "doc_url": None, "retry_url": retry_url}
 
 
 def require_user(request: Request):

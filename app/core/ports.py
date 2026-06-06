@@ -124,6 +124,18 @@ class TranscriptRepository(Protocol):
 
     def get_by_job(self, job_id: int) -> Transcript | None: ...
 
+    def search_transcripts(
+        self, user_id: int, query: str, limit: int = 20,
+    ) -> list[Transcript]:
+        """User-scoped text search over ``transcript_text``, newest first.
+
+        Always filters by ``user_id`` so a result can never leak another user's
+        transcript. An empty/blank ``query`` returns ``[]``. The PostgreSQL adapter
+        uses full-text search (``to_tsvector``/``plainto_tsquery``, backed by a GIN
+        index); the in-memory fake does a case-insensitive substring match.
+        """
+
+
 
 @runtime_checkable
 class SettingsRepository(Protocol):

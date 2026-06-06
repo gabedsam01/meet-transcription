@@ -21,7 +21,10 @@ from app.errors import (
     ProviderUnavailableError,
     RecordingNotFoundError,
     classify_error,
+    error_code,
+    is_retryable,
 )
+from app.observability import log_event
 from app.processor import sanitize_filename
 from app.recordings import (
     cleanup_recording,
@@ -38,6 +41,7 @@ from app.transcription.normalizer import render_local_text
 from app.transcription.provider_kind import classify_provider_kind
 from app.transcription.provider_models import GEMINI, OPENROUTER
 from app.transcription.registry import resolve_cloud_provider
+from app.webhooks import JOB_COMPLETED, JOB_FAILED
 from app.worker.container import WorkerContainer
 
 # A user's explicit cloud choice in the Models tab takes over the worker's
@@ -111,6 +115,8 @@ class JobProcessor:
         recording_id = (
             recording_id_from_source(job.source_file_id) if is_upload else None
         )
+        completed = False
+        label: str | None = None
         try:
             if resolved is None:
                 resolved = self.resolve(job)
@@ -121,9 +127,10 @@ class JobProcessor:
 
             provider = resolved.provider
             label = resolved.label or resolved.name
-            LOGGER.info(
-                "Transcription started: job_id=%s user_id=%s provider=%s kind=%s source=%s",
-                job.id, job.user_id, label, resolved.kind, "upload" if is_upload else "drive",
+            log_event(
+                "transcription.started", logger=LOGGER,
+                job_id=job.id, user_id=job.user_id, provider=label,
+                kind=resolved.kind, source="upload" if is_upload else "drive",
             )
 
             job_dir.mkdir(parents=True, exist_ok=True)
@@ -189,22 +196,36 @@ class JobProcessor:
             repos.jobs.mark_completed(
                 job.id, self._now(), transcript_drive_file_id=transcript_drive_file_id
             )
-            LOGGER.info(
-                "Transcription completed: job_id=%s provider=%s duration_seconds=%.1f",
-                job.id, label, time.monotonic() - started,
-            )
+            completed = True
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
-            self._handle_failure(job, exc)
+            self._handle_failure(job, exc, started)
         finally:
             _cleanup_job_dir(job_dir)
             if recording_id is not None:
                 cleanup_recording(self._recordings_dir(), recording_id)
 
-    def _handle_failure(self, job: Job, exc: Exception) -> None:
+        # Success bookkeeping runs AFTER the try/finally, so a logging or webhook
+        # hiccup can never route a genuinely-completed job into the failure handler.
+        if completed:
+            log_event(
+                "transcription.completed", logger=LOGGER,
+                job_id=job.id, user_id=job.user_id, provider=label,
+                duration_seconds=round(time.monotonic() - started, 3),
+                error_code=None, retryable=False,
+            )
+            self._emit_webhook(
+                JOB_COMPLETED, job_id=job.id, user_id=job.user_id, status="completed",
+                source_file_id=job.source_file_id, source_file_name=job.source_file_name,
+                error_code=None, error_message=None,  # same payload shape as job.failed
+            )
+
+    def _handle_failure(self, job: Job, exc: Exception, started: float | None = None) -> None:
         """Retry transient failures with backoff; dead-letter terminal/exhausted ones.
 
         ``attempts`` was already incremented when the job was claimed, so the first
-        failure has ``attempts == 1``. Friendly message for the UI; traceback to logs.
+        failure has ``attempts == 1``. A scheduled retry is NOT a terminal outcome,
+        so the structured failure log + webhook fire only once the job is actually
+        dead-lettered. Friendly message for the UI; traceback to logs.
         """
         repos = self.container.repositories
         settings = self.container.settings
@@ -235,6 +256,39 @@ class JobProcessor:
                 queue.mark_dead(job.id)
             except Exception:  # noqa: BLE001 - DLQ bookkeeping must not crash the loop.
                 LOGGER.warning("Could not add job_id=%s to the dead-letter set", job.id)
+
+        # Terminal failure only: structured log + best-effort, secret-free webhook.
+        # error_code()/is_retryable() use the UI/observability vocabulary
+        # (AppError.code); the retry policy above uses classify_error (error_code).
+        duration = round(time.monotonic() - started, 3) if started is not None else None
+        log_event(
+            "transcription.failed", logger=LOGGER, level=logging.ERROR,
+            job_id=job.id, user_id=job.user_id,
+            error_code=error_code(exc), retryable=is_retryable(exc),
+            duration_seconds=duration,
+        )
+        # The webhook is external egress: send only the stable code and a curated,
+        # secret-free message (AppError.user_message) — never raw str(exc), which
+        # could carry third-party/internal error text.
+        self._emit_webhook(
+            JOB_FAILED, job_id=job.id, user_id=job.user_id, status="failed",
+            source_file_id=job.source_file_id, source_file_name=job.source_file_name,
+            error_code=error_code(exc),
+            error_message=(
+                exc.user_message if isinstance(exc, AppError)
+                else "Falha no processamento da transcrição."
+            ),
+        )
+
+    def _emit_webhook(self, event: str, **data) -> None:
+        """Fire an outbound webhook best-effort. Never affects the job outcome."""
+        notifier = self.container.webhook_notifier
+        if notifier is None:
+            return
+        try:
+            notifier.notify(event, data)
+        except Exception:  # noqa: BLE001 - a webhook must never fail a job.
+            LOGGER.warning("Webhook emission raised for %s; job is unaffected", event)
 
     # -- helpers ------------------------------------------------------------
 

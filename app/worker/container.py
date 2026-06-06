@@ -17,6 +17,7 @@ from app.recordings import recordings_dir_from_env
 from app.repositories import build_repositories
 from app.transcription.config import TranscriptionConfig
 from app.transcription.factory import build_local_provider as _build_local_provider
+from app.webhooks import WebhookNotifier, WebhookSettings
 from app.worker.config import WorkerSettings
 
 
@@ -49,6 +50,8 @@ class WorkerContainer:
     diarization_probes: object | None = None
     build_diarization_provider: Callable | None = None
     recordings_dir: Path | None = None
+    # Optional outbound webhooks (job.completed / job.failed). None = disabled.
+    webhook_notifier: object | None = None
 
 
 def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
@@ -59,6 +62,8 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
     diarization_config = DiarizationConfig.from_env()
     queue_settings = QueueSettings.from_env()
     queue = build_queue(queue_settings)
+    webhook_settings = WebhookSettings.from_env()
+    webhook_notifier = WebhookNotifier(webhook_settings) if webhook_settings.enabled else None
 
     def build_drive_client(credentials, source_folder_id, destination_folder_id):
         return DriveClient.from_credentials(
@@ -110,4 +115,5 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         diarization_config=diarization_config,
         build_diarization_provider=_build_diarization_provider,
         recordings_dir=recordings_dir_from_env(),
+        webhook_notifier=webhook_notifier,
     )

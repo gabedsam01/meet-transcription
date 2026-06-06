@@ -1,7 +1,7 @@
 """automation settings, job retry columns and indexes
 
 Revision ID: 0002_automation_and_retry
-Revises: 0001_initial
+Revises: 0002_provider_registry
 Create Date: 2026-06-05
 
 Mirrors app/database/models.py changes for automation/queue/drive-watcher:
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "0002_automation_and_retry"
-down_revision: Union[str, None] = "0001_initial"
+down_revision: Union[str, None] = "0002_provider_registry"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

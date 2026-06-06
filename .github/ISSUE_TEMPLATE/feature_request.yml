@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please check the
+        [roadmap](../blob/main/documentation/19-roadmap.md) first — it may already
+        be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to accomplish? What is painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Sketch the behavior or UI.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other approaches you thought about.
+    validations:
+      required: false
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Architecture constraints acknowledged
+      description: Features must respect the project's ground rules.
+      options:
+        - label: Respects "PostgreSQL is the source of truth — no SQLite".
+        - label: Does not move heavy transcription into the web request path.
+        - label: Keeps secrets encrypted at rest and out of logs/UI.
+    validations:
+      required: false

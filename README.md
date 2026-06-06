@@ -33,6 +33,21 @@ Google Drive is the **input** (the source folder the worker reads) and an
 **optional backup** (a TXT copy can be uploaded to a destination folder). The
 **primary** way to get a transcript is the **Download TXT** button in the UI.
 
+**Product features.** Beyond the core flow, the app ships:
+
+- A guided **onboarding wizard** at `/onboarding` with a live readiness checklist
+  — see [documentation/33-onboarding.md](documentation/33-onboarding.md).
+- **Friendly errors** (error code, suggested action, docs link, retry) with **no
+  stack traces in the UI**.
+- **Operational endpoints**: `/health` (liveness), `/ready` (Postgres + queue),
+  `/version` (build + providers), and **structured, secret-free logs**
+  (`LOG_FORMAT=json`) — see [documentation/34-observability.md](documentation/34-observability.md).
+- Optional **webhooks** on `job.completed` / `job.failed`
+  ([documentation/35-webhooks.md](documentation/35-webhooks.md)).
+- **Transcript exports** as TXT / JSON / SRT / VTT / Markdown
+  ([documentation/36-export-formats.md](documentation/36-export-formats.md)).
+- User-scoped **transcript search** at `/search`.
+
 ---
 
 ## 2. Final architecture
@@ -518,10 +533,15 @@ docker compose run --rm worker python -m app.main --once --reprocess DRIVE_FILE_
 - Google tokens and per‑user Deepgram keys are **encrypted at rest** (Fernet, key
   from `APP_SECRET_KEY`); secrets are never logged.
 - Use `SESSION_COOKIE_SECURE=true` behind HTTPS; keep Postgres and Redis internal.
+- Structured logs, the UI, error messages, and webhook payloads are **secret-free**
+  (sensitive fields are redacted; tracebacks stay in logs only).
 - **Privacy:** make sure meeting participants know recordings are transcribed; you
   are responsible for complying with applicable laws.
 
-More: **[documentation/16-security.md](documentation/16-security.md)**.
+To **report a vulnerability**, see **[SECURITY.md](SECURITY.md)** (do not open a
+public issue). More for operators:
+**[documentation/37-security.md](documentation/37-security.md)** and
+**[documentation/16-security.md](documentation/16-security.md)**.
 
 ---
 
@@ -536,17 +556,22 @@ docker compose build
 
 PostgreSQL integration tests run against a real database via `TEST_DATABASE_URL`
 (or `DATABASE_URL`); when unreachable they **skip** — they never fall back to
-SQLite. Local engines are mocked in tests (no model downloads). See
-**[documentation/17-development.md](documentation/17-development.md)** and
-**[18-testing.md](documentation/18-testing.md)**.
+SQLite. Local engines are mocked in tests (no model downloads). Integrated
+end-to-end flows live in `tests/e2e/` (FastAPI `TestClient` + in-memory fakes; no
+browser). See **[documentation/17-development.md](documentation/17-development.md)**,
+**[18-testing.md](documentation/18-testing.md)**, and
+**[38-e2e-testing.md](documentation/38-e2e-testing.md)**. Contributors: see
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ---
 
 ## Roadmap
 
-Compile whisper.cpp multiarch into the image, safe model auto‑download, local
-diarization, transcript search, AI summaries, notifications, and a browser
-extension to auto‑start recording — see
+Recently landed: transcript **search**, outbound **webhooks/notifications**, and
+multi-format **exports** (see the feature links above). Still planned: compile
+whisper.cpp multiarch into the image, safe model auto‑download, local diarization,
+**AI summaries** (the `app/summaries/` provider scaffold is in place, no LLM call
+yet), and a browser extension to auto‑start recording — see
 **[documentation/19-roadmap.md](documentation/19-roadmap.md)**.
 
 ## License

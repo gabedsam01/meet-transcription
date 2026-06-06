@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a problem so it can be reproduced and fixed
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. **Do not include secrets** (tokens, API keys,
+        passwords) or full tracebacks containing them. For security issues, follow
+        [SECURITY.md](../blob/main/SECURITY.md) instead of opening a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I click "Run once", ... but I expected ...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, ordered steps. Include the route/UI action involved.
+      placeholder: |
+        1. Log in as admin
+        2. Go to /jobs and click "Run once"
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Web UI / routes
+        - Worker / job processing
+        - Transcription provider (Deepgram / local)
+        - Queue / Redis
+        - Database / migrations
+        - Webhooks
+        - Exports
+        - Search
+        - Onboarding
+        - Docs / other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of GET /version, or the image tag / git short SHA.
+      placeholder: "0.2.0 / a1b2c3d"
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: How you run it (Docker Compose, local), OS/arch, queue backend.
+      placeholder: docker compose on Ubuntu 24.04 x86_64, QUEUE_BACKEND=redis
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redacted log lines (remove any secrets). The UI never shows tracebacks; copy from server logs if needed.
+      render: shell
+    validations:
+      required: false

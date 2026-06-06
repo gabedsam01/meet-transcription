@@ -1,0 +1,19 @@
+{# Reusable friendly-error component. Shows an error code, a human message, a
+   suggested action, an optional docs link, and an optional retry button. It never
+   renders a stack trace — callers pass only safe, user-facing strings. #}
+{% macro error_panel(message, code='', action='', doc_url='', retry_url='') %}
+<section class="card narrow error-panel">
+  <div class="error-panel-head">
+    <span class="error-mark" aria-hidden="true">!</span>
+    <h1>Algo deu errado</h1>
+  </div>
+  {% if code %}<p class="error-code mono">Código: {{ code }}</p>{% endif %}
+  <p class="error-message">{{ message }}</p>
+  {% if action %}<p class="hint">{{ action }}</p>{% endif %}
+  <div class="cta-row">
+    {% if retry_url %}<a class="button button-sm" href="{{ retry_url }}">Tentar novamente</a>{% endif %}
+    <a class="button button-sm button-ghost" href="/">Voltar ao início</a>
+    {% if doc_url %}<a class="button button-sm button-ghost" href="{{ doc_url }}" target="_blank" rel="noopener">Ver documentação</a>{% endif %}
+  </div>
+</section>
+{% endmacro %}
