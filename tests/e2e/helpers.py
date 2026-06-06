@@ -118,6 +118,9 @@ def seed_auth_connected(auth, *, source="src-folder") -> None:
 
 def seed_deepgram_key(auth, value: str = "encrypted-key-blob") -> None:
     auth.deepgram_credentials.save_for_user(ADMIN_ID, value)
+    # Also seed the new per-provider key store so provider_readiness works.
+    if hasattr(auth, "provider_credentials") and auth.provider_credentials is not None:
+        auth.provider_credentials.save(ADMIN_ID, "deepgram", value)
 
 
 def run_worker_once(tmp_path, worker, *, drive=None, deepgram=None,

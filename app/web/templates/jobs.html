@@ -1,70 +1,96 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <div class="row-between">
-    <div><h1>Jobs</h1><p>Jobs de transcrição manuais e automáticos.</p></div>
-    <div class="cta-row">
-      <form method="post" action="/automation/check-now"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit" class="button button-ghost button-sm">Verificar agora</button></form>
-      <form method="post" action="/jobs/run-once"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit">Executar</button></form>
+<div class="page-header">
+  <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
+    <div>
+      <p class="page-eyebrow">Transcrições</p>
+      <h1 class="page-title">Jobs de transcrição</h1>
+      <p class="page-subtitle">Manuais e automáticos</p>
+    </div>
+    <div class="page-actions">
+      <form method="post" action="/automation/check-now" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn-secondary">Verificar agora</button>
+      </form>
+      <form method="post" action="/jobs/run-once" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn-primary">Rodar agora</button>
+      </form>
     </div>
   </div>
-  {% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
-  <div class="notice notice-warn">
-    Fila indisponível. O sistema registra novas transcrições no banco, mas elas só
-    serão processadas quando o Redis voltar.
-  </div>
-  {% endif %}
-  {% if transcription_status and transcription_status.enabled and not transcription_status.local_valid %}
-  <div class="notice notice-warn">
-    {{ transcription_status.message }} A transcrição local está desativada até
-    corrigir a configuração.
-    {% if transcription_status.doc_url %}<a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Ver documentação de modelos locais</a>.{% endif %}
-    Configure um provedor na aba Modelos para iniciar uma transcrição.
-  </div>
-  {% elif transcription_status and transcription_status.local_valid %}
-  <div class="notice">{{ transcription_status.message }} — nuvem opcional.</div>
-  {% endif %}
-  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
-  {% if backend_error %}<div class="notice">{{ backend_error }}</div>{% endif %}
-  <p class="hint">Após iniciar um job, recarregue a página para ver atualizações.</p>
+</div>
+
+{% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
+<div class="alert alert-warning mb-1">
+  Fila indisponível. O sistema registra novas transcrições no banco, mas elas só serão processadas quando o Redis voltar.
+</div>
+{% endif %}
+
+{% if transcription_status and transcription_status.enabled and not transcription_status.local_valid %}
+<div class="alert alert-warning mb-1">
+  {{ transcription_status.message }} A transcrição local está desativada até corrigir a configuração.
+  {% if transcription_status.doc_url %}<a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Ver documentação de modelos locais</a>.{% endif %}
+  Configure um provedor na aba Modelos para iniciar uma transcrição.
+</div>
+{% elif transcription_status and transcription_status.local_valid %}
+<div class="alert alert-success mb-1">{{ transcription_status.message }} — nuvem opcional.</div>
+{% endif %}
+
+{% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+{% if backend_error %}<div class="alert alert-danger mb-1">{{ backend_error }}</div>{% endif %}
+
+<section class="card">
   {% if jobs %}
   <div class="table-wrapper">
-  <table>
-    <thead>
-      <tr>
-        <th>File</th>
-        <th>Source</th>
-        <th>Status</th>
-        <th>Transcript</th>
-        <th>Created</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for job in jobs %}
-      <tr>
-        <td><a href="/jobs/{{ job.id }}">{{ job.source_file_name or 'Manual run' }}</a></td>
-        <td><span class="mono" title="{{ job.source_file_id or '' }}">{{ job.source_file_id | mid }}</span></td>
-        <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
-        <td>
-          {% if job.status == 'completed' %}
-          <a class="button button-sm" href="/jobs/{{ job.id }}/download">Download TXT</a>
-          {% if job.transcript_drive_file_id %}
-          · <a href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Drive</a>
-          {% endif %}
-          {% elif job.status == 'failed' %}
-          <form method="post" action="/jobs/{{ job.id }}/retry" class="inline-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-            <button type="submit" class="button button-ghost button-sm">Tentar novamente</button>
-          </form>
-          {% else %}<span class="muted">—</span>{% endif %}
-        </td>
-        <td class="mono">{{ job.created_at | dt }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Arquivo</th>
+          <th scope="col">Origem</th>
+          <th scope="col">Status</th>
+          <th scope="col">Transcript</th>
+          <th scope="col">Criado em</th>
+          <th scope="col" class="text-right">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.id }}">{{ job.source_file_name or 'Manual run' }}</a></td>
+          <td><span class="mono mid" title="{{ job.source_file_id or '' }}">{{ job.source_file_id | mid }}</span></td>
+          <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+          <td>
+            {% if job.status == 'completed' %}
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}/download">TXT</a>
+            {% if job.transcript_drive_file_id %}
+            <a class="btn btn-ghost btn-sm" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Drive</a>
+            {% endif %}
+            {% elif job.status == 'failed' %}
+            <form method="post" action="/jobs/{{ job.id }}/retry" style="margin:0; display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <button type="submit" class="btn btn-ghost btn-sm">Tentar novamente</button>
+            </form>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="mono">{{ job.created_at | dt }}</td>
+          <td class="text-right">
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}">Detalhes</a>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
   </div>
-  <p class="hint">Open a job to see attempts, errors, and full timestamps.</p>
-  {% else %}<p>No jobs yet.</p>{% endif %}
+  <p class="hint mt-1">Abra um job para ver tentativas, erros e timestamps completos.</p>
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Nenhum job ainda</p>
+    <p class="empty-desc">Inicie uma transcrição manual ou configure a automação.</p>
+    <div class="actions-row">
+      <a class="btn btn-primary" href="/models">Configurar modelos</a>
+      <a class="btn btn-secondary" href="/settings/automation">Configurar automação</a>
+    </div>
+  </div>
+  {% endif %}
 </section>
 {% endblock %}

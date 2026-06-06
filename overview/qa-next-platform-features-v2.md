@@ -316,3 +316,89 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
   messages and pt-BR labels.
 - `test_worker_processor.py`: `AudioConfig` constructors include `assemblyai_max_upload_mb`.
 - All 632 unit tests pass; 41 skipped (Postgres-only integration tests).
+
+---
+
+## UI/UX implementation after Kimi + Stitch audit (2026-06-06)
+
+### Design system
+
+- Refactored `app/web/static/styles.css` with CSS custom properties:
+  - Warm neutral background (`#f7f3ea`), deep green primary (`#19735e`), calm typography.
+  - 3 radius levels, 3 shadow levels.
+  - System font stack (Inter preferred, fallback to system-ui).
+- Component classes created/normalized:
+  - Layout: `.app-shell`, `.topbar`, `.page`, `.page-header`, `.card-grid`, `.provider-grid`
+  - Navigation: `.nav`, `.nav-group`, `.nav-link`, `.nav-link.is-active`
+  - Forms: `.form-grid`, `.form-field`, `.form-label`, `.input`, `.select`, `.textarea`
+  - Buttons: `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.btn-ghost`, `.btn-sm`
+  - Data: `.table-wrapper`, `.data-table`, `.stat-card`, `.metadata-grid`
+  - Feedback: `.badge`, `.alert`, `.empty-state`
+  - Content: `.transcript-viewer`, `.readiness-list`, `.step-card`
+
+### Responsiveness
+
+- Desktop: 3-column cards, 2-column providers.
+- Tablet (≤1024px): 2-column cards, single-column providers.
+- Mobile (≤768px): single-column everything, simplified nav (brand-text hidden), scrollable tables.
+- Small mobile (≤540px): compact buttons, smaller page titles.
+
+### Accessibility
+
+- Focus states with visible ring (`box-shadow`) on all interactive elements.
+- Buttons min-height 44px (36px for `.btn-sm` but still clickable).
+- Labels explicitly associated with inputs via `for`/`id`.
+- Tables use `scope="col"` on headers.
+- Badges include text content (not color-only).
+
+### PT-BR standardization
+
+- Primary navigation: Painel, Transcrições, Buscar, Drive, Modelos, Automação, Usuários, Fila.
+- Action buttons: Rodar agora, Verificar agora, Salvar, Entrar, Sair.
+- Labels on cards, tables, forms converted to PT-BR.
+- Technical terms preserved: provider, model, API key, fallback, job, webhook.
+
+### Screens redesigned
+
+- `base.html`: Modern topbar with brand mark, grouped navigation, active states, responsive.
+- `dashboard.html`: Header with stats cards, provider-agnostic status, recent jobs table.
+- `models.html`: Provider active card, selector form, provider grid with credentials.
+- `onboarding.html`: Progress badges, step cards with visual hierarchy.
+- `jobs.html`: Header with actions, status badges, empty state, responsive table.
+- `job_detail.html`: Export section, metadata grid, transcript viewer, retry action.
+- `search.html`: Large search input, empty states, result snippets.
+- `automation_settings.html`: Toggle card, config form, status panel.
+- `admin_users.html`: Create user card, styled table with badges and actions.
+- `queue_status.html`: Metrics cards, status table, dead-letter section.
+- `login.html`: Centered card, styled inputs, error alert.
+- `settings.html` / `settings_drive.html`: Card grid, styled forms.
+
+### Backend adjustments
+
+- `main.py`: Added `_ctx()` helper for template context; all HTML routes pass `active_nav`.
+- `job_detail`: Now fetches and renders `transcript_text` when job is completed.
+- Fixed `compute_provider_readiness` lambda to close `user.id` correctly (was passing bound method without user).
+
+### MCP Stitch
+
+- **Used**: YES
+- **Project ID**: projects/13826118074258041763
+- **Design System**: Transcription Studio (assets/b80d957eba334b54a21037b99c72d09c)
+- **Applied**: Palette, card shadows, typography hierarchy, status badges, provider grid concept.
+- **Discarded**: Dark mode, gradients, glassmorphism, asymmetric layouts.
+
+### Tests updated
+
+- `tests/test_web_ui.py`: Adjusted assertions for new labels and structure.
+- `tests/e2e/test_onboarding_e2e.py`: Updated for new page title and badges.
+- `tests/e2e/test_resilience_e2e.py`: Updated for generic provider key message.
+- `tests/e2e/test_job_lifecycle_e2e.py`: Updated for new export label.
+- `tests/e2e/helpers.py`: `seed_deepgram_key` now also seeds `provider_credentials`.
+
+### Validation
+
+- pytest: 659 passed, 41 skipped, 0 failures
+- compileall: OK
+- docker compose config: OK
+- docker compose build: OK
+- alembic heads: single head `0002_transcript_fts`

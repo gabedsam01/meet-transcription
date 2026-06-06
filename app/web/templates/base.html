@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,25 +7,40 @@
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="/">Meet Transcription</a>
-      {% if user %}
-      <nav>
-        <a href="/">Dashboard</a>
-        <a href="/onboarding">Onboarding</a>
-        <a href="/jobs">Jobs</a>
-        <a href="/search">Search</a>
-        <a href="/settings/drive">Drive Settings</a>
-        <a href="/models">Models</a>
-        <a href="/settings/automation">Automação</a>
-        {% if user.role == "admin" %}<a href="/admin/users">Admin Users</a>{% endif %}
-        {% if user.role == "admin" %}<a href="/admin/queue">Fila</a>{% endif %}
-        <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit">Sair</button></form>
-      </nav>
-      {% endif %}
-    </header>
-    <main class="shell">
-      {% block content %}{% endblock %}
-    </main>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/">
+          <span class="brand-mark">MT</span>
+          <span class="brand-text">Meet Transcription</span>
+        </a>
+        {% if user %}
+        <nav class="nav" id="mainNav">
+          <div class="nav-group" id="navGroupMain">
+            <a class="nav-link{% if active_nav == 'dashboard' %} is-active{% endif %}" href="/">Painel</a>
+            <a class="nav-link{% if active_nav == 'jobs' %} is-active{% endif %}" href="/jobs">Transcrições</a>
+            <a class="nav-link{% if active_nav == 'search' %} is-active{% endif %}" href="/search">Buscar</a>
+          </div>
+          <div class="nav-group" id="navGroupConfig">
+            <a class="nav-link{% if active_nav == 'drive' %} is-active{% endif %}" href="/settings/drive">Drive</a>
+            <a class="nav-link{% if active_nav == 'models' %} is-active{% endif %}" href="/models">Modelos</a>
+            <a class="nav-link{% if active_nav == 'automation' %} is-active{% endif %}" href="/settings/automation">Automação</a>
+          </div>
+          {% if user.role == "admin" %}
+          <div class="nav-group" id="navGroupAdmin">
+            <a class="nav-link{% if active_nav == 'admin_users' %} is-active{% endif %}" href="/admin/users">Usuários</a>
+            <a class="nav-link{% if active_nav == 'queue' %} is-active{% endif %}" href="/admin/queue">Fila</a>
+          </div>
+          {% endif %}
+          <form action="/logout" method="post" style="margin:0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" class="btn btn-ghost btn-sm">Sair</button>
+          </form>
+        </nav>
+        {% endif %}
+      </header>
+      <main class="page">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
   </body>
 </html>

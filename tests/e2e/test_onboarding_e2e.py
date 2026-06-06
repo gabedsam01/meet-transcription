@@ -17,7 +17,7 @@ def test_onboarding_shows_incomplete_checklist_for_a_fresh_user(tmp_path):
     with TestClient(app) as client:
         login(client)
         page = client.get("/onboarding").text
-    assert "Onboarding" in page
+    assert "Configuração guiada" in page
     assert "Conectar Google" in page  # CTA shown because Google is not connected
     assert "Configurar pasta" in page
     assert "Em configuração" in page

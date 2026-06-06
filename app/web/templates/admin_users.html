@@ -1,47 +1,89 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Admin</p>
+    <h1 class="page-title">Usuários</h1>
+    <p class="page-subtitle">Gerenciar usuários do sistema</p>
+  </div>
+</div>
+
 <section class="card">
-  <h1>Admin · Users</h1>
-  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
-  <form method="post" action="/admin/users" class="form-stack">
+  <div class="card-header">
+    <h2 class="card-title">Criar usuário</h2>
+  </div>
+  {% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+  <form method="post" action="/admin/users" class="form-grid">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label>Email<input name="email" type="email" required></label>
-    <label>Password<input name="password" type="password" required></label>
-    <label>Role
-      <select name="role"><option value="user">user</option><option value="admin">admin</option></select>
-    </label>
-    <button type="submit">Create user</button>
+    <div class="form-field">
+      <label class="form-label" for="user-email">Email</label>
+      <input class="input" id="user-email" name="email" type="email" required>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="user-password">Senha</label>
+      <input class="input" id="user-password" name="password" type="password" required>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="user-role">Função</label>
+      <select class="select" name="role" id="user-role">
+        <option value="user">user</option>
+        <option value="admin">admin</option>
+      </select>
+    </div>
+    <div class="form-field" style="align-self:end">
+      <button type="submit" class="btn btn-primary">Criar usuário</button>
+    </div>
   </form>
 </section>
+
 <section class="card">
-  <h2>Users</h2>
-  <div class="table-scroll">
-  <table>
-    <thead><tr><th>ID</th><th>Email</th><th>Role</th><th>Active</th><th>Google</th><th>Actions</th></tr></thead>
-    <tbody>
-    {% for u in users %}
-      <tr>
-        <td>{{ u.id }}</td>
-        <td>{{ u.email }}</td>
-        <td>{{ u.role }}</td>
-        <td>{{ "yes" if u.is_active else "no" }}</td>
-        <td>{{ u.google_email or "-" }}</td>
-        <td class="row-between">
-          {% if u.is_active %}
-          <form method="post" action="/admin/users/{{ u.id }}/disable"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit">Desativar</button></form>
-          {% else %}
-          <form method="post" action="/admin/users/{{ u.id }}/enable"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit">Ativar</button></form>
-          {% endif %}
-          <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="row-between">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-            <input name="new_password" type="password" placeholder="new password" required>
-            <button type="submit">Reset</button>
-          </form>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div class="card-header">
+    <h2 class="card-title">Usuários</h2>
+  </div>
+  <div class="table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">Email</th>
+          <th scope="col">Função</th>
+          <th scope="col">Ativo</th>
+          <th scope="col">Google</th>
+          <th scope="col" class="text-right">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for u in users %}
+        <tr>
+          <td class="mono">{{ u.id }}</td>
+          <td>{{ u.email }}</td>
+          <td><span class="badge {% if u.role == 'admin' %}badge-info{% else %}badge-neutral{% endif %}">{{ u.role }}</span></td>
+          <td><span class="badge {% if u.is_active %}badge-success{% else %}badge-danger{% endif %}">{{ "sim" if u.is_active else "não" }}</span></td>
+          <td>{{ u.google_email or "—" }}</td>
+          <td class="text-right">
+            <div class="flex-center" style="justify-content:flex-end">
+              {% if u.is_active %}
+              <form method="post" action="/admin/users/{{ u.id }}/disable" style="margin:0">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <button type="submit" class="btn btn-ghost btn-sm">Desativar</button>
+              </form>
+              {% else %}
+              <form method="post" action="/admin/users/{{ u.id }}/enable" style="margin:0">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <button type="submit" class="btn btn-ghost btn-sm">Ativar</button>
+              </form>
+              {% endif %}
+              <form method="post" action="/admin/users/{{ u.id }}/reset-password" style="margin:0; display:inline-flex; gap:.4rem">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <input class="input" name="new_password" type="password" placeholder="nova senha" required style="width:140px; min-height:36px; padding:.35rem .5rem; font-size:.82rem">
+                <button type="submit" class="btn btn-secondary btn-sm">Redefinir</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
   </div>
 </section>
 {% endblock %}

@@ -1,91 +1,156 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="hero">
-  <div>
-    <p class="eyebrow">Dashboard</p>
-    <h1>Painel de controle</h1>
-    <p>Conecte o Google Drive, configure pastas, seu provedor de transcrição e enfileire execuções.</p>
+<div class="page-header">
+  <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
+    <div>
+      <p class="page-eyebrow">Painel</p>
+      <h1 class="page-title">Painel de controle</h1>
+      <p class="page-subtitle">Conecte o Google Drive, configure pastas, seu provedor de transcrição e enfileire execuções.</p>
+    </div>
+    {% if not google_connected %}
+    <a class="btn btn-primary" href="/connect-google">Conectar Google</a>
+    {% endif %}
   </div>
-  {% if not google_connected %}<a class="button" href="/connect-google">Conectar Google</a>{% endif %}
-</section>
+</div>
 
-<section class="grid">
-  <article class="card">
-    <h2>Google</h2>
-    <p class="{{ 'ok' if google_connected else 'off' }}">{{ "Conectado" if google_connected else "Não conectado" }}</p>
-    {% if not google_connected %}<p><a href="/connect-google">Conectar agora</a></p>{% endif %}
+<section class="card-grid">
+  <article class="card stat-card">
+    <div class="flex-between" style="margin-bottom:.5rem">
+      <span class="stat-label">Google</span>
+      <span class="badge {% if google_connected %}badge-success{% else %}badge-danger{% endif %}">{{ "Conectado" if google_connected else "Não conectado" }}</span>
+    </div>
+    {% if not google_connected %}<a class="btn btn-ghost btn-sm mt-1" href="/connect-google">Conectar agora</a>{% endif %}
   </article>
-  <article class="card">
-    <h2>Drive origem</h2>
+  <article class="card stat-card">
+    <div class="flex-between" style="margin-bottom:.5rem">
+      <span class="stat-label">Drive origem</span>
+      <span class="badge {% if settings and settings.source_drive_folder_id %}badge-success{% else %}badge-danger{% endif %}">{{ "Configurado" if settings and settings.source_drive_folder_id else "Não configurado" }}</span>
+    </div>
     {% if settings and settings.source_drive_folder_id %}
-    <p class="ok">Configurado</p>
     <p class="mono hint" title="{{ settings.source_drive_folder_id }}">{{ settings.source_drive_folder_id | mid }}</p>
     {% else %}
-    <p class="off">Não configurado</p><p><a href="/settings/drive">Configurar pasta</a></p>
+    <a class="btn btn-ghost btn-sm mt-1" href="/settings/drive">Configurar pasta</a>
     {% endif %}
   </article>
-  <article class="card">
-    <h2>Modelos</h2>
-    <p class="{{ 'ok' if provider_ready else 'off' }}">{{ "Configurado" if provider_ready else "Não configurado" }}</p>
+  <article class="card stat-card">
+    <div class="flex-between" style="margin-bottom:.5rem">
+      <span class="stat-label">Modelos</span>
+      <span class="badge {% if provider_ready %}badge-success{% else %}badge-danger{% endif %}">{{ "Configurado" if provider_ready else "Não configurado" }}</span>
+    </div>
     <p class="hint">{{ provider_label }} · <span class="mono">{{ model_settings.primary_model }}</span></p>
-    <p><a href="/models">Gerenciar modelos</a></p>
+    <a class="btn btn-ghost btn-sm mt-1" href="/models">Gerenciar modelos</a>
   </article>
-  <article class="card">
-    <h2>Transcrição</h2>
+  <article class="card stat-card">
+    <div class="flex-between" style="margin-bottom:.5rem">
+      <span class="stat-label">Transcrição</span>
+      {% if provider_readiness and provider_readiness.ok %}
+      <span class="badge badge-success">Pronto</span>
+      {% elif provider_readiness %}
+      <span class="badge badge-warning">{{ provider_readiness.status_label }}</span>
+      {% elif transcription_status and transcription_status.local_valid %}
+      <span class="badge badge-success">{{ transcription_status.message }}</span>
+      {% elif transcription_status and transcription_status.enabled %}
+      <span class="badge badge-danger">{{ transcription_status.message }}</span>
+      {% else %}
+      <span class="badge badge-neutral">Não configurado</span>
+      {% endif %}
+    </div>
     {% if provider_readiness and provider_readiness.ok %}
-    <p class="ok">Pronto</p>
     <p class="hint">{{ provider_readiness.provider_label }}: {{ provider_readiness.model }}</p>
     {% elif provider_readiness %}
-    <p class="off">{{ provider_readiness.status_label }}</p>
-    {% if provider_readiness.action_href %}<p><a href="{{ provider_readiness.action_href }}">{{ provider_readiness.action_label }}</a></p>{% endif %}
+    {% if provider_readiness.action_href %}<a class="btn btn-ghost btn-sm mt-1" href="{{ provider_readiness.action_href }}">{{ provider_readiness.action_label }}</a>{% endif %}
     {% elif transcription_status and transcription_status.local_valid %}
-    <p class="ok">{{ transcription_status.message }}</p>
+    <p class="hint">Local ativo — nuvem opcional</p>
     {% elif transcription_status and transcription_status.enabled %}
-    <p class="off">{{ transcription_status.message }}</p>
-    {% if transcription_status.doc_url %}<p><a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Documentação de modelos locais</a></p>{% endif %}
+    {% if transcription_status.doc_url %}<a class="btn btn-ghost btn-sm mt-1" href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Documentação</a>{% endif %}
     {% else %}
     <p class="hint">Provedor de nuvem: configure na aba Modelos.</p>
     {% endif %}
   </article>
-  <article class="card">
-    <h2>Fila</h2>
+  <article class="card stat-card">
+    <div class="flex-between" style="margin-bottom:.5rem">
+      <span class="stat-label">Fila</span>
+      {% if not queue_status or queue_status.mode == 'poll' %}
+      <span class="badge badge-neutral">Polling</span>
+      {% elif queue_status.available %}
+      <span class="badge badge-success">Online</span>
+      {% else %}
+      <span class="badge badge-danger">Indisponível</span>
+      {% endif %}
+    </div>
     {% if not queue_status or queue_status.mode == 'poll' %}
-    <p class="hint">Polling (sem Redis)</p>
+    <p class="hint">Processamento sequencial sem Redis</p>
     {% elif queue_status.available %}
-    <p class="ok">Online</p>
-    <p class="hint">Redis · processamento sequencial</p>
+    <p class="hint">Redis ativo</p>
     {% else %}
-    <p class="off">Indisponível</p>
-    <p class="hint">Jobs ficam pendentes até o Redis voltar.</p>
+    <p class="hint">Jobs pendentes até o Redis voltar</p>
     {% endif %}
   </article>
 </section>
 
-<section class="grid">
-  <article class="card"><h2>Total jobs</h2><p>{{ total_jobs }}</p></article>
-  <article class="card">
-    <h2>Último job</h2>
-    {% if last_job %}
-    <p><span class="badge badge-{{ last_job.status }}">{{ last_job.status }}</span></p>
-    <p class="hint">{{ last_job.source_file_name or 'Manual' }} · {{ last_job.created_at | dt }}</p>
-    {% else %}<p class="muted">Nenhum job ainda</p>{% endif %}
+<section class="card-grid">
+  <article class="card stat-card">
+    <p class="stat-value">{{ total_jobs }}</p>
+    <p class="stat-label">Total de transcrições</p>
   </article>
-  <article class="card">
-    <h2>Ações rápidas</h2>
-    <div class="cta-row">
-      <a class="button button-sm" href="/jobs">Jobs</a>
-      <a class="button button-sm button-ghost" href="/settings">Configurações</a>
-      <a class="button button-sm button-ghost" href="/models">Modelos</a>
-    </div>
+  <article class="card stat-card">
+    <p class="stat-value">{{ queue_status.pending if queue_status and queue_status.pending is not none else "—" }}</p>
+    <p class="stat-label">Em fila</p>
+  </article>
+  <article class="card stat-card">
+    <p class="stat-value">{{ queue_status.processing if queue_status and queue_status.processing is not none else "—" }}</p>
+    <p class="stat-label">Processando</p>
   </article>
 </section>
 
 <section class="card">
-  <h2>Jobs recentes</h2>
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Transcrições recentes</h2>
+      <p class="card-subtitle">Últimos jobs executados</p>
+    </div>
+    <a class="btn btn-secondary btn-sm" href="/jobs">Ver todas</a>
+  </div>
   {% if jobs %}
-  <ul class="list">
-    {% for job in jobs %}<li><a href="/jobs/{{ job.id }}">{{ job.source_file_name or "Manual" }}</a> — {{ job.status }}</li>{% endfor %}
-  </ul>
-  {% else %}<p>Nenhum job ainda.</p>{% endif %}
+  <div class="table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Arquivo</th>
+          <th scope="col">Status</th>
+          <th scope="col">Criado em</th>
+          <th scope="col" class="text-right">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.id }}">{{ job.source_file_name or "Manual" }}</a></td>
+          <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+          <td class="mono">{{ job.created_at | dt }}</td>
+          <td class="text-right">
+            {% if job.status == 'completed' %}
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}/download">TXT</a>
+            {% elif job.status == 'failed' %}
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}">Detalhes</a>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Nenhuma transcrição ainda</p>
+    <p class="empty-desc">Inicie uma transcrição manual ou configure a automação.</p>
+    <div class="actions-row">
+      <a class="btn btn-primary" href="/jobs">Ir para transcrições</a>
+      <a class="btn btn-secondary" href="/settings/automation">Configurar automação</a>
+    </div>
+  </div>
+  {% endif %}
 </section>
 {% endblock %}

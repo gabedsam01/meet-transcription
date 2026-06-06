@@ -1,14 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Busca</p>
+    <h1 class="page-title">Buscar transcrições</h1>
+    <p class="page-subtitle">Busca o texto das suas transcrições concluídas (apenas as suas).</p>
+  </div>
+</div>
+
 <section class="card">
-  <h1>Buscar transcrições</h1>
-  <p class="hint">Busca o texto das suas transcrições concluídas (apenas as suas).</p>
   <form method="get" action="/search" class="search-form">
-    <input type="search" name="q" value="{{ query }}" placeholder="Ex.: orçamento, próxima reunião…" aria-label="Buscar transcrições">
-    <button type="submit">Buscar</button>
+    <input class="input" type="search" name="q" value="{{ query }}" placeholder="Ex.: orçamento, próxima reunião…" aria-label="Buscar transcrições">
+    <button type="submit" class="btn btn-primary">Buscar</button>
   </form>
 
-  {% if backend_error %}<div class="notice notice-warn">{{ backend_error }}</div>{% endif %}
+  {% if backend_error %}<div class="alert alert-warning mt-1">{{ backend_error }}</div>{% endif %}
 
   {% if query %}
     {% if results %}
@@ -23,8 +29,16 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">Nenhuma transcrição encontrada para “{{ query }}”.</p>
+    <div class="empty-state">
+      <p class="empty-title">Nenhuma transcrição encontrada</p>
+      <p class="empty-desc">Não encontramos resultados para “{{ query }}”.</p>
+    </div>
     {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Digite um termo para buscar</p>
+    <p class="empty-desc">Busque por palavras-chave nas suas transcrições concluídas.</p>
+  </div>
   {% endif %}
 </section>
 {% endblock %}

@@ -1,30 +1,40 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h1>Settings</h1>
-  <p class="hint">Choose what you want to configure.</p>
-  <div class="options">
-    <div class="option">
-      <div>
-        <h2>Drive folders</h2>
-        <p class="muted">Source and destination Google Drive folders (paste a folder URL).</p>
-      </div>
-      <a class="button button-sm" href="/settings/drive">Configure</a>
-    </div>
-    <div class="option">
-      <div>
-        <h2>Models</h2>
-        <p class="muted">Provedor de transcrição, modelo, chaves (criptografadas) e fallback.</p>
-      </div>
-      <a class="button button-sm" href="/models">Configure</a>
-    </div>
-    <div class="option">
-      <div>
-        <h2>Automação</h2>
-        <p class="muted">Verificação automática da pasta do Drive e enfileiramento de novos vídeos.</p>
-      </div>
-      <a class="button button-sm" href="/settings/automation">Configure</a>
-    </div>
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Configuração</p>
+    <h1 class="page-title">Configurações</h1>
+    <p class="page-subtitle">Escolha o que deseja configurar.</p>
   </div>
+</div>
+
+<section class="card-grid">
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Drive</h2>
+        <p class="card-subtitle">Pastas de origem e destino no Google Drive.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/settings/drive">Configurar</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Modelos</h2>
+        <p class="card-subtitle">Provedor de transcrição, modelo, chaves (criptografadas) e fallback.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/models">Configurar</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Automação</h2>
+        <p class="card-subtitle">Verificação automática da pasta do Drive e enfileiramento de novos vídeos.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/settings/automation">Configurar</a>
+  </article>
 </section>
 {% endblock %}

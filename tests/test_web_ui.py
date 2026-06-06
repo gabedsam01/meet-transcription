@@ -118,7 +118,7 @@ def test_job_detail_shows_full_fields_and_download(tmp_path):
     assert "txt-789" in text
     assert "Download TXT" in text
     assert f"/jobs/{job.id}/download" in text  # local Postgres-backed transcript
-    for label in ["Source file id", "Attempts", "Error", "Created", "Updated", "Processed"]:
+    for label in ["ID do arquivo", "Tentativas", "Erro", "Criado em", "Atualizado em", "Processado em"]:
         assert label in text
 
 
@@ -190,8 +190,8 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
 
     assert "Conectado" in text  # Google
     assert "Configurado" in text  # Drive source + Models provider
-    assert "Total jobs" in text
-    assert "Último job" in text
+    assert "Total de transcrições" in text
+    assert "Transcrições recentes" in text
     assert "badge-completed" in text  # last job status badge
     assert "/models" in text  # Models CTA (replaces the old Deepgram tab)
     assert "/jobs" in text  # Jobs CTA
@@ -206,8 +206,8 @@ def test_settings_landing_links_to_sections(tmp_path):
         text = client.get("/settings").text
     assert "/settings/drive" in text
     assert "/models" in text
-    assert "Drive folders" in text
-    assert "Models" in text
+    assert "Drive" in text
+    assert "Modelos" in text
 
 
 def test_models_page_shows_status_without_full_key(tmp_path):
@@ -215,7 +215,7 @@ def test_models_page_shows_status_without_full_key(tmp_path):
         _login(client)
         page = client.get("/models")
     assert page.status_code == 200
-    assert "Models" in page.text
+    assert "Modelos" in page.text
     assert "Não configurado" in page.text  # no per-user key saved yet
     assert "criptografad" in page.text  # encrypted-at-rest messaging
     # The model selectors list each provider's catalogue.

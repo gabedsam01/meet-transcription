@@ -53,7 +53,7 @@ def test_run_once_blocked_without_deepgram_key_shows_friendly_error(tmp_path):
         client.post("/jobs/run-once", follow_redirects=False)
         page = client.get("/jobs").text
     assert worker.jobs.list_jobs_for_user(ADMIN_ID) == []
-    assert "Configure sua Deepgram API Key" in page
+    assert "Configure a chave do provedor em Modelos antes de iniciar" in page
 
 
 def test_redis_unavailable_keeps_job_pending_and_warns_and_degrades_ready(tmp_path):

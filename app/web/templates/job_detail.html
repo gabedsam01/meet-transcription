@@ -1,43 +1,89 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <div class="row-between">
+<div class="page-header">
+  <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
     <div>
-      <p class="eyebrow">Job #{{ job.id }}</p>
-      <h1>{{ job.source_file_name or 'Manual run' }}</h1>
+      <p class="page-eyebrow">Job #{{ job.id }}</p>
+      <h1 class="page-title">{{ job.source_file_name or 'Manual run' }}</h1>
     </div>
     <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
   </div>
+</div>
 
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Exportar</h2>
+    </div>
+  </div>
   {% if job.status == 'completed' %}
-  <p>
-    <a class="button" href="/jobs/{{ job.id }}/download">Download TXT</a>
+  <div class="actions-row">
+    <a class="btn btn-primary" href="/jobs/{{ job.id }}/download">Download TXT</a>
     {% if job.transcript_drive_file_id %}
-    <a class="button button-ghost" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Open in Drive</a>
+    <a class="btn btn-secondary" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Abrir no Drive</a>
     {% endif %}
-  </p>
+  </div>
   {% if export_formats %}
-  <p class="hint">Exportar como:</p>
-  <p class="cta-row export-row">
+  <p class="hint mt-1">Formatos adicionais:</p>
+  <div class="actions-row">
     {% for fmt, label in export_formats %}
-    <a class="button button-sm button-ghost" href="/jobs/{{ job.id }}/download?format={{ fmt }}">{{ label }}</a>
+    <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}/download?format={{ fmt }}">{{ label }}</a>
     {% endfor %}
-  </p>
+  </div>
   {% endif %}
+  {% else %}
+  <p class="muted">Exportação disponível apenas para jobs concluídos.</p>
   {% endif %}
-
-  <dl class="detail">
-    <dt>File name</dt><dd>{{ job.source_file_name or '—' }}</dd>
-    <dt>Source file id</dt><dd class="mono">{{ job.source_file_id or '—' }}</dd>
-    <dt>Status</dt><dd><span class="badge badge-{{ job.status }}">{{ job.status }}</span></dd>
-    <dt>Attempts</dt><dd>{{ job.attempts }}</dd>
-    <dt>Transcript Drive id</dt><dd class="mono">{{ job.transcript_drive_file_id or '—' }}</dd>
-    <dt>Error</dt><dd>{{ job.error_message or '—' }}</dd>
-    <dt>Created</dt><dd class="mono">{{ job.created_at | dt }}</dd>
-    <dt>Updated</dt><dd class="mono">{{ job.updated_at | dt }}</dd>
-    <dt>Processed</dt><dd class="mono">{{ job.processed_at | dt }}</dd>
-  </dl>
-
-  <p class="cta-row"><a class="button button-ghost" href="/jobs">← Back to jobs</a></p>
 </section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Metadados</h2>
+    </div>
+  </div>
+  <dl class="metadata-grid">
+    <dt>Nome do arquivo</dt><dd>{{ job.source_file_name or '—' }}</dd>
+    <dt>ID do arquivo</dt><dd class="mono">{{ job.source_file_id or '—' }}</dd>
+    <dt>Status</dt><dd><span class="badge badge-{{ job.status }}">{{ job.status }}</span></dd>
+    <dt>Tentativas</dt><dd>{{ job.attempts }}</dd>
+    <dt>ID no Drive</dt><dd class="mono">{{ job.transcript_drive_file_id or '—' }}</dd>
+    <dt>Erro</dt><dd>{{ job.error_message or '—' }}</dd>
+    <dt>Criado em</dt><dd class="mono">{{ job.created_at | dt }}</dd>
+    <dt>Atualizado em</dt><dd class="mono">{{ job.updated_at | dt }}</dd>
+    <dt>Processado em</dt><dd class="mono">{{ job.processed_at | dt }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Transcrição</h2>
+    </div>
+  </div>
+  {% if job.status == 'completed' and transcript_text %}
+  <div class="transcript-viewer">
+    {{ transcript_text | replace('\n', '<br>') | safe }}
+  </div>
+  {% elif job.status == 'failed' %}
+  <div class="alert alert-danger">
+    <strong>Job falhou.</strong> Verifique os metadados acima para detalhes do erro.
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Transcrição em andamento</p>
+    <p class="empty-desc">O job ainda está sendo processado. Volte mais tarde.</p>
+  </div>
+  {% endif %}
+</section>
+
+<div class="actions-row">
+  <a class="btn btn-ghost" href="/jobs">← Voltar para transcrições</a>
+  {% if job.status == 'failed' %}
+  <form method="post" action="/jobs/{{ job.id }}/retry" style="margin:0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button type="submit" class="btn btn-primary">Tentar novamente</button>
+  </form>
+  {% endif %}
+</div>
 {% endblock %}

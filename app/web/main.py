@@ -85,8 +85,13 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 # Template filters keep long Drive ids and ISO timestamps from breaking layout.
 templates.env.filters["mid"] = helpers.middle_truncate
 templates.env.filters["dt"] = helpers.short_datetime
-templates.env.filters["drive_dl"] = helpers.drive_download_url
 templates.env.globals["csrf_token"] = lambda request: get_or_create_csrf_token(request)
+
+
+def _ctx(request: Request, user, **extra) -> dict:
+    """Build template context with user and any extra fields."""
+    return {"request": request, "user": user, **extra}
+
 
 # Run-once only creates a pending job; the worker does the processing. Keys match
 # JobCreationResult.status from app.services.job_service.create_next_pending_job.
@@ -359,7 +364,7 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request):
-        return templates.TemplateResponse(request, "login.html")
+        return templates.TemplateResponse(request, "login.html", _ctx(request, _session_user(request)))
 
     @app.post("/login")
     def login(request: Request, username: str = Form(...), password: str = Form(...),
@@ -387,22 +392,23 @@ def create_app(settings: WebSettings | None = None,
         primary_spec = get_provider_spec(model_settings.primary_provider)
         readiness = compute_provider_readiness(
             model_settings,
-            has_key=provider_key_store.has if provider_key_store else None,
+            has_key=lambda pid: provider_key_store.has(user.id, pid) if provider_key_store else None,
         )
-        return templates.TemplateResponse(request, "dashboard.html", {
-            "user": user,
-            "settings": repos.drive_settings.get_for_user(user.id),
-            "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
-            "model_settings": model_settings,
-            "provider_label": primary_spec.label if primary_spec else model_settings.primary_provider,
-            "provider_ready": _primary_ready(user.id, model_settings),
-            "provider_readiness": readiness,
-            "transcription_status": app.state.transcription_status,
-            "queue_status": _queue_status(),
-            "total_jobs": len(jobs),
-            "last_job": jobs[0] if jobs else None,
-            "jobs": jobs[:5],
-        })
+        qs = _queue_status()
+        return templates.TemplateResponse(request, "dashboard.html", _ctx(request, user,
+            active_nav="dashboard",
+            settings=repos.drive_settings.get_for_user(user.id),
+            google_connected=repos.google_tokens.get_for_user(user.id) is not None,
+            model_settings=model_settings,
+            provider_label=primary_spec.label if primary_spec else model_settings.primary_provider,
+            provider_ready=_primary_ready(user.id, model_settings),
+            provider_readiness=readiness,
+            transcription_status=app.state.transcription_status,
+            queue_status={**qs, "pending": len([j for j in jobs if j.status == "pending"]), "processing": len([j for j in jobs if j.status == "processing"])},
+            total_jobs=len(jobs),
+            last_job=jobs[0] if jobs else None,
+            jobs=jobs[:5],
+        ))
 
     @app.get("/onboarding", response_class=HTMLResponse)
     def onboarding(request: Request, user=Depends(require_user)):
@@ -413,7 +419,7 @@ def create_app(settings: WebSettings | None = None,
         model_settings = _model_settings_for(user.id)
         readiness = compute_provider_readiness(
             model_settings,
-            has_key=provider_key_store.has if provider_key_store else None,
+            has_key=lambda pid: provider_key_store.has(user.id, pid) if provider_key_store else None,
         )
         qs = _queue_status()
         queue_online = qs["mode"] == "poll" or bool(qs["available"])
@@ -474,26 +480,26 @@ def create_app(settings: WebSettings | None = None,
              "desc": "Rode uma transcrição de teste para confirmar o fluxo ponta a ponta.",
              "cta": ("Ir para Jobs", "/jobs")},
         ]
-        return templates.TemplateResponse(request, "onboarding.html", {
-            "user": user,
-            "steps": steps,
-            "checklist": checklist,
-            "all_ready": automation_active,
-            "transcription_status": app.state.transcription_status,
-        })
+        return templates.TemplateResponse(request, "onboarding.html", _ctx(request, user,
+            active_nav="onboarding",
+            steps=steps,
+            checklist=checklist,
+            all_ready=automation_active,
+            transcription_status=app.state.transcription_status,
+        ))
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, user=Depends(require_user)):
         # Landing page that links out to the focused settings sections.
-        return templates.TemplateResponse(request, "settings.html", {"user": user})
+        return templates.TemplateResponse(request, "settings.html", _ctx(request, user, active_nav="settings"))
 
     @app.get("/settings/drive", response_class=HTMLResponse)
     def drive_settings_page(request: Request, user=Depends(require_user)):
-        return templates.TemplateResponse(request, "settings_drive.html", {
-            "user": user,
-            "settings": repos.drive_settings.get_for_user(user.id),
-            "message": _pop_flash(request),
-        })
+        return templates.TemplateResponse(request, "settings_drive.html", _ctx(request, user,
+            active_nav="drive",
+            settings=repos.drive_settings.get_for_user(user.id),
+            message=_pop_flash(request),
+        ))
 
     @app.post("/settings/drive")
     def save_drive_settings(
@@ -509,11 +515,11 @@ def create_app(settings: WebSettings | None = None,
             dest_url = destination_drive_folder_url.strip() or None
             dest_id = extract_google_drive_folder_id(dest_url) if dest_url else None
         except ValueError as exc:
-            return templates.TemplateResponse(request, "settings_drive.html", {
-                "user": user,
-                "settings": repos.drive_settings.get_for_user(user.id),
-                "error": str(exc),
-            }, status_code=400)
+            return templates.TemplateResponse(request, "settings_drive.html", _ctx(request, user,
+                active_nav="drive",
+                settings=repos.drive_settings.get_for_user(user.id),
+                error=str(exc),
+            ), status_code=400)
         repos.drive_settings.save_for_user(user.id, DriveSettings(
             source_drive_folder_url=source_drive_folder_url.strip(),
             source_drive_folder_id=source_id,
@@ -526,13 +532,15 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/models", response_class=HTMLResponse)
     def models_page(request: Request, user=Depends(require_user), provider: str | None = None):
-        return templates.TemplateResponse(request, "models.html", {
-            "user": user,
-            "model_settings": _model_settings_for(user.id),
-            "providers": _providers_view(user.id),
-            "preselect": provider,
-            "message": _pop_flash(request),
-        })
+        model_settings = _model_settings_for(user.id)
+        return templates.TemplateResponse(request, "models.html", _ctx(request, user,
+            active_nav="models",
+            model_settings=model_settings,
+            providers=_providers_view(user.id),
+            preselect=provider,
+            message=_pop_flash(request),
+            provider_ready=_primary_ready(user.id, model_settings),
+        ))
 
     @app.post("/models/provider")
     def save_provider(request: Request, user=Depends(require_user),
@@ -639,12 +647,12 @@ def create_app(settings: WebSettings | None = None,
             worker_repos.automation.get_for_user(user.id)
             if worker_repos and worker_repos.automation else None
         )
-        return templates.TemplateResponse(request, "automation_settings.html", {
-            "user": user,
-            "automation": automation,
-            "message": _pop_flash(request),
-            "backend_error": error,
-        })
+        return templates.TemplateResponse(request, "automation_settings.html", _ctx(request, user,
+            active_nav="automation",
+            automation=automation,
+            message=_pop_flash(request),
+            backend_error=error,
+        ))
 
     @app.post("/settings/automation")
     def save_automation(
@@ -768,27 +776,27 @@ def create_app(settings: WebSettings | None = None,
         status_counts = (
             worker_repos.jobs.count_jobs_by_status() if worker_repos else {}
         )
-        return templates.TemplateResponse(request, "queue_status.html", {
-            "user": admin,
-            "queue_status": _queue_status(),
-            "stats": stats,
-            "dead_ids": dead_ids,
-            "status_counts": status_counts,
-            "message": _pop_flash(request),
-        })
+        return templates.TemplateResponse(request, "queue_status.html", _ctx(request, admin,
+            active_nav="queue",
+            queue_status=_queue_status(),
+            stats=stats,
+            dead_ids=dead_ids,
+            status_counts=status_counts,
+            message=_pop_flash(request),
+        ))
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
         worker_repos, error = _resolve_worker_repositories()
         jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
-        return templates.TemplateResponse(request, "jobs.html", {
-            "user": user,
-            "jobs": jobs,
-            "message": _pop_flash(request),
-            "backend_error": error,
-            "transcription_status": app.state.transcription_status,
-            "queue_status": _queue_status(),
-        })
+        return templates.TemplateResponse(request, "jobs.html", _ctx(request, user,
+            active_nav="jobs",
+            jobs=jobs,
+            message=_pop_flash(request),
+            backend_error=error,
+            transcription_status=app.state.transcription_status,
+            queue_status=_queue_status(),
+        ))
 
     @app.post("/jobs/run-once")
     def run_once(request: Request, user=Depends(require_user),
@@ -964,18 +972,28 @@ def create_app(settings: WebSettings | None = None,
         if job is None or job.user_id != user.id:
             return templates.TemplateResponse(
                 request, "error.html",
-                {
-                    "user": user,
-                    "code": "job_not_found",
-                    "message": "Job not found.",
-                    "action": "Verifique o link ou volte à lista de jobs.",
-                    "retry_url": "/jobs",
-                },
+                _ctx(request, user,
+                    code="job_not_found",
+                    message="Job not found.",
+                    action="Verifique o link ou volte à lista de jobs.",
+                    retry_url="/jobs",
+                ),
                 status_code=404,
             )
-        return templates.TemplateResponse(request, "job_detail.html", {
-            "user": user, "job": job, "export_formats": available_formats(),
-        })
+        transcript_text = ""
+        if worker_repos and job.status == "completed":
+            try:
+                t = worker_repos.transcripts.get_transcript_text(job_id)
+                if t:
+                    transcript_text = t.text
+            except Exception:
+                pass
+        return templates.TemplateResponse(request, "job_detail.html", _ctx(request, user,
+            active_nav="jobs",
+            job=job,
+            export_formats=available_formats(),
+            transcript_text=transcript_text,
+        ))
 
     @app.get("/search", response_class=HTMLResponse)
     def search(request: Request, user=Depends(require_user), q: str = ""):
@@ -996,17 +1014,20 @@ def create_app(settings: WebSettings | None = None,
                 }
                 for t in found
             ]
-        return templates.TemplateResponse(request, "search.html", {
-            "user": user, "query": query, "results": results, "backend_error": error,
-        })
+        return templates.TemplateResponse(request, "search.html", _ctx(request, user,
+            active_nav="search",
+            query=query,
+            results=results,
+            backend_error=error,
+        ))
 
     @app.get("/admin/users", response_class=HTMLResponse)
     def admin_users(request: Request, admin=Depends(require_admin)):
-        return templates.TemplateResponse(request, "admin_users.html", {
-            "user": admin,
-            "users": repos.users.list_all(),
-            "message": _pop_flash(request),
-        })
+        return templates.TemplateResponse(request, "admin_users.html", _ctx(request, admin,
+            active_nav="admin_users",
+            users=repos.users.list_all(),
+            message=_pop_flash(request),
+        ))
 
     @app.post("/admin/users")
     def admin_create_user(request: Request, admin=Depends(require_admin),

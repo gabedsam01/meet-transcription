@@ -79,6 +79,6 @@ def test_job_detail_lists_export_links_for_completed_job(tmp_path):
         run_worker_once(tmp_path, worker, drive=drive, deepgram=FakeDeepgramClient())
         job_id = worker.jobs.list_jobs_for_user(ADMIN_ID)[0].id
         detail = client.get(f"/jobs/{job_id}").text
-    assert "Exportar como" in detail
+    assert "Formatos adicionais" in detail
     assert "?format=srt" in detail
     assert "?format=json" in detail

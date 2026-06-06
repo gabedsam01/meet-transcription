@@ -1,26 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Configuração</p>
+    <h1 class="page-title">Drive</h1>
+    <p class="page-subtitle">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive, por exemplo
+      <span class="mono">https://drive.google.com/drive/folders/1zv32Q...tBD5</span>.</p>
+  </div>
+</div>
+
 <section class="card">
-  <h1>Drive folders</h1>
-  <p class="hint">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive, por exemplo
-    <span class="mono">https://drive.google.com/drive/folders/1zv32Q...tBD5</span>.</p>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
-  <form method="post" action="/settings/drive" class="form-stack">
+  {% if error %}<div class="alert alert-danger mb-1">{{ error }}</div>{% endif %}
+  {% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+  <form method="post" action="/settings/drive" class="form-grid">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label>Source Drive Folder URL
-      <input name="source_drive_folder_url" value="{{ settings.source_drive_folder_url if settings else '' }}" required></label>
-    <label>Destination Drive Folder URL (opcional)
-      <input name="destination_drive_folder_url" value="{{ settings.destination_drive_folder_url if settings and settings.destination_drive_folder_url else '' }}"></label>
-    <label class="checkbox">
-      <input type="checkbox" name="save_copy_to_drive" value="true" {{ "checked" if settings and settings.save_copy_to_drive else "" }}>
-      Salvar cópia da transcrição no Drive (backup)
-    </label>
-    <button type="submit">Save Drive settings</button>
+    <div class="form-field">
+      <label class="form-label" for="source-url">URL da pasta de origem</label>
+      <input class="input" id="source-url" name="source_drive_folder_url" value="{{ settings.source_drive_folder_url if settings else '' }}" required>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="dest-url">URL da pasta de destino (opcional)</label>
+      <input class="input" id="dest-url" name="destination_drive_folder_url" value="{{ settings.destination_drive_folder_url if settings and settings.destination_drive_folder_url else '' }}">
+    </div>
+    <div class="form-field">
+      <label class="form-label checkbox" style="grid-auto-flow:column; justify-content:start; align-items:center; gap:.5rem; color:var(--text)">
+        <input type="checkbox" name="save_copy_to_drive" value="true" {{ "checked" if settings and settings.save_copy_to_drive else "" }}>
+        Salvar cópia da transcrição no Drive (backup)
+      </label>
+    </div>
+    <div class="form-field" style="align-self:end">
+      <button type="submit" class="btn btn-primary">Salvar configurações do Drive</button>
+    </div>
   </form>
   {% if settings %}
-  <p class="hint">Source folder ID: <span class="mono">{{ settings.source_drive_folder_id }}</span>{% if settings.destination_drive_folder_id %} · Destination folder ID: <span class="mono">{{ settings.destination_drive_folder_id }}</span>{% endif %}</p>
+  <p class="hint mt-1">ID pasta origem: <span class="mono">{{ settings.source_drive_folder_id }}</span>{% if settings.destination_drive_folder_id %} · ID pasta destino: <span class="mono">{{ settings.destination_drive_folder_id }}</span>{% endif %}</p>
   {% endif %}
-  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Back to settings</a></p>
 </section>
+
+<div class="actions-row">
+  <a class="btn btn-ghost" href="/settings">← Voltar para configurações</a>
+</div>
 {% endblock %}
