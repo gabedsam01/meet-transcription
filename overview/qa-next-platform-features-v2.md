@@ -1,0 +1,204 @@
+# QA Integration — `qa/next-platform-features-v2`
+
+Final QA integration of the next major platform features for **Meet Transcription**,
+forked from `main` (`30d8116`) and built by merging four large feature branches in a
+deliberate order. PostgreSQL stays the single source of truth; Redis is queue/lock/
+semaphore only; no SQLite; secrets stay encrypted and never leak to UI/logs/webhooks.
+
+## 1. Final branch
+
+`qa/next-platform-features-v2` (base: `main` @ `30d8116`).
+
+## 2. Branches integrated (merge order)
+
+| # | Branch | Merge commit | Brings |
+|---|--------|--------------|--------|
+| 1 | `feat/models-cloud-provider-registry` | `2ae9319` | Models tab, provider registry (Deepgram/OpenRouter/Gemini), per-user encrypted keys |
+| 2 | `feat/audio-local-diarization-chrome-extension` | `1d169ff` | Audio preprocessing/chunking, local model manager, optional diarization, Chrome recorder + upload endpoint |
+| 3 | `feat/automation-queue-drive-watcher` | `dfc4379` | Auto-poll Drive watcher, advanced Redis queue, provider concurrency, retry/dead-letter, cost guardrails |
+| 4 | `feat/ux-e2e-docs-security-product` | `8f1373e` | Onboarding, friendly error pages, `/ready` + `/version`, structured logging, webhooks, exports, FTS search, E2E, docs |
+
+Each branch forks cleanly from `30d8116`. Merge #1 was a content fast-forward (zero
+conflicts); #2–#4 layered increasing overlap, resolved below.
+
+## 3. Conflicts resolved
+
+- **Merge #1 (models):** none (qa == merge-base).
+- **Merge #2 (audio):** `app/worker/container.py` (import union), `app/worker/processor.py`
+  (import union + a real integration fix: models made `_resolve_provider` deref
+  `settings.model_settings`, but audio allows `settings is None` for uploads → added a
+  `None` guard), `app/web/main.py` (two distinct module helpers kept).
+- **Merge #3 (automation):** `app/errors.py` (kept `RecordingNotFoundError` + `classify_error`,
+  added retry metadata to the recording error), `app/repositories/postgres.py` (kept both
+  `_to_model_settings` and `_due_predicate`/`_to_automation`), `app/web/main.py` (kept all
+  routes + helpers, single `_utc_now`), `app/web/templates/base.html` (Models wins over
+  Deepgram nav link per rule; kept `Automação`), `app/worker/container.py` (union fields),
+  **`app/worker/processor.py` (structural):** folded models' registry routing + audio's
+  upload/preprocess/diarization flow into automation's `resolve()`/`process(resolved)` +
+  `_handle_failure`/`_backoff` skeleton; `_resolve_provider` now returns the bare provider
+  **name** so `classify_provider_kind` correctly picks cloud vs local concurrency,
+  `.env.example`, `tests/test_worker_processor.py` (de-interleaved both branches' tests).
+- **Merge #4 (ux):** `app/errors.py` (two coexisting code vocabularies — `error_code`
+  for the retry policy/`job.last_error_code`, `code`/`doc_url` for UI/webhooks/logs),
+  `app/worker/processor.py` (folded ux webhook/`log_event`/`completed`-flag into the
+  failure path — the webhook fires only on **terminal** failure, never on a scheduled
+  retry), `app/worker/container.py` (added `webhook_notifier`), `app/web/main.py` (import
+  unions + both `_providers_view`/`_primary_ready` and `_queue_backend_name`, upload
+  helpers + `_HTTP_ERROR_CATALOG`), `docker-compose.yml` (env unions), `documentation/19-roadmap.md`
+  (renumbered table 9–16).
+- **Alembic (cross-cutting):** three branches each shipped a `0002_*` revision off
+  `0001_initial` (would be 3 heads). Re-chained linearly in merge order:
+  `0001_initial → 0002_provider_registry → 0002_automation_and_retry → 0002_transcript_fts`
+  (verified single head with `alembic heads`).
+- **Test follow-up:** two ux terminal-failure E2E tests assumed the pre-retry world (an
+  unexpected error fails immediately). With the retry layer an unexpected `RuntimeError`
+  is retryable, so they now pass `job_max_attempts=1` (retry/backoff itself is unit-tested
+  in `tests/test_worker_processor.py`).
+
+## 4. Architecture decisions
+
+- **Models tab wins; Deepgram becomes one provider** of the registry (OpenRouter, Gemini,
+  Deepgram, local). `/settings/deepgram` 303-redirects to `/models`.
+- **Cloud and local coexist.** Explicit cloud selection routes through the registry
+  resolver (primary → optional fallback); no selection keeps the legacy local-vs-Deepgram
+  rule. No silent fallback to an unconfigured provider.
+- **Provider concurrency supersedes the single global lock.** Cloud (I/O-bound) runs up to
+  `CLOUD_TRANSCRIPTION_CONCURRENCY` in parallel via a Redis ZSET semaphore; local CPU runs
+  one at a time via a single lock. `provider_kind` classifies by the resolved provider's
+  name. The global lock path remains but is unused by the redis queue loop.
+- **Audio preprocessing is a gated step + library** that runs between download and
+  transcribe; **diarization is an optional post-process** (speaker `null` when off). Both
+  are OFF by default and never change the Drive+Deepgram path.
+- **Auto-poll and run-once coexist.** Run-once is manual; auto-poll is an opt-in per-user
+  worker thread (no sixth container), OFF by default.
+- **Two error vocabularies coexist by design:** `error_code` (RATE_LIMIT/KEY_INVALID/…)
+  drives retry/dead-letter and `job.last_error_code`; `code`/`doc_url` drives the
+  friendly-error UI, structured logs and webhooks. Both carry a shared `retryable` flag.
+- **Chrome extension** uploads land in `chrome-extension/meet-audio-recorder/`; the backend
+  endpoint is token-gated and only stores media + creates a pending job — the worker
+  transcribes out of band.
+
+## 5. Final services (`docker-compose.yml`)
+
+`postgres`, `redis`, `migrate`, `web`, `worker` — confirmed by `docker compose config
+--services`. (No `model-init` service was added; local model files are mounted read-only.)
+
+## 6. Final providers
+
+- **Cloud (per-user encrypted key + model via Models tab):** Deepgram, OpenRouter, Gemini —
+  with an optional fallback provider/model.
+- **Local CPU (off by default, build-arg gated):** faster-whisper, whisper.cpp.
+- **Diarization (optional post-process):** none / pyannote.
+
+## 7. New environment variables
+
+Providers are **per-user in the DB (no env keys)**. New env (all safe defaults):
+`TRANSCRIPTION_QUEUE_CONCURRENCY`, `CLOUD_TRANSCRIPTION_CONCURRENCY`,
+`LOCAL_TRANSCRIPTION_CONCURRENCY`, `PROVIDER_LOCK_TTL_SECONDS`, `JOB_MAX_ATTEMPTS`,
+`JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS`, `AUTO_POLL_ENABLED`,
+`AUTO_POLL_INTERVAL_SECONDS`, `AUTO_POLL_MAX_USERS_PER_TICK`, `AUTO_POLL_MAX_FILES_PER_USER`,
+`AUTO_POLL_LOCK_TTL_SECONDS`, `MAX_FILE_SIZE_MB`, `DAILY_JOBS_LIMIT`,
+`AUDIO_PREPROCESSING_ENABLED`, `AUDIO_TARGET_SAMPLE_RATE`, `AUDIO_TARGET_CHANNELS`,
+`AUDIO_TARGET_BITRATE`, `AUDIO_CHUNK_MAX_DURATION_SECONDS`, `AUDIO_CHUNK_OVERLAP_SECONDS`,
+`AUDIO_MAX_INLINE_MB`, `AUDIO_MAX_FILE_API_MB`, `DIARIZATION_ENABLED`, `DIARIZATION_ENGINE`,
+`DIARIZATION_MODEL`, `DIARIZATION_AUTH_TOKEN` (secret), `DIARIZATION_REQUIRED`,
+`DIARIZATION_MIN_SPEAKERS`, `DIARIZATION_MAX_SPEAKERS`, `EXTENSION_UPLOAD_TOKEN` (secret),
+`EXTENSION_UPLOAD_MAX_MB`, `EXTENSION_UPLOAD_USER_EMAIL`, `EXTENSION_RECORDINGS_DIR`,
+`INSTALL_PYANNOTE` (build arg), `LOG_FORMAT`, `APP_VERSION`, `GIT_COMMIT`, `BUILD_TIME`,
+`WEBHOOK_URL`, `WEBHOOK_EVENTS`, `WEBHOOK_TIMEOUT_SECONDS`, `WEBHOOK_MAX_RETRIES`,
+`SUMMARY_ENABLED`, `SUMMARY_PROVIDER`, `SUMMARY_MODEL`.
+
+## 8. Docs created/updated
+
+New `documentation/`: `20-models-tab`, `21-provider-registry`, `22-gemini-provider`,
+`23-openrouter-provider`, `24-audio-preprocessing`, `25-local-model-manager`,
+`26-diarization`, `27-chrome-extension`, `28-auto-polling`, `29-redis-queue-advanced`,
+`30-provider-concurrency`, `31-retries-dead-letter`, `32-cost-guardrails`, `33-onboarding`,
+`34-observability`, `35-webhooks`, `36-export-formats`, `37-security`, `38-e2e-testing`;
+updated `00-overview`, `03-environment-variables`, `19-roadmap`. Repo hygiene:
+`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`,
+`.github/` issue/PR templates. `CLAUDE.md` refreshed for the integrated platform. Per-branch
+overviews retained under `overview/`.
+
+## 9. Tests executed
+
+```bash
+.venv/bin/python -m pytest -q          # full unit + integration + e2e suite (655 collected)
+.venv/bin/python -m pytest tests/e2e -q
+.venv/bin/python -m compileall app scripts
+docker compose config                  # with a local .env (cp .env.example .env)
+docker compose build
+alembic heads                          # single-head migration chain check
+```
+A per-test timeout (`--timeout`, `pytest-timeout`) was used during integration to catch a
+queue-loop hang; it is a dev-only aid, not a runtime dependency.
+
+## 10. Results
+
+- **pytest:** `614 passed, 41 skipped` (655 collected; skips are heavy-engine/optional paths).
+- **E2E:** `27 passed`.
+- **compileall:** OK. **docker compose config:** OK (5 services). **docker compose build:**
+  `migrate`, `web`, `worker` Built.
+- **alembic heads:** exactly one (`0002_transcript_fts`). **Security audit:** no pending
+  conflicts, no SQLite runtime, no real secrets, web does no heavy processing, no global
+  Deepgram requirement for the Web UI.
+
+## 11. Risks / follow-ups
+
+- **Two error-code schemes coexist** (`error_code` vs `code`). Functionally correct (the
+  retry policy reads `retryable`); a future cleanup could unify them. Registry
+  `Provider*Error`s store `error_code="UNEXPECTED"` in `job.last_error_code` (the specific
+  code lives in `code`/webhook) — observability nuance only, retry behavior is correct.
+- **Unexpected (non-`AppError`) failures are retryable by design** (transient-blip
+  protection) and dead-letter after `JOB_MAX_ATTEMPTS`. Set `JOB_MAX_ATTEMPTS=1` to disable.
+- **Heavy engines (faster-whisper / whisper.cpp / pyannote+torch) are build-arg gated** and
+  not in the base image or `requirements.txt`; enabling them needs an image rebuild.
+- **`docker compose build` validates packaging only** — no live Postgres/Redis E2E was run
+  in this environment (the in-memory fakes cover the contracts; run the live smoke below
+  before production).
+- Auto-poll, audio preprocessing, diarization, webhooks and the extension upload endpoint
+  are all **OFF by default**; enabling each needs its flag/secret.
+
+## 12. How to test on Dokploy
+
+1. Create the app from this repo/branch; set env from `.env.example` — **must override**:
+   `APP_SECRET_KEY` (Fernet + session key), `ADMIN_USERNAME`/`ADMIN_PASSWORD`,
+   `POSTGRES_PASSWORD` + matching `DATABASE_URL`, `GOOGLE_WEB_CLIENT_ID/SECRET`,
+   `GOOGLE_REDIRECT_URI`, `SESSION_COOKIE_SECURE=true` (HTTPS).
+2. Deploy the five services; `migrate` runs `alembic upgrade head` once and must exit 0
+   before `web`/`worker` start.
+3. Probes: `GET /health` (liveness), `GET /ready` (Postgres+schema+queue), `GET /version`.
+4. Sign in as admin → connect Google → **Models** tab: pick a provider + model, paste a key,
+   "test" it. Configure Drive Settings → **Run once** → watch `/jobs` reach `completed`;
+   download the transcript (try TXT/JSON/SRT/VTT/MD).
+5. Optional: enable `/settings/automation` (auto-poll), set `WEBHOOK_URL`, or set
+   `LOG_FORMAT=json` and confirm logs are secret-free.
+
+## 13. How to test the Chrome extension
+
+1. Set `EXTENSION_UPLOAD_TOKEN` (a secret) on `web` + `worker`; optionally
+   `EXTENSION_UPLOAD_USER_EMAIL` (else jobs belong to the admin). The upload endpoint is
+   **disabled** until the token is set.
+2. `chrome://extensions` → Developer mode → **Load unpacked** →
+   `chrome-extension/meet-audio-recorder/`. In the popup, set the backend URL + the same
+   token.
+3. Join a Google Meet, click **record** in the popup (explicit user action), stop when done.
+   The extension `POST`s the audio to `/api/recordings/upload` (Bearer token); the web
+   service stores the file under `EXTENSION_RECORDINGS_DIR` and creates a pending job; the
+   worker transcribes it. Confirm the job appears under `/jobs` and the transcript downloads.
+4. Verify oversized uploads are rejected with HTTP 413 (`EXTENSION_UPLOAD_MAX_MB`) and that
+   the token is never logged.
+
+## 14. Checklist before merging to `main`
+
+- [ ] PR reviewed — Docker Compose, provider settings, queue/concurrency, retry/dead-letter,
+      security-sensitive code, and Chrome-extension permissions read carefully.
+- [ ] `.venv/bin/python -m pytest -q` green; `compileall` clean.
+- [ ] `docker compose config` OK; `docker compose build` OK; `alembic heads` = one.
+- [ ] Live smoke on a real stack: `docker compose up -d postgres redis` →
+      `docker compose run --rm migrate` → run the suite → `docker compose down`.
+- [ ] Secrets are deploy-only (none committed); `APP_SECRET_KEY` rotated for prod;
+      `SESSION_COOKIE_SECURE=true` over HTTPS.
+- [ ] Legacy CLI (`python -m app.main --once/--watch/--reprocess`) still imports/runs.
+- [ ] All new features confirmed OFF by default; enable intentionally per flag/secret.
+- [ ] GHCR image still publishes (CI/GHA unbroken).

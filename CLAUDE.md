@@ -4,14 +4,19 @@ Guidance for Claude Code (and humans) working in this repository.
 
 ## What this is
 
-Meet Transcription watches a Google Drive folder for Google Meet recordings,
-transcribes each MP4 — with **Deepgram** or a **local CPU engine**
-(faster-whisper / whisper.cpp) — saves the transcript in **PostgreSQL**, and serves
-a plain-text download from the web UI (optionally also uploading a copy to Drive).
+Meet Transcription watches a Google Drive folder for Google Meet recordings (or
+accepts a recording uploaded by the **Chrome extension**), transcribes each MP4 —
+with a **cloud provider** chosen per user in the **Models tab** (**Deepgram**,
+**OpenRouter** or **Gemini**) or a **local CPU engine** (faster-whisper /
+whisper.cpp) — saves the normalized transcript in **PostgreSQL**, and serves a
+plain-text/JSON/SRT/VTT/Markdown download from the web UI (optionally also
+uploading a copy to Drive). Optional, off-by-default extras: audio preprocessing
+(no-audio fast-fail + chunking library), speaker **diarization**, automatic Drive
+**auto-poll**, outbound **webhooks**, and full-text transcript **search**.
 It ships in two forms:
 
-- a **web app** (FastAPI) for signing in, connecting Google, configuring folders,
-  and triggering/inspecting jobs; and
+- a **web app** (FastAPI) for signing in, connecting Google, configuring providers/
+  models/folders, onboarding, and triggering/inspecting jobs; and
 - a **worker** that processes transcription jobs out of band.
 
 ## Architecture
@@ -35,11 +40,22 @@ worker also runs an in-process **auto-poll** thread that scans each user's Drive
 folder and enqueues new media (no sixth container). `QUEUE_BACKEND=none` poll mode
 and the legacy CLI stay strictly one-at-a-time.
 
-Transcription has a pluggable provider layer (`app/transcription/`): Deepgram
-(per-user key) or a local CPU engine, selected by the rule in
-`get_transcription_provider_status` — local when enabled **and** valid (no Deepgram
-key needed), otherwise Deepgram is required (no silent fallback). Local engines are
-**CPU-only** and off by default.
+Transcription has a pluggable **provider registry** (`app/transcription/`): the
+cloud providers **Deepgram / OpenRouter / Gemini** (each a per-user encrypted key +
+model picked in the Models tab, with an optional fallback) plus the **local CPU
+engines** (faster-whisper / whisper.cpp). The worker routes an explicit Models-tab
+cloud selection through `registry.resolve_cloud_provider`; everything else keeps the
+legacy local-vs-Deepgram rule in `get_transcription_provider_status`/
+`factory.resolve_provider` — local when enabled **and** valid (no key needed),
+otherwise the configured cloud key is required (**no silent fallback**). The resolved
+provider's identity drives cloud/local concurrency (`provider_kind`). Local engines
+are **CPU-only** and off by default. Optional post-processing — audio probe/preprocess
+(`app/audio/`) and speaker diarization (`app/diarization/`, speaker `null` when off) —
+is gated per flag and never alters the legacy Drive+Deepgram path. Failures map to
+friendly `user_message`s and stable codes (`app/errors.py`): the worker retries
+transient errors with backoff and dead-letters terminal/exhausted ones, then emits
+secret-free structured logs (`app/observability/`) and optional webhooks
+(`app/webhooks/`).
 
 The **legacy worker** is the original env-driven CLI `python -m app.main`
 (`--once` / `--watch` / `--reprocess`). It stores state in
