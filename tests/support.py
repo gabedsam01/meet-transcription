@@ -17,15 +17,18 @@ def drive_file(file_id: str, name: str = "meeting.mp4") -> DriveFile:
 
 class FakeDriveClient:
     def __init__(self, files=None, upload_result="drive-txt-1",
-                 fail_download=False, fail_upload=False):
+                 fail_download=False, fail_upload=False, fail_list=False):
         self.files = list(files or [])
         self.upload_result = upload_result
         self.fail_download = fail_download
         self.fail_upload = fail_upload
+        self.fail_list = fail_list
         self.downloaded: list[str] = []
         self.uploaded: list[str] = []
 
     def list_video_files(self):
+        if self.fail_list:
+            raise RuntimeError("drive list failed")
         return list(self.files)
 
     def download_by_id(self, file_id, destination):
