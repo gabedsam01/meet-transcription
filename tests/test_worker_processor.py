@@ -393,6 +393,7 @@ def test_process_cleans_only_its_own_job_dir(tmp_path):
 
 def _make_audio_runner(flac_size=10, mp3_size=10, chunk_size=10, duration=1800, fail_ffmpeg=False):
     import json
+    import math
     from pathlib import Path
 
     def runner(cmd):
@@ -409,20 +410,33 @@ def _make_audio_runner(flac_size=10, mp3_size=10, chunk_size=10, duration=1800, 
         if "ffprobe" in cmd[0]:
             _R.stdout = json.dumps({
                 "streams": [{"codec_type": "audio", "sample_rate": "16000", "channels": 1, "codec_name": "aac"}],
-                "format": {"duration": str(duration), "size": "1000"}
+                "format": {"duration": str(duration), "size": str(flac_size)}
             })
             return _R()
 
         # ffmpeg commands
-        dest = Path(cmd[-1])
+        dest_str = cmd[-1]
+        dest = Path(dest_str)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if "preprocessed.flac" in str(dest):
+        
+        if "flac" in dest_str and ("compressed" in dest_str or "preprocessed" in dest_str):
             dest.write_bytes(b"a" * flac_size)
-        elif "preprocessed.mp3" in str(dest):
+        elif "mp3" in dest_str and ("compressed" in dest_str or "preprocessed" in dest_str):
             dest.write_bytes(b"a" * mp3_size)
-        elif "to_chunk.wav" in str(dest):
+        elif "to_chunk.wav" in dest_str:
             dest.write_bytes(b"a" * 100)
-        elif "chunk_" in str(dest):
+        elif "%03d" in dest_str:
+            try:
+                idx = cmd.index("-segment_time")
+                seg_time = int(cmd[idx + 1])
+            except (ValueError, IndexError):
+                seg_time = 900
+            fmt = dest_str.split(".")[-1]
+            num_chunks = max(1, math.ceil(duration / seg_time))
+            for i in range(num_chunks):
+                chunk_file = dest.parent / f"chunk_{i:03d}.{fmt}"
+                chunk_file.write_bytes(b"a" * chunk_size)
+        elif "chunk_" in dest_str:
             dest.write_bytes(b"a" * chunk_size)
 
         return _R()
@@ -524,7 +538,7 @@ def test_openrouter_large_file_compressed_fits(tmp_path):
     done = container.repositories.jobs.get_job(job.id)
     assert done.status == JobStatus.COMPLETED.value
     assert len(cloud.calls) == 1
-    assert "preprocessed.flac" in cloud.calls[0][0]
+    assert "compressed.flac" in cloud.calls[0][0]
 
 
 def test_openrouter_oversized_file_chunked_stitched(tmp_path):
@@ -591,10 +605,9 @@ def test_openrouter_oversized_file_chunked_stitched(tmp_path):
 
     done = container.repositories.jobs.get_job(job.id)
     assert done.status == JobStatus.COMPLETED.value
-    assert len(cloud.calls) == 3
-    assert "chunk_0000_compressed.flac" in cloud.calls[0][0]
-    assert "chunk_0001_compressed.flac" in cloud.calls[1][0]
-    assert "chunk_0002_compressed.flac" in cloud.calls[2][0]
+    assert len(cloud.calls) == 2
+    assert "chunk_000.mp3" in cloud.calls[0][0]
+    assert "chunk_001.mp3" in cloud.calls[1][0]
     transcript = container.repositories.transcripts.get_by_job(job.id)
     assert "Olá" in transcript.text
 
@@ -800,10 +813,9 @@ def test_groq_oversized_file_chunked_stitched(tmp_path):
     done = container.repositories.jobs.get_job(job.id)
     assert done.status == JobStatus.COMPLETED.value
     # Groq preferred format is mp3, so we check for chunk_*_compressed.mp3 calls!
-    assert len(cloud.calls) == 3
-    assert "chunk_0000_compressed.mp3" in cloud.calls[0][0]
-    assert "chunk_0001_compressed.mp3" in cloud.calls[1][0]
-    assert "chunk_0002_compressed.mp3" in cloud.calls[2][0]
+    assert len(cloud.calls) == 2
+    assert "chunk_000.mp3" in cloud.calls[0][0]
+    assert "chunk_001.mp3" in cloud.calls[1][0]
     transcript = container.repositories.transcripts.get_by_job(job.id)
     assert "Groq chunk" in transcript.text
 

@@ -35,9 +35,16 @@ class FfmpegError(AudioError):
     default_user_message = "Falha ao processar o áudio da reunião."
 
 
+class FfmpegNotFoundError(AudioError):
+    """ffmpeg executable is missing from the system."""
+
+    default_user_message = "O executável ffmpeg não foi encontrado no sistema. Por favor, instale o ffmpeg para prosseguir."
+
+
 __all__ = [
     "AudioError",
     "NoAudioTrackError",
     "AudioProbeError",
     "FfmpegError",
+    "FfmpegNotFoundError",
 ]

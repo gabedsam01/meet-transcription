@@ -480,10 +480,8 @@ The greatest hits:
 Four optional, **off‑by‑default** capabilities. None changes the Deepgram/whisper
 path until you turn it on; the heavy engines stay gated behind Docker build args.
 
-- **Audio preprocessing** (`AUDIO_PREPROCESSING_ENABLED`) — when on, the worker
-  fast‑fails a recording with no audio track (friendly error). The
-  probe / extract / compress / chunk / stitch helpers (`app/audio/`) are also a
-  tested library for size‑limited providers. → **[documentation/24-audio-preprocessing.md](documentation/24-audio-preprocessing.md)**
+- **Audio preprocessing & compression** (`AUDIO_PREPROCESSING_ENABLED`) — when on, the worker
+  fast‑fails a recording with no audio track (friendly error). For cloud providers (like Groq, Gemini, OpenRouter, AssemblyAI), it automatically compresses and segments (chunks) oversized files to stay within provider limits. → **[documentation/24-audio-preprocessing.md](documentation/24-audio-preprocessing.md)** and **[documentation/41-audio-compression-pipeline.md](documentation/41-audio-compression-pipeline.md)**
 - **Local model manager** (`app/models/`, `python -m app.model_init`) — validates
   the configured local model and, when `LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=true`,
   downloads it (whisper.cpp ggml via Hugging Face, faster‑whisper via

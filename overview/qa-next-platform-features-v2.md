@@ -239,4 +239,15 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - **Utterances and Diarization Normalization**: Normalizes speaker turns (utterances) by mapping milliseconds to seconds, keeping the original raw speaker label under `raw_speaker`, and formatting the display label (e.g., `Speaker A`). Text-only fallback is used if no utterances are returned.
 - **Error Mapping & Rate Limiting**: Captures auth failures (401/403), rate limits (429, honoring `Retry-After`), timeouts, and polling failures, converting them into friendly `ProviderResponseError` or other traceback-free exceptions.
 
+## 18. Robust Audio Compression and Chunking Pipeline
+
+- **Modular Design**: Structured the compression layer under `app/audio/compression.py` coordinating backend selection, preferred format compressions (FLAC), fallback formats (MP3/Opus), and multi-pass chunking.
+- **Backend Architecture**: Designed backends under `app/audio/backends/` wrapping `ffmpeg_cli` (primary), and optional wraps for `ffmpeg-python`, `pydub`, and `moviepy` only if installed, preventing startup failures when libs are missing.
+- **Deterministic Planner**: Created `app/audio/planner.py` to decide if an input file is within limits (`no-op` plan) or to select the best available backend.
+- **Path Traversal Protection**: Implemented strict path checks verifying that all input/output paths reside under the specific job temporary directory (`tmp/job_id`), preventing traversal vulnerabilities.
+- **Multi-pass Bitrate & Duration Fallback**: Implemented progressive bitrate reductions (24k -> 16k -> 8k) and chunk duration subdivisions to prevent infinite loops and ensure chunks stay strictly below target size constraints.
+- **Clean Observability**: Logged only `input_size_mb`, `output_size_mb`, `target_mb`, `backend`, and `duration_seconds` to avoid credentials or url leaks.
+- **Friendly Exceptions**: Mapped system failures (e.g. ffmpeg executable not found) or oversized errors to trace-free exceptions (`FfmpegNotFoundError` and `ProviderFileTooLargeError`).
+
+
 

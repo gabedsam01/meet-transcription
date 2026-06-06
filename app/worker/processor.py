@@ -162,10 +162,15 @@ class JobProcessor:
             # no audio track. OFF by default — zero impact on the Drive+Deepgram path.
             self._check_audio(media_path)
 
-            preprocessed = self._preprocess_media_if_needed(media_path, resolved, job_dir)
-            if isinstance(preprocessed, Path):
+            config = self.container.audio_config or AudioConfig.disabled()
+            capabilities = get_provider_capabilities(resolved.name, config)
+            
+            from app.audio.compression import prepare_audio_for_provider
+            prepared = prepare_audio_for_provider(media_path, capabilities, job_dir, config=config, runner=self.container.audio_runner)
+
+            if not prepared.was_chunked:
                 result = provider.transcribe(
-                    preprocessed,
+                    prepared.files[0],
                     original_name=original_name,
                     file_id=job.source_file_id,
                 )
@@ -173,20 +178,27 @@ class JobProcessor:
                 payload = result.payload
             else:
                 chunk_payloads = []
-                for chunk_path, start_sec in preprocessed:
-                    LOGGER.info("Transcribing chunk at offset %s seconds: %s", start_sec, chunk_path.name)
+                current_offset = 0.0
+                for chunk_path in prepared.files:
+                    LOGGER.info("Transcribing chunk at offset %.2f seconds: %s", current_offset, chunk_path.name)
                     chunk_res = provider.transcribe(
                         chunk_path,
                         original_name=chunk_path.name,
                         file_id=job.source_file_id,
                     )
                     chunk_payloads.append({
-                        "start_offset": start_sec,
+                        "start_offset": current_offset,
                         "segments": chunk_res.payload.get("segments") or [],
                         "text": chunk_res.payload.get("text") or "",
                         "raw": chunk_res.payload.get("raw") or {},
                     })
-                
+                    try:
+                        from app.audio.probe import probe_audio
+                        chunk_dur = probe_audio(chunk_path).duration_seconds
+                    except Exception:
+                        chunk_dur = float(config.chunk_max_duration_seconds)
+                    current_offset += chunk_dur
+
                 stitched = stitch_transcript_chunks(chunk_payloads)
                 from app.transcription.normalizer import normalized_payload, render_transcript_text
                 payload = normalized_payload(
