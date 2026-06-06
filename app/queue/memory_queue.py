@@ -27,6 +27,7 @@ class InMemoryTranscriptionQueue:
         self._slot_seq = 0
         self._processing: set[int] = set()
         self._dead: set[int] = set()
+        self._named_locks: dict[str, str] = {}
 
     def enqueue(self, job_id: int) -> bool:
         with self._cond:
@@ -79,6 +80,20 @@ class InMemoryTranscriptionQueue:
         with self._lock_state:
             if self._lock_token == token:
                 self._lock_token = None
+
+    def acquire_named_lock(self, name: str, ttl_seconds: int) -> str | None:
+        with self._lock_state:
+            if name in self._named_locks:
+                return None
+            self._slot_seq += 1
+            token = f"named-{self._slot_seq}"
+            self._named_locks[name] = token
+            return token
+
+    def release_named_lock(self, name: str, token: str) -> None:
+        with self._lock_state:
+            if self._named_locks.get(name) == token:
+                self._named_locks.pop(name, None)
 
     def acquire_provider_slot(self, kind: str, ttl_seconds: int) -> str | None:
         with self._lock_state:

@@ -39,6 +39,13 @@ class TranscriptionQueue(Protocol):
     def release_global_lock(self, token: str) -> None:
         """Release the lock only if ``token`` still owns it (no foreign release)."""
 
+    def acquire_named_lock(self, name: str, ttl_seconds: int) -> str | None:
+        """Acquire a generic named lock (e.g. ``lock:auto_poll``) so only one holder
+        runs a section across processes. Returns a token or None when already held."""
+
+    def release_named_lock(self, name: str, token: str) -> None:
+        """Release a named lock only if ``token`` still owns it."""
+
     def acquire_provider_slot(self, kind: str, ttl_seconds: int) -> str | None:
         """Acquire one concurrency slot for ``kind`` ('cloud' or 'local').
 

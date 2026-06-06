@@ -132,6 +132,16 @@ class RedisTranscriptionQueue:
     def release_global_lock(self, token: str) -> None:
         self._release_token_lock(self._lock_key, token, "global transcription lock")
 
+    # --- generic named lock --------------------------------------------------
+
+    def acquire_named_lock(self, name: str, ttl_seconds: int) -> str | None:
+        token = uuid.uuid4().hex
+        acquired = self._r.set(name, token, nx=True, ex=ttl_seconds)
+        return token if acquired else None
+
+    def release_named_lock(self, name: str, token: str) -> None:
+        self._release_token_lock(name, token, f"named lock {name}")
+
     # --- provider concurrency slots ------------------------------------------
 
     def acquire_provider_slot(self, kind: str, ttl_seconds: int) -> str | None:
