@@ -24,6 +24,8 @@ class FasterWhisperProvider:
     optional, build-arg-gated dependency). ``model_factory`` is injected in tests.
     """
 
+    name = "faster-whisper"  # provider identity for cloud/local concurrency classification
+
     def __init__(
         self,
         config: TranscriptionConfig,

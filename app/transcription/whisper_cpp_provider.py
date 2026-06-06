@@ -29,6 +29,8 @@ class WhisperCppProvider:
     audio extractor are injectable so tests need no real binary, model, or ffmpeg.
     """
 
+    name = "whisper-cpp"  # provider identity for cloud/local concurrency classification
+
     def __init__(
         self,
         config: TranscriptionConfig,
