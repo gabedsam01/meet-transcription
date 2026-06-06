@@ -99,6 +99,25 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
             from app.transcription.groq_provider import GroqProvider
 
             return GroqProvider(api_key=api_key, model=model, language=None)
+        if provider_id == "assemblyai":
+            from app.transcription.assemblyai_provider import AssemblyAIProvider
+            import json
+            try:
+                data = json.loads(api_key)
+                real_key = data.get("api_key", "")
+                speaker_labels = data.get("speaker_labels", True)
+                speakers_expected = data.get("speakers_expected")
+            except Exception:
+                real_key = api_key
+                speaker_labels = True
+                speakers_expected = None
+            return AssemblyAIProvider(
+                api_key=real_key,
+                model=model,
+                speaker_labels=speaker_labels,
+                speakers_expected=speakers_expected,
+                language=None,
+            )
         raise ProviderUnavailableError(
             f"Unsupported cloud provider {provider_id!r}", provider=provider_id
         )

@@ -5,8 +5,8 @@ from app.transcription import provider_models as pm
 
 def test_known_providers_present():
     ids = set(pm.provider_ids())
-    assert {"deepgram", "openrouter", "gemini", "groq", "local"} <= ids
-    assert pm.CLOUD_PROVIDERS == ("deepgram", "openrouter", "gemini", "groq")
+    assert {"deepgram", "openrouter", "gemini", "groq", "assemblyai", "local"} <= ids
+    assert pm.CLOUD_PROVIDERS == ("deepgram", "openrouter", "gemini", "groq", "assemblyai")
 
 
 def test_deepgram_models_and_real_diarization():
@@ -82,3 +82,14 @@ def test_validity_helpers():
     assert pm.is_cloud_provider("local") is False
     assert pm.default_model("gemini") == "gemini-2.5-flash"
     assert pm.models_for("nope") == ()
+
+
+def test_assemblyai_spec():
+    spec = pm.get_provider_spec("assemblyai")
+    assert spec is not None
+    assert spec.provider_id == "assemblyai"
+    assert spec.models == ("universal-3-pro", "universal-2")
+    assert spec.default_model == "universal-3-pro"
+    assert spec.requires_api_key is True
+    assert spec.diarization_kind == pm.DIARIZATION_REAL
+    assert spec.max_file_bytes == 99 * 1024 * 1024

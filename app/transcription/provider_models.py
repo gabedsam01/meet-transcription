@@ -21,6 +21,7 @@ DEEPGRAM = "deepgram"
 OPENROUTER = "openrouter"
 GEMINI = "gemini"
 GROQ = "groq"
+ASSEMBLYAI = "assemblyai"
 LOCAL = "local"
 
 # Diarization "kind" classifies how trustworthy speaker labels are, so the UI can
@@ -152,6 +153,20 @@ _GROQ_SPEC = ProviderSpec(
     capabilities=("timestamps",),
 )
 
+_ASSEMBLYAI_SPEC = ProviderSpec(
+    provider_id=ASSEMBLYAI,
+    label="AssemblyAI",
+    models=("universal-3-pro", "universal-2"),
+    default_model="universal-3-pro",
+    requires_api_key=True,
+    diarization_kind=DIARIZATION_REAL,
+    diarization="Diarização real (separação de locutores) disponível.",
+    notes="Transcrição com speaker diarization real, otimizada para reuniões.",
+    docs_url=PROVIDER_DOCS_URL,
+    _max_file_bytes=99 * 1024 * 1024,
+    capabilities=("diarization", "timestamps", "utterances"),
+)
+
 _LOCAL_SPEC = ProviderSpec(
     provider_id=LOCAL,
     label="Local (CPU)",
@@ -171,11 +186,12 @@ PROVIDERS: dict[str, ProviderSpec] = {
     OPENROUTER: _OPENROUTER_SPEC,
     GEMINI: _GEMINI_SPEC,
     GROQ: _GROQ_SPEC,
+    ASSEMBLYAI: _ASSEMBLYAI_SPEC,
     LOCAL: _LOCAL_SPEC,
 }
 
 # Cloud providers a user can select + supply a key for (excludes env-driven local).
-CLOUD_PROVIDERS: tuple[str, ...] = (DEEPGRAM, OPENROUTER, GEMINI, GROQ)
+CLOUD_PROVIDERS: tuple[str, ...] = (DEEPGRAM, OPENROUTER, GEMINI, GROQ, ASSEMBLYAI)
 
 # Providers selectable as a primary/fallback in the Models tab.
 SELECTABLE_PROVIDERS: tuple[str, ...] = CLOUD_PROVIDERS

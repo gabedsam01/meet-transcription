@@ -230,3 +230,13 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - **Verbose JSON Normalization**: Parses response payloads in `verbose_json` format, extracting both segment-level and word-level timestamps when available, and standardizing them into the database schema.
 - **Rate-Limit & Error Handling**: Captures HTTP 429 rate-limiting, parses the `retry-after` header to schedule retries with precise backoff, and maps auth failures (401/403) and large files (413) to friendly, trace-free exceptions.
 
+## 17. AssemblyAI Speech-to-Text and Diarization Provider Integration
+
+- **Provider Registry**: Integrated AssemblyAI as a first-class cloud transcription provider (`assemblyai`) in the Models tab. It supports two main models: `universal-3-pro` (default) and `universal-2`.
+- **UI and Credentials**: Users can select AssemblyAI as their primary or fallback provider in the Models tab. AssemblyAI API keys are stored encrypted at rest via per-user credentials. Since the existing database schema only has a single text column for credentials value, other settings like `speaker_labels` (on/off) and `speakers_expected` (optional target speaker count) are serialized as a JSON string inside the credentials value, achieving a zero-migration strategy. The UI renders appropriate fields (checkbox for speaker labels, number input for speakers expected) and details for AssemblyAI.
+- **Flexible Environment Fallback**: The provider checks constructor keys, falling back to `ASSEMBLYAI_API_KEY` global variable if needed for CLI/admin compatibility.
+- **Upload and Polling Pipeline**: Uploads audio to `/v2/upload`, submits a transcription job to `/v2/transcript` with `speaker_labels` and `speakers_expected` parameters, and polls `/v2/transcript/{id}` at an interval (default 3 seconds, configurable via `ASSEMBLYAI_POLL_INTERVAL_SECONDS`) until status is `completed` or `error`.
+- **Utterances and Diarization Normalization**: Normalizes speaker turns (utterances) by mapping milliseconds to seconds, keeping the original raw speaker label under `raw_speaker`, and formatting the display label (e.g., `Speaker A`). Text-only fallback is used if no utterances are returned.
+- **Error Mapping & Rate Limiting**: Captures auth failures (401/403), rate limits (429, honoring `Retry-After`), timeouts, and polling failures, converting them into friendly `ProviderResponseError` or other traceback-free exceptions.
+
+

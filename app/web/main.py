@@ -487,7 +487,8 @@ def create_app(settings: WebSettings | None = None,
 
     @app.post("/models/credentials")
     def save_credentials(request: Request, user=Depends(require_user),
-                         provider: str = Form(...), api_key: str = Form(...)):
+                         provider: str = Form(...), api_key: str = Form(...),
+                         speaker_labels: str = Form("true"), speakers_expected: str = Form("")):
         key = api_key.strip()
         if not is_cloud_provider(provider):
             _set_flash(request, "Provedor inválido.")
@@ -496,7 +497,17 @@ def create_app(settings: WebSettings | None = None,
         elif provider_key_store is None:
             _set_flash(request, "Armazenamento de credenciais indisponível.")
         else:
-            provider_key_store.save(user.id, provider, key)
+            if provider == "assemblyai":
+                import json
+                key_data = {
+                    "api_key": key,
+                    "speaker_labels": speaker_labels.strip().lower() in ("true", "1", "yes", "on"),
+                    "speakers_expected": int(speakers_expected.strip()) if speakers_expected.strip().isdigit() else None
+                }
+                key_to_save = json.dumps(key_data)
+            else:
+                key_to_save = key
+            provider_key_store.save(user.id, provider, key_to_save)
             _set_flash(request, f"API key salva para {provider}.")
         return RedirectResponse(f"/models?provider={provider}", status_code=303)
 

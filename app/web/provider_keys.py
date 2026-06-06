@@ -16,7 +16,7 @@ import requests
 from app.web.deepgram_key import verify_deepgram_key
 from app.web.repositories import ProviderCredentialsRepository
 from app.web.security import decrypt_value, encrypt_value
-from app.transcription.provider_models import DEEPGRAM, GEMINI, OPENROUTER
+from app.transcription.provider_models import DEEPGRAM, GEMINI, OPENROUTER, ASSEMBLYAI
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,14 @@ class ProviderKeyStore:
         key = self.get(user_id, provider)
         if not key:
             return None
+        if provider == ASSEMBLYAI:
+            import json
+            try:
+                data = json.loads(key)
+                real_key = data.get("api_key", "")
+            except Exception:
+                real_key = key
+            return f"…{real_key[-4:]}" if len(real_key) >= 4 else "…"
         return f"…{key[-4:]}" if len(key) >= 4 else "…"
 
     def configured_providers(self, user_id: int) -> set[str]:
@@ -65,6 +73,14 @@ def verify_provider_key(
         return _verify_bearer(OPENROUTER_KEY_URL, api_key, session=session, timeout=timeout)
     if provider == GEMINI:
         return _verify_query_key(GEMINI_MODELS_URL, api_key, session=session, timeout=timeout)
+    if provider == ASSEMBLYAI:
+        import json
+        try:
+            data = json.loads(api_key)
+            real_key = data.get("api_key", "")
+        except Exception:
+            real_key = api_key
+        return _verify_assemblyai(real_key, session=session, timeout=timeout)
     return "unverifiable"
 
 
@@ -100,3 +116,17 @@ def _classify(status_code: int, url: str) -> VerifyResult:
         return "invalid"
     logger.warning("Provider key verification got unexpected status %s from %s", status_code, url)
     return "unverifiable"
+
+
+def _verify_assemblyai(api_key: str, *, session=None, timeout: int) -> VerifyResult:
+    http = session or requests
+    try:
+        response = http.get(
+            "https://api.assemblyai.com/v2/transcript?limit=1",
+            headers={"Authorization": api_key},
+            timeout=timeout,
+        )
+    except Exception:
+        logger.warning("AssemblyAI key verification could not reach API")
+        return "unverifiable"
+    return _classify(response.status_code, "https://api.assemblyai.com/v2/transcript")

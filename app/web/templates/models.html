@@ -52,6 +52,15 @@
         <form method="post" action="/models/credentials" class="form-stack">
           <input type="hidden" name="provider" value="{{ p.id }}">
           <label>{{ p.label }} API Key<input name="api_key" type="password" autocomplete="off" required></label>
+          {% if p.id == "assemblyai" %}
+          <label class="checkbox">
+            <input type="checkbox" name="speaker_labels" value="true" checked>
+            Ativar identificação de locutores (Speaker Labels)
+          </label>
+          <label>Número esperado de locutores (opcional)
+            <input name="speakers_expected" type="number" min="1" placeholder="Ex: 2">
+          </label>
+          {% endif %}
           <div class="cta-row">
             <button type="submit">Salvar chave</button>
             {% if p.configured %}
@@ -109,6 +118,7 @@
     <li><strong>Gemini:</strong> pseudo-diarização via prompt — não garantida.</li>
     <li><strong>OpenRouter:</strong> depende do modelo, geralmente sem diarização.</li>
     <li><strong>Groq:</strong> sem diarização real (apenas timestamps de segmentos/palavras).</li>
+    <li><strong>AssemblyAI:</strong> diarização real (separação de locutores) otimizada para reuniões.</li>
     <li><strong>Local:</strong> sem diarização no MVP.</li>
   </ul>
   <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Voltar para settings</a></p>
