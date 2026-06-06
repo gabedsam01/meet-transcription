@@ -569,6 +569,12 @@ Follow-up commit range on top of the four merges above that turns the
 - [x] 390px: Extensão/token é copiável (table-wrapper scroll horizontal, min-width 640px na tabela).
 - [x] 390px: não há scroll horizontal no body (table-wrapper margin negativo, overflow-x auto).
 
+### Results
+
+- **pytest:** 739 passed, 41 skipped, 0 failures
+- **compileall:** OK
+- **Files changed:** 6 (`styles.css`, `extension.html`, `login.html`, `models.html`, `test_web_ui.py`, `overview/qa-next-platform-features-v2.md`)
+
 ### Validation
 
 - pytest: updated tests for new nav structure and onboarding behavior.
