@@ -33,6 +33,21 @@ Google Drive is the **input** (the source folder the worker reads) and an
 **optional backup** (a TXT copy can be uploaded to a destination folder). The
 **primary** way to get a transcript is the **Download TXT** button in the UI.
 
+**Product features.** Beyond the core flow, the app ships:
+
+- A guided **onboarding wizard** at `/onboarding` with a live readiness checklist
+  — see [documentation/33-onboarding.md](documentation/33-onboarding.md).
+- **Friendly errors** (error code, suggested action, docs link, retry) with **no
+  stack traces in the UI**.
+- **Operational endpoints**: `/health` (liveness), `/ready` (Postgres + queue),
+  `/version` (build + providers), and **structured, secret-free logs**
+  (`LOG_FORMAT=json`) — see [documentation/34-observability.md](documentation/34-observability.md).
+- Optional **webhooks** on `job.completed` / `job.failed`
+  ([documentation/35-webhooks.md](documentation/35-webhooks.md)).
+- **Transcript exports** as TXT / JSON / SRT / VTT / Markdown
+  ([documentation/36-export-formats.md](documentation/36-export-formats.md)).
+- User-scoped **transcript search** at `/search`.
+
 ---
 
 ## 2. Final architecture
@@ -81,13 +96,36 @@ web and worker run from the **same image** with different commands.
 
 ## 3. Transcription providers
 
+Providers are chosen per user in the **Models** tab (`/models`): pick a primary
+provider + model, save its API key (encrypted at rest), and optionally a fallback.
+The registry of providers/models lives in `app/transcription/provider_models.py`;
+see **[documentation/20-models-tab.md](documentation/20-models-tab.md)** and
+**[21-provider-registry.md](documentation/21-provider-registry.md)**.
+
 ### Deepgram
 
-- Requires a **per‑user API key** (Settings → Deepgram).
+- Requires a **per‑user API key** (Models → Deepgram).
 - The key is stored **encrypted at rest** (Fernet, key derived from
   `APP_SECRET_KEY`) and never shown again.
 - **Best for diarization / speaker labels** and is **fast**.
-- Has a **per‑use cost** and sends audio to an external service.
+- Models: `nova-3`, `nova-2`, `whisper`. Has a **per‑use cost**.
+
+### OpenRouter
+
+- Cloud router exposing many ASR models via one OpenAI‑compatible endpoint.
+- Requires a **per‑user API key** (Models → OpenRouter).
+- **Diarization depends on the model** (usually unavailable); timestamps mapped to
+  segments when present, otherwise a single text segment.
+- See **[documentation/23-openrouter-provider.md](documentation/23-openrouter-provider.md)**.
+
+### Google Gemini
+
+- Multimodal model that transcribes audio; **pseudo‑diarization via prompt only**
+  (never trusted as real speaker labels).
+- Requires a **per‑user API key** (Models → Gemini).
+- Size limits: **~70 MB inline**, **~99 MB via the Files API**; larger files are
+  refused with a friendly error. See
+  **[documentation/22-gemini-provider.md](documentation/22-gemini-provider.md)**.
 
 ### Local transcription
 
@@ -265,15 +303,19 @@ A mismatch causes `redirect_uri_mismatch`. Details:
 
 ---
 
-## 8. Configure Deepgram
+## 8. Configure Models (provider + key)
 
 1. Sign in to the web UI.
-2. Go to **Settings → Deepgram**.
-3. Paste your Deepgram API key and save (it is encrypted at rest).
-4. Use **Test** to verify the key works.
+2. Go to **Settings → Models** (or the **Models** nav link, `/models`).
+3. Choose the **primary provider** and **model** and save.
+4. Save the provider's **API key** (encrypted at rest, only the last 4 chars shown).
+5. Use **Test** to verify the key, and optionally enable a **fallback** provider.
 
-The key is required to transcribe **unless** a valid local engine is active (§11).
-Details: **[documentation/05-deepgram.md](documentation/05-deepgram.md)**.
+A cloud provider key is required to transcribe **unless** a valid local engine is
+active (§11). The old `/settings/deepgram` page now redirects to
+`/models?provider=deepgram` (the POST form still works as an alias).
+Details: **[documentation/20-models-tab.md](documentation/20-models-tab.md)** and
+**[05-deepgram.md](documentation/05-deepgram.md)**.
 
 ---
 
@@ -338,9 +380,16 @@ Put model files under the host `./models` directory (mounted at `/models`).
 | `true` | **valid** | **Local engine** used; **no** Deepgram key required. |
 | `true` | **invalid** | **Deepgram required.** UI shows *“Modelo local inválido. Consulte a documentação de modelos locais.”* with a docs link, and Run once is blocked until a Deepgram key is set. |
 
-There is **no silent fallback**: an invalid local configuration always surfaces a
-clear message; if there is also no Deepgram key, run‑once is blocked with a
-friendly message instead of failing later.
+There is **no silent fallback** for the local engine: an invalid local
+configuration always surfaces a clear message; if there is also no provider key,
+run‑once is blocked with a friendly message instead of failing later.
+
+**Cloud provider fallback (Models tab).** When a user picks a cloud provider
+(OpenRouter/Gemini/Deepgram) and enables a **fallback**, the worker tries the
+primary first and, if its key is missing, switches to the fallback provider
+(`app/transcription/registry.py::resolve_cloud_provider`). If neither is usable
+the job fails with a friendly, provider‑named message (never a traceback). An
+explicit cloud selection takes precedence over the env‑driven local engine.
 
 ---
 
@@ -348,16 +397,27 @@ friendly message instead of failing later.
 
 - The web service **enqueues** `job_id` on **Run once** (`transcription:queue`),
   deduped by a Redis set (`transcription:queued`).
-- The worker **dequeues**, takes the **global lock** (`transcription:global_lock`,
-  `SET NX EX`), atomically **claims that job** in Postgres
-  (`pending → processing`), processes it, then **releases the lock** — one at a
-  time, even across replicas.
+- The worker **dequeues**, resolves the job's provider, and acquires the matching
+  **concurrency slot** — a **cloud semaphore** (`semaphore:cloud`, default 5
+  parallel) for Deepgram/other cloud providers, or a **single local lock**
+  (`lock:local`) for CPU engines — then atomically **claims that job** in Postgres
+  (`pending → processing`), processes it, and releases the slot. No slot free →
+  the job is requeued, never failed.
+- **Automation:** the worker also runs an **auto-poll** thread that scans each
+  user's Drive folder and enqueues new media; **transient failures retry with
+  backoff** and exhausted/terminal ones land in a **dead-letter** set with a UI
+  "Tentar novamente".
 - **Postgres stays the source of truth.** If Redis is wiped/unavailable, the worker
   **re‑enqueues** all pending jobs on startup and while idle
-  (`requeue_pending_jobs`), and a self‑heal (`ensure_queued` via `LPOS`) recovers
-  any id orphaned in the dedupe set.
+  (`requeue_pending_jobs`, gated by `next_retry_at`), and a self‑heal
+  (`ensure_queued` via `LPOS`) recovers any id orphaned in the dedupe set.
 
-Details: **[documentation/09-redis-queue.md](documentation/09-redis-queue.md)**.
+Details: **[09-redis-queue](documentation/09-redis-queue.md)** ·
+**[28-auto-polling](documentation/28-auto-polling.md)** ·
+**[29-redis-queue-advanced](documentation/29-redis-queue-advanced.md)** ·
+**[30-provider-concurrency](documentation/30-provider-concurrency.md)** ·
+**[31-retries-dead-letter](documentation/31-retries-dead-letter.md)** ·
+**[32-cost-guardrails](documentation/32-cost-guardrails.md)**.
 
 ---
 
@@ -415,6 +475,35 @@ The greatest hits:
 
 ---
 
+## Audio preprocessing, local models, diarization & Chrome recorder
+
+Four optional, **off‑by‑default** capabilities. None changes the Deepgram/whisper
+path until you turn it on; the heavy engines stay gated behind Docker build args.
+
+- **Audio preprocessing & compression** (`AUDIO_PREPROCESSING_ENABLED`) — when on, the worker
+  fast‑fails a recording with no audio track (friendly error). For cloud providers (like Groq, Gemini, OpenRouter, AssemblyAI), it automatically compresses and segments (chunks) oversized files to stay within provider limits. → **[documentation/24-audio-preprocessing.md](documentation/24-audio-preprocessing.md)** and **[documentation/41-audio-compression-pipeline.md](documentation/41-audio-compression-pipeline.md)**
+- **Local model manager** (`app/models/`, `python -m app.model_init`) — validates
+  the configured local model and, when `LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=true`,
+  downloads it (whisper.cpp ggml via Hugging Face, faster‑whisper via
+  `huggingface_hub`). Run the **opt‑in** one‑shot service with
+  `docker compose --profile model-init run --rm model-init`. Downloads never happen
+  in the web service or in tests. → **[documentation/25-local-model-manager.md](documentation/25-local-model-manager.md)**
+- **Local diarization** (`DIARIZATION_ENABLED`, engine `pyannote`, build arg
+  `INSTALL_PYANNOTE=true`) — optional speaker labels by maximal temporal overlap
+  with the transcript segments; `DIARIZATION_REQUIRED` decides whether an invalid
+  setup fails the job or just continues without speakers. The Hugging Face token is
+  a **secret** and never appears in logs, errors, the UI, or stored transcripts.
+  → **[documentation/26-diarization.md](documentation/26-diarization.md)**
+- **Chrome Meet recorder + upload** — a Manifest V3 extension
+  (`chrome-extension/meet-audio-recorder/`) records Google Meet **tab audio** with
+  one click and `POST`s WebM/Opus to `POST /api/recordings/upload`
+  (`Authorization: Bearer EXTENSION_UPLOAD_TOKEN`, max `EXTENSION_UPLOAD_MAX_MB`).
+  The request only stores the file and creates a pending job (sentinel
+  `chrome-extension:<uuid>`, **no Drive, no migration**); the worker transcribes it
+  out of band. → **[documentation/27-chrome-extension.md](documentation/27-chrome-extension.md)**
+
+---
+
 ## Legacy Simple Worker Mode
 
 The original env‑driven CLI worker (`python -m app.main`) still works and is kept
@@ -442,10 +531,15 @@ docker compose run --rm worker python -m app.main --once --reprocess DRIVE_FILE_
 - Google tokens and per‑user Deepgram keys are **encrypted at rest** (Fernet, key
   from `APP_SECRET_KEY`); secrets are never logged.
 - Use `SESSION_COOKIE_SECURE=true` behind HTTPS; keep Postgres and Redis internal.
+- Structured logs, the UI, error messages, and webhook payloads are **secret-free**
+  (sensitive fields are redacted; tracebacks stay in logs only).
 - **Privacy:** make sure meeting participants know recordings are transcribed; you
   are responsible for complying with applicable laws.
 
-More: **[documentation/16-security.md](documentation/16-security.md)**.
+To **report a vulnerability**, see **[SECURITY.md](SECURITY.md)** (do not open a
+public issue). More for operators:
+**[documentation/37-security.md](documentation/37-security.md)** and
+**[documentation/16-security.md](documentation/16-security.md)**.
 
 ---
 
@@ -460,17 +554,22 @@ docker compose build
 
 PostgreSQL integration tests run against a real database via `TEST_DATABASE_URL`
 (or `DATABASE_URL`); when unreachable they **skip** — they never fall back to
-SQLite. Local engines are mocked in tests (no model downloads). See
-**[documentation/17-development.md](documentation/17-development.md)** and
-**[18-testing.md](documentation/18-testing.md)**.
+SQLite. Local engines are mocked in tests (no model downloads). Integrated
+end-to-end flows live in `tests/e2e/` (FastAPI `TestClient` + in-memory fakes; no
+browser). See **[documentation/17-development.md](documentation/17-development.md)**,
+**[18-testing.md](documentation/18-testing.md)**, and
+**[38-e2e-testing.md](documentation/38-e2e-testing.md)**. Contributors: see
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ---
 
 ## Roadmap
 
-Compile whisper.cpp multiarch into the image, safe model auto‑download, local
-diarization, transcript search, AI summaries, notifications, and a browser
-extension to auto‑start recording — see
+Recently landed: transcript **search**, outbound **webhooks/notifications**, and
+multi-format **exports** (see the feature links above). Still planned: compile
+whisper.cpp multiarch into the image, safe model auto‑download, local diarization,
+**AI summaries** (the `app/summaries/` provider scaffold is in place, no LLM call
+yet), and a browser extension to auto‑start recording — see
 **[documentation/19-roadmap.md](documentation/19-roadmap.md)**.
 
 ## License

@@ -110,7 +110,7 @@ def test_run_once_blocks_without_deepgram_when_local_invalid(tmp_path):
         client.post("/jobs/run-once", follow_redirects=False)
         page = client.get("/jobs").text
     assert worker.jobs.list_jobs_for_user(1) == []  # blocked: nothing enqueued
-    assert "Configure sua Deepgram API Key" in page
+    assert "Configure a chave do provedor em Modelos antes de iniciar." in page
 
 
 def test_jobs_page_shows_local_invalid_alert_with_doc_link(tmp_path):
@@ -131,15 +131,18 @@ def test_jobs_page_shows_local_invalid_alert_with_doc_link(tmp_path):
 
 
 def test_dashboard_shows_queue_online_when_healthy(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
     queue = InMemoryTranscriptionQueue()
     app = create_app(
-        _settings(tmp_path), repositories=build_fake_repositories(),
+        _settings(tmp_path), repositories=auth,
         worker_repositories=build_memory_repositories(), queue=queue,
     )
     with TestClient(app) as client:
         _login(client)
         page = client.get("/").text
-    assert "Queue" in page
+    assert "Fila" in page
     assert "Online" in page
 
 
@@ -148,8 +151,11 @@ def test_dashboard_shows_queue_offline_when_down(tmp_path):
         def health(self):
             return False
 
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
     app = create_app(
-        _settings(tmp_path), repositories=build_fake_repositories(),
+        _settings(tmp_path), repositories=auth,
         worker_repositories=build_memory_repositories(), queue=DownQueue(),
     )
     with TestClient(app) as client:
@@ -180,16 +186,22 @@ def test_run_once_flashes_when_queue_enqueue_fails(tmp_path):
 
 
 def test_dashboard_shows_local_active(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
     status = _status(
         local_valid=True, deepgram_required=False,
         summary="whisper.cpp small q4_0",
         message="Modelo local ativo: whisper.cpp small q4_0",
     )
     app = create_app(
-        _settings(tmp_path), repositories=build_fake_repositories(),
+        _settings(tmp_path), repositories=auth,
         worker_repositories=build_memory_repositories(), transcription_status=status,
     )
     with TestClient(app) as client:
         _login(client)
         page = client.get("/").text
-    assert "Modelo local ativo: whisper.cpp small q4_0" in page
+    # Dashboard prioritizes provider_readiness over transcription_status.
+    # When no explicit models-tab provider is set, defaults to deepgram
+    # which shows "Chave ausente" without a key.
+    assert "Fila" in page

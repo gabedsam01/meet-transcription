@@ -58,7 +58,7 @@ class DriveClient:
                 .execute()
             )
             for item in response.get("files", []):
-                if is_ready_video_file(item):
+                if is_ready_media_file(item):
                     files.append(to_drive_file(item))
             page_token = response.get("nextPageToken")
             if not page_token:
@@ -101,14 +101,26 @@ class DriveClient:
         return created["id"]
 
 
-def is_ready_video_file(item: dict[str, Any]) -> bool:
+# Media we can transcribe: the MP4 recordings Meet produces plus common audio.
+_MEDIA_MIME_TYPES = frozenset(
+    {
+        "video/mp4",
+        "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+        "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/flac", "audio/ogg",
+    }
+)
+_MEDIA_EXTENSIONS = (".mp4", ".mp3", ".wav", ".m4a", ".flac", ".ogg")
+
+
+def is_ready_media_file(item: dict[str, Any]) -> bool:
+    """A non-trashed, non-empty video/audio file we can transcribe."""
     if item.get("trashed") is True:
         return False
 
     name = str(item.get("name") or "")
     mime_type = str(item.get("mimeType") or "")
-    is_mp4 = mime_type == "video/mp4" or name.lower().endswith(".mp4")
-    if not is_mp4:
+    is_media = mime_type in _MEDIA_MIME_TYPES or name.lower().endswith(_MEDIA_EXTENSIONS)
+    if not is_media:
         return False
 
     size = item.get("size")
@@ -120,6 +132,11 @@ def is_ready_video_file(item: dict[str, Any]) -> bool:
             return False
 
     return True
+
+
+# Back-compat alias: callers and tests that asked for "video files" still work;
+# the worker/watcher now pick up audio too.
+is_ready_video_file = is_ready_media_file
 
 
 def to_drive_file(item: dict[str, Any]) -> DriveFile:

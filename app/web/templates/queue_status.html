@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Admin</p>
+    <h1 class="page-title">Fila</h1>
+    <p class="page-subtitle">Visão operacional da fila de transcrição. PostgreSQL é a fonte da verdade; o Redis é fila/lock.</p>
+  </div>
+</div>
+
+{% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+
+{% if queue_status and queue_status.mode == 'poll' %}
+<div class="alert alert-info mb-1">Modo poll (sem Redis): a fila avançada está desativada.</div>
+{% elif queue_status and not queue_status.available %}
+<div class="alert alert-warning mb-1">Redis indisponível no momento.</div>
+{% endif %}
+
+<section class="card-grid">
+  <article class="card stat-card">
+    <p class="stat-value">{{ stats.queued if stats else "—" }}</p>
+    <p class="stat-label">Na fila</p>
+  </article>
+  <article class="card stat-card">
+    <p class="stat-value">{{ stats.processing if stats else "—" }}</p>
+    <p class="stat-label">Processando</p>
+  </article>
+  <article class="card stat-card">
+    <p class="stat-value">{{ stats.dead if stats else "—" }}</p>
+    <p class="stat-label">Dead-letter</p>
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Jobs por status (Postgres)</h2>
+  </div>
+  {% if status_counts %}
+  <div class="table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr><th scope="col">Status</th><th scope="col">Quantidade</th></tr>
+      </thead>
+      <tbody>
+        {% for status, count in status_counts.items() %}
+        <tr>
+          <td><span class="badge badge-{{ status }}">{{ status }}</span></td>
+          <td class="mono">{{ count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Sem jobs ainda</p>
+  </div>
+  {% endif %}
+</section>
+
+{% if dead_ids %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Dead-letter</h2>
+      <p class="card-subtitle">Jobs que falharam após esgotar as tentativas. Use "Tentar novamente" na página de transcrições.</p>
+    </div>
+  </div>
+  <p class="mono">{{ dead_ids | join(', ') }}</p>
+</section>
+{% endif %}
+{% endblock %}

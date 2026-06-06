@@ -4,9 +4,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.errors import (
+    DeepgramRateLimitError,
+    FileTooLargeError,
+    ProviderKeyInvalidError,
+)
+
 
 class DeepgramError(RuntimeError):
     pass
+
+
+def _retry_after(response) -> int | None:
+    """Parse a ``Retry-After`` header (seconds) into an int, or None when absent."""
+    headers = getattr(response, "headers", None) or {}
+    raw = headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -77,9 +95,22 @@ class DeepgramClient:
                 timeout=self.timeout,
             )
 
-        if not 200 <= response.status_code < 300:
+        status = response.status_code
+        # Map the HTTP failures the retry policy cares about to typed errors:
+        # 429 is transient (retry with backoff, honoring Retry-After); 401/403
+        # (bad key) and 413 (file too large) are terminal — never retry.
+        if status == 429:
+            raise DeepgramRateLimitError(
+                f"Deepgram rate limited (status {status})",
+                retry_after_seconds=_retry_after(response),
+            )
+        if status in (401, 403):
+            raise ProviderKeyInvalidError(f"Deepgram auth failed (status {status})")
+        if status == 413:
+            raise FileTooLargeError(f"Deepgram rejected the file (status {status})")
+        if not 200 <= status < 300:
             raise DeepgramError(
-                f"Deepgram request failed with status {response.status_code}: "
+                f"Deepgram request failed with status {status}: "
                 f"{response.text}"
             )
 

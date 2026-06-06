@@ -15,10 +15,10 @@ The worker never sees ciphertext and never decrypts. Secrets are never logged.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import sessionmaker
 
 from app.database import models
@@ -28,14 +28,17 @@ from app.database.connection import (
     normalize_database_url,
 )
 from app.database.repositories import (
-    DeepgramCredentialRepository as CoreDeepgram,
     GoogleTokenRepository as CoreTokens,
+    ProviderCredentialRepository as CoreProviderCreds,
     UserDriveSettingsRepository as CoreSettings,
+    UserModelSettingsRepository as CoreModelSettings,
 )
+from app.transcription.provider_config import normalize_model_settings
 from app.web.security import decrypt_value, fernet_from_secret
 
 try:  # Prefer the real contract once the worker branch is merged.
     from app.core.models import (  # type: ignore
+        AutomationSettings,
         GoogleToken,
         Job,
         Settings,
@@ -50,6 +53,14 @@ except ImportError:  # postgres-core standalone
         Settings,
         Transcript,
     )
+    AutomationSettings = None  # type: ignore
+
+_AUTOMATION_FIELDS = (
+    "auto_poll_enabled", "poll_interval_seconds", "max_files_per_poll",
+    "last_poll_at", "last_success_at", "last_error_code", "last_error_message",
+    "daily_jobs_limit", "max_file_size_mb", "monthly_cloud_minutes_limit",
+    "max_file_duration_minutes",
+)
 
 _STALE_MESSAGE = "stale timeout: job exceeded processing window"
 
@@ -107,11 +118,55 @@ def _to_job(j: models.TranscriptionJob | None) -> Job | None:
         source_file_name=j.source_file_name,
         transcript_drive_file_id=j.transcript_drive_file_id,
         error_message=j.error_message,
+        last_error_code=j.last_error_code,
+        next_retry_at=j.next_retry_at,
         attempts=j.attempts,
         created_at=j.created_at,
         updated_at=j.updated_at,
         started_at=j.started_at,
         processed_at=j.processed_at,
+    )
+
+
+def _to_model_settings(row):
+    if row is None:
+        return None
+    return normalize_model_settings(
+        primary_provider=row.primary_provider,
+        primary_model=row.primary_model,
+        fallback_enabled=row.fallback_enabled,
+        fallback_provider=row.fallback_provider,
+        fallback_model=row.fallback_model,
+        local_engine=row.local_engine,
+        local_model=row.local_model,
+        local_quantization=row.local_quantization,
+    )
+
+
+def _due_predicate(now: datetime):
+    """A pending job is claimable when its retry gate is unset or has passed."""
+    return or_(
+        models.TranscriptionJob.next_retry_at.is_(None),
+        models.TranscriptionJob.next_retry_at <= now,
+    )
+
+
+def _to_automation(s: "models.UserAutomationSettings | None"):
+    if s is None:
+        return None
+    return AutomationSettings(
+        user_id=s.user_id,
+        auto_poll_enabled=s.auto_poll_enabled,
+        poll_interval_seconds=s.poll_interval_seconds,
+        max_files_per_poll=s.max_files_per_poll,
+        last_poll_at=s.last_poll_at,
+        last_success_at=s.last_success_at,
+        last_error_code=s.last_error_code,
+        last_error_message=s.last_error_message,
+        daily_jobs_limit=s.daily_jobs_limit,
+        max_file_size_mb=s.max_file_size_mb,
+        monthly_cloud_minutes_limit=s.monthly_cloud_minutes_limit,
+        max_file_duration_minutes=s.max_file_duration_minutes,
     )
 
 
@@ -139,7 +194,10 @@ class PgJobRepository(_Bound):
         with self._sf.begin() as s:
             stmt = (
                 select(models.TranscriptionJob)
-                .where(models.TranscriptionJob.status == "pending")
+                .where(
+                    models.TranscriptionJob.status == "pending",
+                    _due_predicate(now),
+                )
                 .order_by(models.TranscriptionJob.created_at, models.TranscriptionJob.id)
                 .limit(1)
                 .with_for_update(skip_locked=True)
@@ -161,6 +219,7 @@ class PgJobRepository(_Bound):
                 .where(
                     models.TranscriptionJob.id == job_id,
                     models.TranscriptionJob.status == "pending",
+                    _due_predicate(now),
                 )
                 .limit(1)
                 .with_for_update(skip_locked=True)
@@ -175,11 +234,14 @@ class PgJobRepository(_Bound):
             s.flush()
             return _to_job(job)
 
-    def list_pending_jobs(self) -> list[Job]:
+    def list_pending_jobs(self, now: datetime | None = None) -> list[Job]:
         with self._sf.begin() as s:
+            conditions = [models.TranscriptionJob.status == "pending"]
+            if now is not None:
+                conditions.append(_due_predicate(now))
             stmt = (
                 select(models.TranscriptionJob)
-                .where(models.TranscriptionJob.status == "pending")
+                .where(*conditions)
                 .order_by(
                     models.TranscriptionJob.created_at, models.TranscriptionJob.id
                 )
@@ -224,14 +286,66 @@ class PgJobRepository(_Bound):
             if transcript_drive_file_id is not None:
                 job.transcript_drive_file_id = transcript_drive_file_id
 
-    def mark_failed(self, job_id: int, error_message: str, now: datetime) -> None:
+    def mark_failed(
+        self, job_id: int, error_message: str, now: datetime,
+        error_code: str | None = None,
+    ) -> None:
         with self._sf.begin() as s:
             job = s.get(models.TranscriptionJob, job_id)
             if job is None:
                 return
             job.status = "failed"
             job.error_message = error_message
+            job.last_error_code = error_code
             job.updated_at = now
+
+    def schedule_retry(
+        self, job_id: int, now: datetime, *, next_retry_at: datetime,
+        error_code: str | None, error_message: str | None,
+    ) -> None:
+        with self._sf.begin() as s:
+            job = s.get(models.TranscriptionJob, job_id)
+            if job is None:
+                return
+            # Back to pending for a later attempt; attempts/source_file_id untouched.
+            job.status = "pending"
+            job.next_retry_at = next_retry_at
+            job.last_error_code = error_code
+            job.error_message = error_message
+            job.updated_at = now
+
+    def reset_job_for_retry(self, job_id: int, now: datetime) -> None:
+        with self._sf.begin() as s:
+            job = s.get(models.TranscriptionJob, job_id)
+            if job is None:
+                return
+            job.status = "pending"
+            job.attempts = 0
+            job.next_retry_at = None
+            job.error_message = None
+            job.last_error_code = None
+            job.started_at = None
+            job.processed_at = None
+            job.updated_at = now
+
+    def count_jobs_created_since(self, user_id: int, since: datetime) -> int:
+        with self._sf.begin() as s:
+            stmt = (
+                select(func.count())
+                .select_from(models.TranscriptionJob)
+                .where(
+                    models.TranscriptionJob.user_id == user_id,
+                    models.TranscriptionJob.created_at >= since,
+                )
+            )
+            return int(s.scalar(stmt) or 0)
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        with self._sf.begin() as s:
+            stmt = select(
+                models.TranscriptionJob.status, func.count()
+            ).group_by(models.TranscriptionJob.status)
+            return {status: int(count) for status, count in s.execute(stmt)}
 
     def find_existing_job(
         self, user_id: int, source_file_id: str, statuses: tuple[str, ...]
@@ -305,6 +419,29 @@ class PgTranscriptRepository(_Bound):
             stmt = select(models.Transcript).where(models.Transcript.job_id == job_id)
             return _to_transcript(s.scalar(stmt))
 
+    def search_transcripts(
+        self, user_id: int, query: str, limit: int = 20
+    ) -> list[Transcript]:
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        # Full-text search on transcript_text, scoped to the user. The 'simple'
+        # config needs no language extension and is always available; a GIN index
+        # on the same expression backs this (see migration 0002).
+        tsvector = func.to_tsvector("simple", models.Transcript.transcript_text)
+        tsquery = func.plainto_tsquery("simple", needle)
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.Transcript)
+                .where(
+                    models.Transcript.user_id == user_id,
+                    tsvector.op("@@")(tsquery),
+                )
+                .order_by(models.Transcript.created_at.desc(), models.Transcript.id.desc())
+                .limit(max(0, limit))
+            )
+            return [_to_transcript(t) for t in s.scalars(stmt)]
+
 
 class PgSettingsRepository(_Bound):
     def __init__(self, session_factory: sessionmaker, decryptor: _Decryptor) -> None:
@@ -316,13 +453,24 @@ class PgSettingsRepository(_Bound):
             st = CoreSettings(s).get_for_user(user_id)
             if st is None:
                 return None
-            cred = CoreDeepgram(s).get_for_user(user_id)
+            # One read covers every provider key (incl. legacy deepgram_credentials
+            # via the repository's compatibility fallback). Decrypt to plaintext;
+            # the worker never sees ciphertext and never logs a key.
+            encrypted = CoreProviderCreds(s).list_for_user(user_id)
+            credentials = {
+                provider: self._dec.decrypt(value)
+                for provider, value in encrypted.items()
+            }
+            ms_row = CoreModelSettings(s).get_for_user(user_id)
+            model_settings = _to_model_settings(ms_row)
             return Settings(
                 user_id=user_id,
                 source_drive_folder_id=st.source_drive_folder_id or "",
                 destination_drive_folder_id=st.destination_drive_folder_id or "",
                 save_copy_to_drive=st.save_copy_to_drive,
-                deepgram_api_key=self._dec.decrypt(cred.encrypted_api_key) if cred else None,
+                deepgram_api_key=credentials.get("deepgram"),
+                model_settings=model_settings,
+                provider_credentials=credentials,
             )
 
 
@@ -345,6 +493,68 @@ class PgGoogleTokenRepository(_Bound):
                 scopes=_scopes_to_list(t.scopes),
                 expiry=t.expiry.isoformat() if t.expiry else None,
             )
+
+
+class PgAutomationSettingsRepository(_Bound):
+    def get_for_user(self, user_id: int):
+        with self._sf.begin() as s:
+            return _to_automation(self._row(s, user_id))
+
+    def upsert_for_user(self, user_id: int, **fields):
+        with self._sf.begin() as s:
+            row = self._row(s, user_id)
+            if row is None:
+                row = models.UserAutomationSettings(user_id=user_id)
+                s.add(row)
+            for key, value in fields.items():
+                if key in _AUTOMATION_FIELDS:
+                    setattr(row, key, value)
+            s.flush()
+            return _to_automation(row)
+
+    def list_due_for_poll(self, now: datetime, limit: int):
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.UserAutomationSettings)
+                .where(models.UserAutomationSettings.auto_poll_enabled.is_(True))
+                .order_by(
+                    models.UserAutomationSettings.last_poll_at.asc().nulls_first(),
+                )
+            )
+            due = []
+            for row in s.scalars(stmt):
+                if row.last_poll_at is None or row.last_poll_at <= now - timedelta(
+                    seconds=row.poll_interval_seconds
+                ):
+                    due.append(_to_automation(row))
+                if len(due) >= limit:
+                    break
+            return due
+
+    def mark_poll_result(
+        self, user_id: int, now: datetime, *, success: bool,
+        error_code: str | None = None, error_message: str | None = None,
+    ) -> None:
+        with self._sf.begin() as s:
+            row = self._row(s, user_id)
+            if row is None:
+                row = models.UserAutomationSettings(user_id=user_id)
+                s.add(row)
+            row.last_poll_at = now
+            if success:
+                row.last_success_at = now
+                row.last_error_code = None
+                row.last_error_message = None
+            else:
+                row.last_error_code = error_code
+                row.last_error_message = error_message
+            s.flush()
+
+    def _row(self, s, user_id: int):
+        stmt = select(models.UserAutomationSettings).where(
+            models.UserAutomationSettings.user_id == user_id
+        )
+        return s.scalar(stmt)
 
 
 def build_postgres_repositories(
@@ -372,4 +582,5 @@ def build_postgres_repositories(
         transcripts=PgTranscriptRepository(factory),
         settings=PgSettingsRepository(factory, decryptor),
         google_tokens=PgGoogleTokenRepository(factory, decryptor),
+        automation=PgAutomationSettingsRepository(factory),
     )

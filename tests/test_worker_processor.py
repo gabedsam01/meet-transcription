@@ -1,11 +1,28 @@
 from datetime import datetime, timezone
 
 from app.core.models import GoogleToken, JobStatus, Settings
+from app.errors import DeepgramRateLimitError, ProviderKeyInvalidError
+from app.queue.memory_queue import InMemoryTranscriptionQueue
 from app.transcription.config import TranscriptionConfig
 from app.transcription.local_validation import ValidationProbes
 from app.transcription.provider import TranscriptionResult
-from app.worker.processor import JobProcessor
-from tests.support import FakeDeepgramClient, FakeDriveClient, make_worker_container
+from app.transcription.provider_config import normalize_model_settings
+from app.worker.processor import JobProcessor, _backoff
+from tests.support import (
+    FakeCloudProvider,
+    FakeDeepgramClient,
+    FakeDriveClient,
+    make_worker_container,
+)
+
+
+class RaisingDeepgram:
+    def __init__(self, exc):
+        self.exc = exc
+        self.api_key = None
+
+    def transcribe(self, video_path, api_key=None):
+        raise self.exc
 
 
 def _local_cfg(**over):
@@ -120,7 +137,9 @@ def test_process_fails_when_no_per_user_deepgram_key(tmp_path):
     assert "Deepgram" in done.error_message
 
 
-def test_process_marks_failed_on_transcription_error(tmp_path):
+def test_process_reschedules_a_transient_error_for_retry(tmp_path):
+    # An unknown/transient error is retried (not failed) until the attempt cap, so a
+    # blip never permanently fails a job. attempts==1 here (< max) -> reschedule.
     container = make_worker_container(
         tmp_path, deepgram=FakeDeepgramClient(fail=True)
     )
@@ -130,8 +149,11 @@ def test_process_marks_failed_on_transcription_error(tmp_path):
     JobProcessor(container).process(job)
 
     done = container.repositories.jobs.get_job(job.id)
-    assert done.status == JobStatus.FAILED.value
-    assert "deepgram failed" in done.error_message
+    assert done.status == JobStatus.PENDING.value          # back to pending for retry
+    assert done.next_retry_at is not None                  # with a backoff gate
+    assert done.last_error_code == "UNEXPECTED"
+    assert done.attempts == 1                              # preserved
+    assert done.source_file_id == "src-1"                  # never lost on retry
     assert container.repositories.transcripts.get_by_job(job.id) is None
 
 
@@ -193,6 +215,167 @@ def test_process_falls_back_to_deepgram_when_local_invalid_with_key(tmp_path):
     assert deepgram.api_key == "user-dg-key"
 
 
+def _seed_models(repos, *, ms, credentials, deepgram_key=None):
+    repos.settings.set(Settings(
+        user_id=7, source_drive_folder_id="src", destination_drive_folder_id="dst",
+        save_copy_to_drive=False, deepgram_api_key=deepgram_key,
+        model_settings=ms, provider_credentials=dict(credentials),
+    ))
+    repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
+
+
+def _with_max_attempts(container, n):
+    import dataclasses
+    return dataclasses.replace(container, settings=dataclasses.replace(container.settings, job_max_attempts=n))
+
+
+def test_run_once_uses_configured_cloud_provider(tmp_path):
+    # Requirement 14: the worker honours the user's Models-tab selection.
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    drive = FakeDriveClient()
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, drive=drive, deepgram=deepgram, build_cloud_provider=cloud.builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert cloud.built == [("openrouter", "or-key", "openai/whisper-large-v3")]
+    assert cloud.calls and drive.downloaded == ["src-1"]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["provider"] == "openrouter"
+    assert deepgram.api_key is None  # Deepgram never built
+
+
+def test_explicit_deepgram_model_selection_is_honoured(tmp_path):
+    # A user who picks Deepgram + a non-default model in the Models tab must get
+    # THAT model on the actual client (not the environment default).
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(tmp_path, deepgram=deepgram)
+    ms = normalize_model_settings(primary_provider="deepgram", primary_model="nova-2")
+    _seed_models(container.repositories, ms=ms, credentials={}, deepgram_key="dg-key")
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert deepgram.model == "nova-2"  # client built with the user's model
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["model"] == "nova-2"
+
+
+def test_cloud_provider_falls_back_to_deepgram_when_primary_key_missing(tmp_path):
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, deepgram=deepgram, build_cloud_provider=FakeCloudProvider().builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3",
+        fallback_enabled=True, fallback_provider="deepgram", fallback_model="nova-3",
+    )
+    # No openrouter key, but a deepgram key is available for the fallback.
+    _seed_models(container.repositories, ms=ms, credentials={"deepgram": "dg-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["provider"] == "deepgram"
+    assert deepgram.api_key == "dg-key"
+
+
+def test_cloud_provider_fails_friendly_without_key_or_fallback(tmp_path):
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=FakeCloudProvider().builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="gemini", primary_model="gemini-2.5-flash"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "Gemini" in done.error_message  # friendly, names the provider
+    assert container.repositories.transcripts.get_by_job(job.id) is None
+
+
+def test_rate_limit_schedules_retry_with_backoff(tmp_path):
+    container = make_worker_container(
+        tmp_path, deepgram=RaisingDeepgram(DeepgramRateLimitError(retry_after_seconds=90)),
+        queue=InMemoryTranscriptionQueue(),
+    )
+    _seed(container.repositories)
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.PENDING.value
+    assert done.last_error_code == "RATE_LIMIT"
+    assert done.next_retry_at is not None
+    assert container.queue.dead_job_ids() == set()  # retry, not dead-lettered
+
+
+def test_terminal_key_invalid_dead_letters_without_retry(tmp_path):
+    queue = InMemoryTranscriptionQueue()
+    container = make_worker_container(
+        tmp_path, deepgram=RaisingDeepgram(ProviderKeyInvalidError()), queue=queue,
+    )
+    _seed(container.repositories)
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert done.last_error_code == "KEY_INVALID"
+    assert queue.dead_job_ids() == {job.id}  # routed to the dead-letter set
+
+
+def test_retryable_error_dead_letters_once_attempts_are_exhausted(tmp_path):
+    queue = InMemoryTranscriptionQueue()
+    container = make_worker_container(
+        tmp_path,
+        deepgram=RaisingDeepgram(DeepgramRateLimitError(retry_after_seconds=1)),
+        queue=queue,
+    )
+    container = _with_max_attempts(container, 3)
+    _seed(container.repositories)
+    job_row = container.repositories.jobs.create_job(7, "src-1", "a.mp4", _now())
+    # Simulate having already used the attempt budget: attempts==3 at claim time.
+    container.repositories.jobs._jobs[job_row.id].attempts = 2
+    job = container.repositories.jobs.claim_job(job_row.id, "w", _now())  # attempts -> 3
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value          # cap reached -> terminal
+    assert queue.dead_job_ids() == {job.id}
+
+
+def test_backoff_grows_and_is_floored_by_retry_after():
+    assert _backoff(1, 60, 3600, None) == 60
+    assert _backoff(2, 60, 3600, None) == 120
+    assert _backoff(3, 60, 3600, None) == 240
+    assert _backoff(10, 60, 3600, None) == 3600           # capped at max
+    assert _backoff(1, 60, 3600, 200) == 200              # floored by Retry-After
+    # A huge Retry-After must still respect the maximum cap (no multi-day parking).
+    assert _backoff(1, 60, 3600, 100000) == 3600
+
+
 def test_process_cleans_only_its_own_job_dir(tmp_path):
     container = make_worker_container(tmp_path)
     _seed(container.repositories)
@@ -206,3 +389,510 @@ def test_process_cleans_only_its_own_job_dir(tmp_path):
 
     assert not (tmp_path / "jobs" / str(job.id)).exists()
     assert (sibling / "keep.txt").exists()
+
+
+def _make_audio_runner(flac_size=10, mp3_size=10, chunk_size=10, duration=1800, fail_ffmpeg=False):
+    import json
+    import math
+    from pathlib import Path
+
+    def runner(cmd):
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        if fail_ffmpeg and "ffmpeg" in cmd[0]:
+            _R.returncode = 1
+            _R.stderr = "ffmpeg mock failure"
+            return _R()
+
+        if "ffprobe" in cmd[0]:
+            _R.stdout = json.dumps({
+                "streams": [{"codec_type": "audio", "sample_rate": "16000", "channels": 1, "codec_name": "aac"}],
+                "format": {"duration": str(duration), "size": str(flac_size)}
+            })
+            return _R()
+
+        # ffmpeg commands
+        dest_str = cmd[-1]
+        dest = Path(dest_str)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        if "flac" in dest_str and ("compressed" in dest_str or "preprocessed" in dest_str):
+            dest.write_bytes(b"a" * flac_size)
+        elif "mp3" in dest_str and ("compressed" in dest_str or "preprocessed" in dest_str):
+            dest.write_bytes(b"a" * mp3_size)
+        elif "to_chunk.wav" in dest_str:
+            dest.write_bytes(b"a" * 100)
+        elif "%03d" in dest_str:
+            try:
+                idx = cmd.index("-segment_time")
+                seg_time = int(cmd[idx + 1])
+            except (ValueError, IndexError):
+                seg_time = 900
+            fmt = dest_str.split(".")[-1]
+            num_chunks = max(1, math.ceil(duration / seg_time))
+            for i in range(num_chunks):
+                chunk_file = dest.parent / f"chunk_{i:03d}.{fmt}"
+                chunk_file.write_bytes(b"a" * chunk_size)
+        elif "chunk_" in dest_str:
+            dest.write_bytes(b"a" * chunk_size)
+
+        return _R()
+
+    return runner
+
+
+def test_openrouter_small_file_no_compress(tmp_path):
+    import json
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+    )
+    runner_called = []
+    def runner(cmd):
+        runner_called.append(cmd)
+        class _R:
+            returncode = 0
+            stdout = json.dumps({"streams": [{"codec_type": "audio"}], "format": {"duration": "10.0"}})
+            stderr = ""
+        return _R()
+
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 1
+    assert not any("preprocessed" in str(c) for c in runner_called)
+
+
+def test_openrouter_large_file_compressed_fits(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+    )
+    runner = _make_audio_runner(flac_size=50 * 1024 * 1024)
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 1
+    assert "compressed.flac" in cloud.calls[0][0]
+
+
+def test_openrouter_oversized_file_chunked_stitched(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    def custom_transcribe(source_path, *, original_name, file_id):
+        from app.transcription.provider import TranscriptionResult
+        cloud.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="Olá",
+            payload={
+                "provider": "openrouter", "engine": "openrouter",
+                "model": "m", "language": "pt", "text": "Olá",
+                "segments": [{"start": 0.0, "end": 2.0, "text": "Olá"}],
+                "words": [], "utterances": [], "raw": {},
+            }
+        )
+    cloud.transcribe = custom_transcribe
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+    )
+    runner = _make_audio_runner(
+        flac_size=150 * 1024 * 1024,
+        mp3_size=120 * 1024 * 1024,
+        chunk_size=10 * 1024 * 1024,
+        duration=1800
+    )
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 300 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert len(cloud.calls) == 2
+    assert "chunk_000.mp3" in cloud.calls[0][0]
+    assert "chunk_001.mp3" in cloud.calls[1][0]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert "Olá" in transcript.text
+
+
+def test_groq_capabilities_limit_overrides():
+    from app.audio.config import AudioConfig, get_provider_capabilities
+
+    cfg_default = AudioConfig.from_env({})
+    caps_default = get_provider_capabilities("groq", cfg_default)
+    assert caps_default.max_upload_mb == 25
+
+    cfg_overridden = AudioConfig.from_env({"GROQ_MAX_UPLOAD_MB": "100"})
+    caps_overridden = get_provider_capabilities("groq", cfg_overridden)
+    assert caps_overridden.max_upload_mb == 100
+
+
+def test_ffmpeg_failure_fails_job_friendly(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+    )
+    runner = _make_audio_runner(fail_ffmpeg=True)
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "processar" in done.error_message
+
+
+def test_preprocessing_disabled_raises_friendly_error(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    audio_cfg = AudioConfig.disabled()
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "grande demais" in done.error_message
+    assert "Ative compressão" in done.error_message
+
+
+def test_preprocessing_disabled_raises_friendly_error_groq(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    from app.worker.processor import ResolvedProvider
+    cloud = FakeCloudProvider(provider_id="groq")
+    audio_cfg = AudioConfig.disabled()
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 150 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    # Mock resolve to return a ResolvedProvider with name "groq"
+    original_resolve = JobProcessor.resolve
+    def fake_resolve(self, j):
+        res = original_resolve(self, j)
+        return ResolvedProvider(
+            provider=res.provider, name="groq", kind=res.kind,
+            status=res.status, settings=res.settings, token=res.token, label=res.label
+        )
+
+    with patch.object(Path, "stat", fake_stat), patch.object(JobProcessor, "resolve", fake_resolve):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "No free tier do Groq" in done.error_message
+
+
+def test_groq_oversized_file_chunked_stitched(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="groq")
+    def custom_transcribe(source_path, *, original_name, file_id):
+        from app.transcription.provider import TranscriptionResult
+        cloud.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="Groq chunk",
+            payload={
+                "provider": "groq", "engine": "groq",
+                "model": "m", "language": "pt", "text": "Groq chunk",
+                "segments": [{"start": 0.0, "end": 2.0, "text": "Groq chunk"}],
+                "words": [], "utterances": [], "raw": {},
+            }
+        )
+    cloud.transcribe = custom_transcribe
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+    )
+    runner = _make_audio_runner(
+        flac_size=40 * 1024 * 1024,
+        mp3_size=30 * 1024 * 1024,
+        chunk_size=10 * 1024 * 1024,
+        duration=1800
+    )
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="groq", primary_model="whisper-large-v3-turbo"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"groq": "groq-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 45 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    # Groq preferred format is mp3, so we check for chunk_*_compressed.mp3 calls!
+    assert len(cloud.calls) == 2
+    assert "chunk_000.mp3" in cloud.calls[0][0]
+    assert "chunk_001.mp3" in cloud.calls[1][0]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert "Groq chunk" in transcript.text
+
+
+def test_groq_oversized_file_with_dev_limit_no_chunk(tmp_path):
+    import os
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    
+    os.environ["GROQ_USE_DEV_LIMIT"] = "true"
+    try:
+        cloud = FakeCloudProvider(provider_id="groq")
+        def custom_transcribe(source_path, *, original_name, file_id):
+            from app.transcription.provider import TranscriptionResult
+            cloud.calls.append((str(source_path), original_name, file_id))
+            return TranscriptionResult(
+                text="Groq single",
+                payload={
+                    "provider": "groq", "engine": "groq",
+                    "model": "m", "language": "pt", "text": "Groq single",
+                    "segments": [{"start": 0.0, "end": 2.0, "text": "Groq single"}],
+                    "words": [], "utterances": [], "raw": {},
+                }
+            )
+        cloud.transcribe = custom_transcribe
+        audio_cfg = AudioConfig(
+            enabled=True,
+            target_sample_rate=16000,
+            target_channels=1,
+            target_bitrate=24000,
+            chunk_max_duration_seconds=900,
+            chunk_overlap_seconds=2,
+            max_inline_mb=70,
+            max_file_api_mb=99,
+            compression_enabled=True,
+            compression_target_mb=99,
+            cloud_chunk_target_mb=24,
+            provider_limit_default_mb=99,
+            openrouter_max_upload_mb=99,
+            gemini_max_file_api_mb=99,
+            groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
+        )
+        runner = _make_audio_runner(
+            flac_size=40 * 1024 * 1024,
+            mp3_size=30 * 1024 * 1024,
+            chunk_size=10 * 1024 * 1024,
+            duration=1800
+        )
+        container = make_worker_container(
+            tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+        )
+        ms = normalize_model_settings(
+            primary_provider="groq", primary_model="whisper-large-v3-turbo"
+        )
+        _seed_models(container.repositories, ms=ms, credentials={"groq": "groq-key"})
+        job = _claim_one(container.repositories)
+
+        original_stat = Path.stat
+        def fake_stat(self, *args, **kwargs):
+            if "meeting.mp4" in self.name:
+                from unittest.mock import MagicMock
+                mock = MagicMock()
+                mock.st_size = 45 * 1024 * 1024
+                return mock
+            return original_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", fake_stat):
+            JobProcessor(container).process(job)
+
+        done = container.repositories.jobs.get_job(job.id)
+        assert done.status == JobStatus.COMPLETED.value
+        # Dev limit is 100 MB, the 45 MB file fits within the 100 MB limit, so it is transcribed in 1 call directly
+        assert len(cloud.calls) == 1
+        assert "meeting.mp4" in cloud.calls[0][0]
+        transcript = container.repositories.transcripts.get_by_job(job.id)
+        assert "Groq single" in transcript.text
+    finally:
+        del os.environ["GROQ_USE_DEV_LIMIT"]
+

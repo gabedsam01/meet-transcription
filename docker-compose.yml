@@ -32,6 +32,11 @@ x-transcription-env: &transcription-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   QUEUE_NAME: ${QUEUE_NAME:-transcription}
   TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS: ${TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS:-14400}
+  # Provider-aware concurrency: cloud (Deepgram, I/O-bound) runs several in
+  # parallel; local CPU engines run one at a time. Slots reclaim after the TTL.
+  CLOUD_TRANSCRIPTION_CONCURRENCY: ${CLOUD_TRANSCRIPTION_CONCURRENCY:-5}
+  LOCAL_TRANSCRIPTION_CONCURRENCY: ${LOCAL_TRANSCRIPTION_CONCURRENCY:-1}
+  PROVIDER_LOCK_TTL_SECONDS: ${PROVIDER_LOCK_TTL_SECONDS:-14400}
   LOCAL_TRANSCRIPTION_ENABLED: ${LOCAL_TRANSCRIPTION_ENABLED:-false}
   LOCAL_TRANSCRIPTION_ENGINE: ${LOCAL_TRANSCRIPTION_ENGINE:-faster-whisper}
   LOCAL_TRANSCRIPTION_MODEL: ${LOCAL_TRANSCRIPTION_MODEL:-small}
@@ -44,6 +49,52 @@ x-transcription-env: &transcription-env
   WHISPER_CPP_BINARY: ${WHISPER_CPP_BINARY:-}
   LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD: ${LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD:-false}
   LOCAL_TRANSCRIPTION_DOC_URL: ${LOCAL_TRANSCRIPTION_DOC_URL:-https://github.com/gabedsam01/meet-transcription/blob/main/docs/architecture/local-transcription.md}
+  # Optional audio preprocessing (OFF by default; no-audio fast-fail + chunk/stitch
+  # library). See documentation/24-audio-preprocessing.md.
+  AUDIO_PREPROCESSING_ENABLED: ${AUDIO_PREPROCESSING_ENABLED:-false}
+  AUDIO_TARGET_SAMPLE_RATE: ${AUDIO_TARGET_SAMPLE_RATE:-16000}
+  AUDIO_TARGET_CHANNELS: ${AUDIO_TARGET_CHANNELS:-1}
+  AUDIO_TARGET_BITRATE: ${AUDIO_TARGET_BITRATE:-24000}
+  AUDIO_CHUNK_MAX_DURATION_SECONDS: ${AUDIO_CHUNK_MAX_DURATION_SECONDS:-900}
+  AUDIO_CHUNK_OVERLAP_SECONDS: ${AUDIO_CHUNK_OVERLAP_SECONDS:-2}
+  AUDIO_MAX_INLINE_MB: ${AUDIO_MAX_INLINE_MB:-70}
+  AUDIO_MAX_FILE_API_MB: ${AUDIO_MAX_FILE_API_MB:-99}
+  # Optional audio compression settings (AUDIO_COMPRESSION_ENABLED defaults to true
+  # when preprocessing is on). See documentation/41-audio-compression-pipeline.md.
+  AUDIO_COMPRESSION_ENABLED: ${AUDIO_COMPRESSION_ENABLED:-true}
+  AUDIO_COMPRESSION_TARGET_MB: ${AUDIO_COMPRESSION_TARGET_MB:-99}
+  AUDIO_CLOUD_CHUNK_TARGET_MB: ${AUDIO_CLOUD_CHUNK_TARGET_MB:-24}
+  AUDIO_PROVIDER_LIMIT_DEFAULT_MB: ${AUDIO_PROVIDER_LIMIT_DEFAULT_MB:-99}
+  # Per-provider upload limits for cloud transcription.
+  OPENROUTER_MAX_UPLOAD_MB: ${OPENROUTER_MAX_UPLOAD_MB:-99}
+  GEMINI_MAX_FILE_API_MB: ${GEMINI_MAX_FILE_API_MB:-99}
+  GROQ_MAX_UPLOAD_MB: ${GROQ_MAX_UPLOAD_MB:-25}
+  GROQ_USE_DEV_LIMIT: ${GROQ_USE_DEV_LIMIT:-false}
+  ASSEMBLYAI_MAX_UPLOAD_MB: ${ASSEMBLYAI_MAX_UPLOAD_MB:-99}
+  # Optional local diarization (OFF by default; pyannote is a build-arg engine and
+  # DIARIZATION_AUTH_TOKEN is a secret — see documentation/26-diarization.md).
+  DIARIZATION_ENABLED: ${DIARIZATION_ENABLED:-false}
+  DIARIZATION_ENGINE: ${DIARIZATION_ENGINE:-none}
+  DIARIZATION_MODEL: ${DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
+  DIARIZATION_AUTH_TOKEN: ${DIARIZATION_AUTH_TOKEN:-}
+  DIARIZATION_REQUIRED: ${DIARIZATION_REQUIRED:-false}
+  DIARIZATION_MIN_SPEAKERS: ${DIARIZATION_MIN_SPEAKERS:-}
+  DIARIZATION_MAX_SPEAKERS: ${DIARIZATION_MAX_SPEAKERS:-}
+  # Shared recordings dir for Chrome-extension uploads (under the ./data volume so
+  # web writes and worker reads the same files).
+  EXTENSION_RECORDINGS_DIR: ${EXTENSION_RECORDINGS_DIR:-/app/data/recordings}
+  # Observability: text (default) or json structured logs (secrets are redacted).
+  LOG_FORMAT: ${LOG_FORMAT:-text}
+  # Optional outbound webhooks (worker fires job.completed/job.failed). Disabled
+  # unless WEBHOOK_URL is set; delivery is best-effort and never blocks a job.
+  WEBHOOK_URL: ${WEBHOOK_URL:-}
+  WEBHOOK_EVENTS: ${WEBHOOK_EVENTS:-job.completed,job.failed}
+  WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-10}
+  WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-2}
+  # Meeting summaries (roadmap; OFF and not yet implemented).
+  SUMMARY_ENABLED: ${SUMMARY_ENABLED:-false}
+  SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-none}
+  SUMMARY_MODEL: ${SUMMARY_MODEL:-}
 
 services:
   postgres:
@@ -89,6 +140,23 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
 
+  # OPTIONAL one-shot model preparation. Validates the configured local model and,
+  # when LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=true, downloads it into the (writable)
+  # /models volume, then exits. OPT-IN via a profile so a plain `docker compose up`
+  # never runs it: `docker compose --profile model-init run --rm model-init`, or
+  # `docker compose --profile model-init up model-init`. The web service does NOT
+  # depend on it; the worker validates its model at runtime regardless.
+  model-init:
+    <<: *app
+    command: ["python", "-m", "app.model_init"]
+    restart: "no"   # one-shot job.
+    profiles: ["model-init"]
+    depends_on: []   # needs no Postgres/Redis — it only prepares model files.
+    environment:
+      <<: *transcription-env
+    volumes:
+      - ./models:/models   # WRITABLE here so auto-download can populate it.
+
   # Serves the UI and OAuth flow. Creates pending jobs only — it never downloads,
   # transcribes, or uploads. The Web UI uses per-user encrypted Deepgram keys, so
   # it needs no global DEEPGRAM_API_KEY.
@@ -116,8 +184,24 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/oauth/google/callback}
       WORKER_REPOSITORY_BACKEND: ${WORKER_REPOSITORY_BACKEND:-postgres}
       TMP_DIR: ${TMP_DIR:-/app/tmp}
+      # Chrome-extension upload (POST /api/recordings/upload). DISABLED unless a
+      # token is set; the worker transcribes the upload out of band.
+      EXTENSION_UPLOAD_TOKEN: ${EXTENSION_UPLOAD_TOKEN:-}
+      EXTENSION_UPLOAD_MAX_MB: ${EXTENSION_UPLOAD_MAX_MB:-500}
+      EXTENSION_UPLOAD_USER_EMAIL: ${EXTENSION_UPLOAD_USER_EMAIL:-}
+      # Build metadata surfaced by GET /version (no secrets; safe to leave blank).
+      APP_VERSION: ${APP_VERSION:-}
+      GIT_COMMIT: ${GIT_COMMIT:-}
+      BUILD_TIME: ${BUILD_TIME:-}
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
+    # Liveness probe against the public /health endpoint (no auth, no DB needed).
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     volumes:
       - ./data:/app/data   # scratch/temp only; the database lives in Postgres
       - ./tmp:/app/tmp
@@ -147,6 +231,22 @@ services:
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
       STALE_JOB_TIMEOUT_MINUTES: ${STALE_JOB_TIMEOUT_MINUTES:-30}
       TMP_DIR: ${TMP_DIR:-/app/tmp}
+      # Queue consumers (redis mode) + retry/backoff + dead-letter policy.
+      TRANSCRIPTION_QUEUE_CONCURRENCY: ${TRANSCRIPTION_QUEUE_CONCURRENCY:-5}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      JOB_RETRY_BASE_SECONDS: ${JOB_RETRY_BASE_SECONDS:-60}
+      JOB_RETRY_MAX_SECONDS: ${JOB_RETRY_MAX_SECONDS:-3600}
+      # Auto-poll: scan each enabled user's Drive folder on an interval. OFF by
+      # default — a fresh deploy must not crawl Drive before the user reviews their
+      # folder/provider/limits. Users opt in per-account at /settings/automation.
+      AUTO_POLL_ENABLED: ${AUTO_POLL_ENABLED:-false}
+      AUTO_POLL_INTERVAL_SECONDS: ${AUTO_POLL_INTERVAL_SECONDS:-300}
+      AUTO_POLL_MAX_USERS_PER_TICK: ${AUTO_POLL_MAX_USERS_PER_TICK:-50}
+      AUTO_POLL_MAX_FILES_PER_USER: ${AUTO_POLL_MAX_FILES_PER_USER:-5}
+      AUTO_POLL_LOCK_TTL_SECONDS: ${AUTO_POLL_LOCK_TTL_SECONDS:-240}
+      # Cost guardrails (0 = unlimited; per-user settings override these globals).
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-0}
+      DAILY_JOBS_LIMIT: ${DAILY_JOBS_LIMIT:-0}
     volumes:
       - ./data:/app/data
       - ./tmp:/app/tmp

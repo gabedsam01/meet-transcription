@@ -23,9 +23,18 @@ tmp/*
 !tmp/.gitkeep
 data/processed_files.json
 data/*.tmp
+# Chrome-extension recording uploads (shared web/worker volume) — never commit.
+data/recordings/
 !data/.gitkeep
+
+# Local model files downloaded by the model manager / model-init (keep the dir).
+models/*
+!models/.gitkeep
 
 # OS/editor
 .DS_Store
 .idea/
 .vscode/
+.agents/
+opencode.json
+.opencode/

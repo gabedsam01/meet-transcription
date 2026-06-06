@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Configuração</p>
+    <h1 class="page-title">Automação</h1>
+    <p class="page-subtitle">
+      Quando ativada, o worker verifica sua pasta de origem no Drive periodicamente e
+      enfileira transcrições para vídeos/áudios novos — sem precisar clicar em "Rodar agora".
+    </p>
+  </div>
+</div>
+
+{% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+{% if backend_error %}<div class="alert alert-warning mb-1">{{ backend_error }}</div>{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Configuração</h2>
+  </div>
+  <form method="post" action="/settings/automation" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="form-field">
+      <label class="form-label checkbox" style="grid-auto-flow:column; justify-content:start; align-items:center; gap:.5rem; color:var(--text)">
+        <input type="checkbox" name="auto_poll_enabled" value="true" {% if automation and automation.auto_poll_enabled %}checked{% endif %}>
+        Ativar verificação automática
+      </label>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="poll-interval">Intervalo entre verificações (segundos)</label>
+      <input class="input" id="poll-interval" name="poll_interval_seconds" type="number" min="60" max="86400" value="{{ automation.poll_interval_seconds if automation else 300 }}">
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="max-files">Máximo de arquivos por verificação</label>
+      <input class="input" id="max-files" name="max_files_per_poll" type="number" min="1" max="100" value="{{ automation.max_files_per_poll if automation else 5 }}">
+    </div>
+    <div class="form-field" style="align-self:end">
+      <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Status</h2>
+    </div>
+    <form method="post" action="/automation/check-now" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button type="submit" class="btn btn-secondary btn-sm">Verificar agora</button>
+    </form>
+  </div>
+  {% if automation %}
+  <dl class="metadata-grid">
+    <dt>Última verificação</dt>
+    <dd>{% if automation.last_poll_at %}<span class="mono">{{ automation.last_poll_at | dt }}</span>{% else %}—{% endif %}</dd>
+    <dt>Último sucesso</dt>
+    <dd>{% if automation.last_success_at %}<span class="mono">{{ automation.last_success_at | dt }}</span>{% else %}—{% endif %}</dd>
+    {% if automation.last_error_message %}
+    <dt>Último erro</dt>
+    <dd>{{ automation.last_error_message }}{% if automation.last_error_code %} <span class="mono">({{ automation.last_error_code }})</span>{% endif %}</dd>
+    {% endif %}
+  </dl>
+  {% else %}
+  <p class="muted">Ainda não houve nenhuma verificação.</p>
+  {% endif %}
+</section>
+
+<div class="actions-row">
+  <a class="btn btn-ghost" href="/settings">← Voltar para configurações</a>
+</div>
+{% endblock %}

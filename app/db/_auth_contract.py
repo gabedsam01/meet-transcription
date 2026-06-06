@@ -60,9 +60,23 @@ class Job:
 
 
 @dataclass(frozen=True)
+class ExtensionToken:
+    id: int
+    user_id: int
+    name: str
+    masked: str
+    created_at: str | None
+    last_used_at: str | None
+    revoked_at: str | None
+
+
+@dataclass(frozen=True)
 class RepositoryBundle:
     users: object
     google_tokens: object
     deepgram_credentials: object
     drive_settings: object
     jobs: object
+    provider_credentials: object | None = None
+    model_settings: object | None = None
+    extension_tokens: object | None = None

@@ -162,3 +162,9 @@ The `documentation/` folder is organized by `NN-*.md` files:
 | [17-development.md](17-development.md) | Code layout, the repository-interface pattern, conventions, and the validation commands. |
 | [18-testing.md](18-testing.md) | Unit fakes, skipped PostgreSQL tests, how local engines are mocked, and running the suite. |
 | [19-roadmap.md](19-roadmap.md) | What is done vs planned: whisper.cpp multiarch, auto-download, diarization, summaries, and more. |
+| [33-onboarding.md](33-onboarding.md) | The guided `/onboarding` wizard: the 7 setup steps and the live readiness checklist. |
+| [34-observability.md](34-observability.md) | `/health`, `/ready`, `/version`, and structured, secret-free logging (`LOG_FORMAT`). |
+| [35-webhooks.md](35-webhooks.md) | Optional outbound webhooks on `job.completed` / `job.failed`: payload, retries, safety. |
+| [36-export-formats.md](36-export-formats.md) | Transcript downloads as TXT / JSON / SRT / VTT / Markdown (PDF on the roadmap). |
+| [37-security.md](37-security.md) | Operator security guide: encryption at rest, exposure, backups, secret hygiene, reporting. |
+| [38-e2e-testing.md](38-e2e-testing.md) | The integrated end-to-end suite (`tests/e2e/`): TestClient + fakes, scenarios, how to extend. |

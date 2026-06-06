@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
+    <div>
+      <p class="page-eyebrow">Configuração</p>
+      <h1 class="page-title">Configuração guiada</h1>
+      <p class="page-subtitle">Siga os passos abaixo para deixar a transcrição automática pronta para uso.</p>
+    </div>
+    {% if all_ready %}
+    <span class="badge badge-success">Tudo pronto</span>
+    {% else %}
+    <span class="badge badge-warning">Em configuração</span>
+    {% endif %}
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Checklist</h2>
+  </div>
+  <ul class="readiness-list">
+    {% for item in checklist %}
+    <li>
+      <span class="r-icon {{ 'r-ok' if item.done else 'r-off' }}">{{ "✓" if item.done else "•" }}</span>
+      <span class="{{ 'ok' if item.done else 'muted' }}">{{ item.label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Passos</h2>
+  </div>
+  <ol class="steps" style="margin:0">
+    {% for step in steps %}
+    <li class="step {% if step.done %}step-done{% elif loop.index == 1 or not steps[loop.index0 - 1].done %}is-current{% endif %}">
+      <div class="step-row">
+        <span class="step-num {{ 'ok' if step.done else 'off' }}">{{ step.n }}</span>
+        <div class="step-body">
+          <h3>{{ step.title }} {% if step.done %}<span class="ok">✓</span>{% endif %}</h3>
+          <p class="hint">{{ step.desc }}</p>
+          {% if step.cta %}
+          {% if step.cta[1].startswith('http') %}
+          <a class="btn btn-ghost btn-sm" href="{{ step.cta[1] }}" target="_blank" rel="noopener">{{ step.cta[0] }}</a>
+          {% else %}
+          <a class="btn btn-primary btn-sm" href="{{ step.cta[1] }}">{{ step.cta[0] }}</a>
+          {% endif %}
+          {% endif %}
+        </div>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  <div class="actions-row mt-1">
+    <a class="btn btn-primary" href="/jobs">Rodar transcrição</a>
+    <a class="btn btn-secondary" href="/">Voltar ao painel</a>
+  </div>
+</section>
+{% endblock %}

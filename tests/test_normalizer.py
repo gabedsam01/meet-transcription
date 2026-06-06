@@ -1,7 +1,10 @@
 from app.transcription.normalizer import (
     normalize_deepgram,
+    normalize_gemini,
+    normalize_openrouter,
     normalized_payload,
     render_local_text,
+    render_transcript_text,
     segment,
     segments_text,
 )
@@ -81,3 +84,49 @@ def test_render_local_text_has_header_and_segment_lines():
     assert "drive-id-123" in text
     assert "Olá mundo" in text
     assert "faster-whisper" in text  # engine/model surfaced in the header
+
+
+def test_normalize_openrouter_with_segments():
+    raw = {
+        "text": "Olá mundo",
+        "language": "pt",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Olá"},
+            {"start": 1.0, "end": 2.0, "text": "mundo"},
+        ],
+    }
+    payload = normalize_openrouter(raw, model="openai/whisper-large-v3", language="auto")
+    assert payload["provider"] == "openrouter"
+    assert payload["engine"] == "openrouter"
+    assert payload["language"] == "pt"
+    assert [s["text"] for s in payload["segments"]] == ["Olá", "mundo"]
+    assert payload["segments"][0]["speaker"] is None  # no diarization
+    assert payload["raw"] == raw
+
+
+def test_normalize_openrouter_text_only_creates_single_segment():
+    raw = {"text": "apenas texto"}
+    payload = normalize_openrouter(raw, model="m", language="pt")
+    assert payload["text"] == "apenas texto"
+    assert len(payload["segments"]) == 1
+    assert payload["segments"][0]["text"] == "apenas texto"
+    assert payload["language"] == "pt"  # falls back to requested language
+
+
+def test_normalize_gemini_single_segment_no_diarization():
+    payload = normalize_gemini(
+        "Speaker 1: olá\nSpeaker 2: tudo bem", model="gemini-2.5-flash", language="pt"
+    )
+    assert payload["provider"] == "gemini"
+    assert payload["engine"] == "gemini"
+    assert payload["text"].startswith("Speaker 1: olá")
+    assert len(payload["segments"]) == 1
+    assert payload["segments"][0]["speaker"] is None  # pseudo, never structured
+
+
+def test_render_transcript_text_is_engine_agnostic_alias():
+    assert render_transcript_text is render_local_text
+    payload = normalize_openrouter({"text": "oi"}, model="m", language="pt")
+    text = render_transcript_text(payload, "meet.mp4", "id-1")
+    assert "TRANSCRIÇÃO DA REUNIÃO" in text
+    assert "openrouter" in text

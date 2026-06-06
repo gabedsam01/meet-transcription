@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Admin</p>
+    <h1 class="page-title">Sistema</h1>
+    <p class="page-subtitle">Visão operacional e administração da plataforma.</p>
+  </div>
+</div>
+
+<section class="card-grid">
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Fila</h2>
+        <p class="card-subtitle">Estatísticas da fila de transcrição e dead-letter.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/admin/queue">Ver fila</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Usuários</h2>
+        <p class="card-subtitle">Criar, ativar, desativar e redefinir senhas.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/admin/users">Gerenciar usuários</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Saúde</h2>
+        <p class="card-subtitle">Verificação de readiness e versão.</p>
+      </div>
+    </div>
+    <div class="actions-row">
+      <a class="btn btn-secondary btn-sm" href="/health" target="_blank" rel="noopener">Health</a>
+      <a class="btn btn-secondary btn-sm" href="/ready" target="_blank" rel="noopener">Ready</a>
+      <a class="btn btn-secondary btn-sm" href="/version" target="_blank" rel="noopener">Versão</a>
+    </div>
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Busca</p>
+    <h1 class="page-title">Buscar transcrições</h1>
+    <p class="page-subtitle">Busca o texto das suas transcrições concluídas (apenas as suas).</p>
+  </div>
+</div>
+
+<section class="card">
+  <form method="get" action="/search" class="search-form">
+    <input class="input" type="search" name="q" value="{{ query }}" placeholder="Ex.: orçamento, próxima reunião…" aria-label="Buscar transcrições">
+    <button type="submit" class="btn btn-primary">Buscar</button>
+  </form>
+
+  {% if backend_error %}<div class="alert alert-warning mt-1">{{ backend_error }}</div>{% endif %}
+
+  {% if query %}
+    {% if results %}
+    <p class="hint">{{ results | length }} resultado(s) para “{{ query }}”.</p>
+    <ul class="search-results">
+      {% for result in results %}
+      <li class="search-result">
+        <a href="/jobs/{{ result.job_id }}">Job #{{ result.job_id }}</a>
+        <span class="muted mono">· {{ result.created_at | dt }}</span>
+        <p class="snippet">{{ result.snippet }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty-state">
+      <p class="empty-title">Nenhuma transcrição encontrada</p>
+      <p class="empty-desc">Não encontramos resultados para “{{ query }}”.</p>
+    </div>
+    {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Digite um termo para buscar</p>
+    <p class="empty-desc">Busque por palavras-chave nas suas transcrições concluídas.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

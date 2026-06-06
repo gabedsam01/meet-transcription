@@ -35,13 +35,31 @@ Every item below is tagged with one of these statuses:
 | 1 | Compile whisper.cpp multiarch into the image | **Partial** (engine done; binary still external) |
 | 2 | Safe model auto-download | **Partial** (faster-whisper only; off by default) |
 | 3 | Local diarization (speaker labels) | **Planned** (schema ready) |
-| 4 | Transcript search | **Planned** (data already stored) |
-| 5 | AI summaries / meeting minutes | **Planned** |
-| 6 | Notifications | **Planned** |
+| 4 | Transcript search | **Done** (user-scoped Postgres full-text search at `/search`) |
+| 5 | AI summaries / meeting minutes | **Partial** (provider scaffold in `app/summaries/`; no LLM call yet) |
+| 6 | Notifications | **Done** (outbound webhooks — [35-webhooks.md](35-webhooks.md)) |
 | 7 | Chrome extension to auto-start recording | **Planned** |
 | 8 | Advanced multi-worker scaling | **Partial** (lock + concurrency exist) |
+| 9 | Transcript exports (TXT/JSON/SRT/VTT/MD) | **Done** ([36-export-formats.md](36-export-formats.md); PDF planned) |
+| 10 | Onboarding wizard | **Done** ([33-onboarding.md](33-onboarding.md)) |
+| 11 | Observability (`/health`, `/ready`, `/version`, structured logs) | **Done** ([34-observability.md](34-observability.md)) |
+| 12 | Auto-poll per user + Drive watcher | **Done** (polling MVP — see [28](28-auto-polling.md)) |
+| 13 | Provider-aware concurrency (cloud N / local 1) | **Done** (see [30](30-provider-concurrency.md)) |
+| 14 | Retries, backoff & dead-letter | **Done** (see [31](31-retries-dead-letter.md)) |
+| 15 | Cost/quota guardrails | **Partial** (file-size + daily count enforced; minutes/duration scaffolded — see [32](32-cost-guardrails.md)) |
+| 16 | Drive Changes API (incremental sync + `drive_watch_state`) | **Planned** (polling today; pageToken state deferred) |
 
 ---
+
+## Next steps for the automation layer
+
+- **Drive Changes API.** Replace folder polling with `changes().list(pageToken=…)`
+  per user/folder, persisting a `drive_watch_state(user_id, source_drive_folder_id,
+  start_page_token, last_page_token, last_checked_at)` table. Cuts API calls and
+  latency. The watcher (`app/services/drive_watcher.py`) is the integration point.
+- **Full cost metering.** Enforce `monthly_cloud_minutes_limit` and
+  `max_file_duration_minutes` once minute metering / `videoMediaMetadata.durationMillis`
+  is wired (columns + env already exist; see [32](32-cost-guardrails.md)).
 
 ## 1. Compile whisper.cpp multiarch into the image
 
@@ -179,7 +197,16 @@ speaker labels, and diarization is off by default with a clear cost note.
 
 ## 4. Transcript search
 
-**Status: Planned (data already stored).** Every completed job already persists
+**Status: Done (minimal).** A user-scoped search now ships at `GET /search`:
+`TranscriptRepository.search_transcripts` (PostgreSQL full-text search via
+`to_tsvector('simple', transcript_text) @@ plainto_tsquery`, backed by the GIN
+index in migration `0002_add_transcript_fulltext_index.py`; case-insensitive
+substring in the in-memory fake). Results are always filtered to the requesting
+user. Remaining ideas (ranking, language-specific dictionaries, snippet
+highlighting) are future refinements. See [36-export-formats.md](36-export-formats.md)
+for the related download work. The original design notes follow.
+
+Every completed job already persists
 `transcripts.transcript_text` (the human-readable TXT) and
 `transcripts.transcript_json` (the normalized schema) in PostgreSQL. Today the web
 UI lists jobs and serves a per-job **Download TXT** at `/jobs/{id}/download`, but
@@ -215,8 +242,14 @@ transcripts from the web UI, backed entirely by PostgreSQL.
 
 ## 5. AI summaries / meeting minutes
 
-**Status: Planned.** Transcripts are stored but never summarized. There is no
-summary field and no summarization step.
+**Status: Partial (scaffold only).** `app/summaries/` now defines the provider
+contract (`SummaryProvider`, `Summary`), configuration (`SummarySettings` from
+`SUMMARY_ENABLED`/`SUMMARY_PROVIDER`/`SUMMARY_MODEL`, **off by default**), a
+status helper, and a `NullSummaryProvider` that raises a friendly
+`SummaryUnavailableError`. **No LLM is called** — a concrete provider is still the
+remaining work. The design below is the intended next step.
+
+Transcripts are stored but not yet summarized by a real provider.
 
 **Why.** A full transcript answers "what was said"; a summary answers "what
 matters" — decisions, action items, and a short recap are what most users actually
@@ -248,10 +281,16 @@ worker, with the summarization key stored encrypted per user.
 
 ## 6. Notifications
 
-**Status: Planned.** Job state lives in `transcription_jobs` (`pending` →
-`processing` → `completed`/`failed`, with a friendly `error_message`). The user
-finds out by refreshing the dashboard or jobs page — there is no push/notification
-when a job finishes or fails.
+**Status: Done (webhooks).** The worker now emits best-effort outbound webhooks on
+`job.completed` / `job.failed` (`app/webhooks/`, fired from
+`JobProcessor._emit_webhook` after the terminal transition). Delivery never blocks
+a job, retries transient failures (429/5xx/network), and the payload is
+secret-free. Configure with `WEBHOOK_URL` + `WEBHOOK_EVENTS` —
+see [35-webhooks.md](35-webhooks.md). Per-user notification destinations and
+email/chat channels remain future work; the original design notes follow.
+
+Job state lives in `transcription_jobs` (`pending` →
+`processing` → `completed`/`failed`, with a friendly `error_message`).
 
 **Why.** Local CPU transcription can take **an hour or more** for a 60-minute
 meeting. Polling the UI for that long is poor UX; an active notification ("your

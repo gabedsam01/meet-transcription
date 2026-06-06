@@ -56,3 +56,52 @@ def test_release_with_wrong_token_does_not_unlock():
     assert q.acquire_global_lock(60) is None  # still held
     q.release_global_lock(token)
     assert q.acquire_global_lock(60) is not None
+
+
+# --- provider concurrency slots ---------------------------------------------
+
+
+def test_cloud_semaphore_allows_up_to_capacity_then_blocks():
+    q = InMemoryTranscriptionQueue(cloud_concurrency=2)
+    t1 = q.acquire_provider_slot("cloud", 60)
+    t2 = q.acquire_provider_slot("cloud", 60)
+    assert t1 and t2 and t1 != t2
+    assert q.acquire_provider_slot("cloud", 60) is None  # 3rd over capacity
+    q.release_provider_slot("cloud", t1)
+    assert q.acquire_provider_slot("cloud", 60) is not None  # a slot freed
+
+
+def test_local_lock_serializes_to_one():
+    q = InMemoryTranscriptionQueue()
+    t1 = q.acquire_provider_slot("local", 60)
+    assert t1 is not None
+    assert q.acquire_provider_slot("local", 60) is None  # 2nd local waits
+    q.release_provider_slot("local", t1)
+    assert q.acquire_provider_slot("local", 60) is not None
+
+
+def test_release_provider_slot_with_wrong_token_keeps_local_lock():
+    q = InMemoryTranscriptionQueue()
+    t1 = q.acquire_provider_slot("local", 60)
+    q.release_provider_slot("local", "wrong")
+    assert q.acquire_provider_slot("local", 60) is None  # still held
+    q.release_provider_slot("local", t1)
+    assert q.acquire_provider_slot("local", 60) is not None
+
+
+def test_processing_and_dead_sets_feed_queue_stats():
+    q = InMemoryTranscriptionQueue()
+    q.enqueue(1)
+    q.enqueue(2)
+    q.mark_processing(10)
+    q.mark_processing(11)
+    q.clear_processing(10)
+    q.mark_dead(20)
+    q.mark_dead(21)
+    q.remove_dead(21)
+
+    stats = q.queue_stats()
+    assert stats["queued"] == 2
+    assert stats["processing"] == 1
+    assert stats["dead"] == 1
+    assert q.dead_job_ids() == {20}

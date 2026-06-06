@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from app.web.helpers import (
     short_datetime,
 )
 from app.web.main import create_app
+from app.web.passwords import hash_password
 from app.web.repositories import DriveSettings as AuthDriveSettings, GoogleToken as AuthGoogleToken
 from tests.fakes import build_fake_repositories
 
@@ -64,6 +66,10 @@ def test_drive_download_url():
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+def _settings_path() -> Path:
+    return Path(__file__).resolve().parent.parent
 
 
 def _settings(tmp_path) -> WebSettings:
@@ -118,7 +124,7 @@ def test_job_detail_shows_full_fields_and_download(tmp_path):
     assert "txt-789" in text
     assert "Download TXT" in text
     assert f"/jobs/{job.id}/download" in text  # local Postgres-backed transcript
-    for label in ["Source file id", "Attempts", "Error", "Created", "Updated", "Processed"]:
+    for label in ["ID do arquivo", "Tentativas", "Erro", "Criado em", "Atualizado em", "Processado em"]:
         assert label in text
 
 
@@ -142,17 +148,18 @@ def test_job_detail_is_scoped_to_owner(tmp_path):
     assert resp.status_code == 404  # never expose another user's job
 
 
-def test_long_source_id_is_truncated_but_full_value_in_title(tmp_path):
+def test_long_source_id_shown_on_detail_page(tmp_path):
     worker = build_memory_repositories()
     long_id = "1zv32QWERTYUIOPASDFGHtBD5"
-    worker.jobs.create_job(1, long_id, "meeting.mp4", _now())
+    job = worker.jobs.create_job(1, long_id, "meeting.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
 
     with TestClient(_app(tmp_path, worker)) as client:
         _login(client)
-        text = client.get("/jobs").text
+        detail_text = client.get(f"/jobs/{job.id}").text
 
-    assert "1zv32Q…tBD5" in text  # truncated for display
-    assert f'title="{long_id}"' in text  # full value still available on hover
+    assert long_id in detail_text  # full value on detail page
+    assert "meeting.mp4" in detail_text
 
 
 def test_failed_job_shows_badge_on_list_and_error_on_detail(tmp_path):
@@ -179,7 +186,7 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
     auth = build_fake_repositories()
     auth.drive_settings.save_for_user(1, AuthDriveSettings("url", "src-folder", None, None, False))
     auth.google_tokens.save_for_user(1, AuthGoogleToken("a", "r", "u", "c", "s", "sc", None))
-    auth.deepgram_credentials.save_for_user(1, "encrypted-key")
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
     worker = build_memory_repositories()
     job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
     worker.jobs.mark_completed(job.id, _now())
@@ -188,13 +195,85 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
         _login(client)
         text = client.get("/").text
 
-    assert "Connected" in text  # Google
-    assert "Configured" in text  # Drive source + Deepgram
-    assert "Total jobs" in text
-    assert "Last job" in text
+    assert "Total de transcrições" in text
+    assert "Transcrições recentes" in text
     assert "badge-completed" in text  # last job status badge
-    assert "/settings/deepgram" in text  # Deepgram CTA
-    assert "/jobs" in text  # Jobs CTA
+    assert "/models" in text  # Models CTA
+    assert "/transcricoes" in text  # Transcriptions CTA
+
+
+def test_dashboard_shows_onboarding_when_not_ready(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Falta pouco para começar" in text
+    assert "Instale a extensão" in text
+    assert "Configure o provider" in text
+    assert "Grave uma reunião" in text
+
+
+def test_dashboard_hides_onboarding_when_ready(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Falta pouco para começar" not in text
+    assert "Status do sistema" in text
+
+
+def test_navbar_simplified_for_user(tmp_path):
+    auth = build_fake_repositories()
+    pw = hash_password("secret")
+    auth.users.create(email="user@example.com", password_hash=pw, role="user")
+    app = _app(tmp_path, build_memory_repositories(), auth=auth)
+    with TestClient(app) as client:
+        r = client.post("/login", data={"username": "user@example.com", "password": "secret"}, follow_redirects=False)
+        assert r.status_code in {302, 303}
+        text = client.get("/").text
+    assert "Transcrições" in text
+    assert "Modelos" in text
+    assert "Extensão" in text
+    assert "Configurações" in text
+    assert "Onboarding" not in text
+    assert "Buscar" not in text
+    assert "Fila" not in text
+    assert "Sistema" not in text
+
+
+def test_admin_sees_system_link(tmp_path):
+    auth = build_fake_repositories()
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Usuários" in text
+    assert "Sistema" in text
+
+
+def test_configuracoes_renders_grouped_settings(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/configuracoes").text
+    assert "Extensão" in text
+    assert "Google Drive" in text
+    assert "Modelos" in text
+    assert "Automação" in text
+    assert "/extensao" in text
+    assert "/settings/drive" in text
+    assert "/models" in text
+
+
+def test_admin_system_renders_cards(tmp_path):
+    auth = build_fake_repositories()
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/admin/system").text
+    assert "Fila" in text
+    assert "Usuários" in text
+    assert "Saúde" in text
+    assert "/admin/queue" in text
+    assert "/admin/users" in text
 
 
 # --- settings ---------------------------------------------------------------
@@ -205,16 +284,150 @@ def test_settings_landing_links_to_sections(tmp_path):
         _login(client)
         text = client.get("/settings").text
     assert "/settings/drive" in text
-    assert "/settings/deepgram" in text
-    assert "Drive folders" in text
-    assert "Deepgram API key" in text
+    assert "/models" in text
+    assert "Drive" in text
+    assert "Modelos" in text
 
 
-def test_settings_deepgram_page_shows_status_without_full_key(tmp_path):
+def test_models_page_shows_status_without_full_key(tmp_path):
     with TestClient(_app(tmp_path, build_memory_repositories())) as client:
         _login(client)
-        page = client.get("/settings/deepgram")
+        page = client.get("/models")
     assert page.status_code == 200
-    assert "Deepgram API key" in page.text
-    assert "Not configured" in page.text  # no per-user key saved yet
-    assert "criptografada" in page.text  # encrypted-at-rest messaging
+    assert "Modelos" in page.text
+    assert "Não configurado" in page.text  # no per-user key saved yet
+    assert "criptografad" in page.text  # encrypted-at-rest messaging
+    # The model selectors list each provider's catalogue.
+    assert "nova-3" in page.text
+    assert "gemini-2.5-flash" in page.text
+
+
+def test_deepgram_settings_redirects_to_models(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        page = client.get("/settings/deepgram", follow_redirects=False)
+    assert page.status_code == 303
+    assert page.headers["location"] == "/models?provider=deepgram"
+
+
+# --- transcriptions workspace -----------------------------------------------
+
+
+def test_transcricoes_shows_job_cards_and_queue_panel(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
+
+    with TestClient(_app(tmp_path, worker, auth=auth)) as client:
+        _login(client)
+        text = client.get("/transcricoes").text
+
+    assert "a.mp4" in text
+    assert "badge-completed" in text
+    assert "TXT" in text
+    assert "Fila" in text  # queue panel
+    assert "Em fila" in text
+    assert "Processando" in text
+
+
+def test_transcricoes_search_returns_results(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
+    worker.transcripts.create(job.id, 1, "meeting about budget", None, None, _now())
+    worker.jobs.mark_completed(job.id, _now())
+
+    with TestClient(_app(tmp_path, worker, auth=auth)) as client:
+        _login(client)
+        text = client.get("/transcricoes?q=budget").text
+
+    assert "budget" in text
+    assert "resultado" in text
+
+
+def test_transcricoes_search_scoped_to_owner(tmp_path):
+    worker = build_memory_repositories()
+    other_job = worker.jobs.create_job(2, "f", "other.mp4", _now())
+    worker.transcripts.create(other_job.id, 2, "secret meeting", None, None, _now())
+    worker.jobs.mark_completed(other_job.id, _now())
+
+    with TestClient(_app(tmp_path, worker)) as client:
+        _login(client)
+        text = client.get("/transcricoes?q=secret").text
+
+    assert "Nenhuma transcrição encontrada" in text
+
+
+def test_transcricoes_mobile_tabs_exist(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/transcricoes").text
+    assert 'id="workspaceTabs"' in text
+    assert 'data-tab="main"' in text
+    assert 'data-tab="side"' in text
+
+
+def test_job_detail_back_link_to_transcricoes(tmp_path):
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "f", "meet.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
+    with TestClient(_app(tmp_path, worker)) as client:
+        _login(client)
+        text = client.get(f"/jobs/{job.id}").text
+    assert "/transcricoes" in text
+
+
+# --- mobile responsive ------------------------------------------------------
+
+
+def test_css_has_390px_breakpoint():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert "@media (max-width: 390px)" in css
+
+
+def test_base_html_has_nav_toggle_with_aria():
+    html = (_settings_path() / "app" / "web" / "templates" / "base.html").read_text()
+    assert 'aria-expanded="false"' in html
+    assert 'aria-controls="mainNav"' in html
+    assert 'id="navToggle"' in html
+
+
+def test_css_has_min_height_for_inputs_and_buttons():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert ".input, .select, .textarea {" in css
+    assert "min-height: 44px" in css
+    assert ".btn {" in css
+    assert "min-height: 44px" in css
+
+
+def test_css_has_table_wrapper():
+    css = (_settings_path() / "app" / "web" / "static" / "styles.css").read_text()
+    assert ".table-wrapper {" in css
+    assert "overflow-x: auto" in css
+
+
+def test_login_card_is_centered_and_narrow(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        text = client.get("/login").text
+    assert 'class="card narrow"' in text
+    assert "max-width:420px" in text
+    assert "margin:0 auto" in text
+
+
+def test_models_page_uses_form_checkbox(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/models").text
+    assert "form-checkbox" in text
+
+
+def test_extension_tokens_table_has_min_width(tmp_path):
+    auth = build_fake_repositories()
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/extensao").text
+    assert 'style="min-width:640px"' in text

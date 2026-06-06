@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Integração</p>
+    <h1 class="page-title">Extensão do Chrome</h1>
+    <p class="page-subtitle">Grave o áudio do Google Meet direto na aba e envie para a API. Google Drive é opcional.</p>
+  </div>
+  <span class="badge {% if google_disabled %}badge-warning{% else %}badge-success{% endif %}">
+    {{ "Google Drive desativado" if google_disabled else "Google Drive ativo" }}
+  </span>
+</div>
+
+{% if error %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endif %}
+{% if message %}
+<div class="alert alert-success" role="status">{{ message }}</div>
+{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Instale a extensão</h2>
+      <p class="card-subtitle">Carregue a extensão em modo de desenvolvedor no Chrome.</p>
+    </div>
+  </div>
+  <ol class="hint" style="line-height:1.6; padding-left:1.2rem; margin:0">
+    <li>Acesse <span class="mono">chrome://extensions</span>.</li>
+    <li>Ative o <strong>Modo do desenvolvedor</strong> (canto superior direito).</li>
+    <li>Clique em <strong>Carregar sem compactação</strong> e selecione
+      <span class="mono">chrome-extension/meet-audio-recorder</span> neste repositório.</li>
+  </ol>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">URL do backend</h2>
+      <p class="card-subtitle">Cole este valor na popup da extensão (campo "URL do backend").</p>
+    </div>
+  </div>
+  <div class="form-grid">
+    <div class="form-field">
+      <label class="form-label" for="backend-url">URL atual</label>
+      <div class="input" style="display:flex; align-items:center; gap:.5rem">
+        <span class="mono" id="backend-url">{{ backend_url }}</span>
+        <button type="button" class="btn btn-ghost btn-sm" data-copy="backend-url">Copiar</button>
+      </div>
+      <p class="hint">Esta é a URL que o navegador acessa agora. Configure o proxy reverso (Nginx, Caddy) para apontar para esta origem.</p>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Token da extensão</h2>
+      <p class="card-subtitle">Cada token autoriza a extensão a enviar áudio em seu nome. Você pode revogar a qualquer momento.</p>
+    </div>
+  </div>
+
+  <form method="post" action="/extensao/gerar" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="form-field">
+      <label class="form-label" for="token-name">Nome do token (ex.: Notebook, Celular)</label>
+      <input class="input" type="text" id="token-name" name="name" maxlength="64" placeholder="Meu token">
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Gerar novo token</button>
+    </div>
+  </form>
+
+  {% if newly_issued_token %}
+  <div class="alert alert-success" role="status">
+    <strong>Token gerado.</strong> Copie agora — esta é a única vez que ele será exibido.
+    <div class="input mt-1" style="display:flex; align-items:center; gap:.5rem">
+      <span class="mono" id="issued-token">{{ newly_issued_token }}</span>
+      <button type="button" class="btn btn-ghost btn-sm" data-copy="issued-token">Copiar</button>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Tokens existentes</h2>
+  </div>
+  {% if tokens %}
+  <div class="table-wrapper">
+    <table class="data-table" style="min-width:640px">
+      <thead>
+        <tr>
+          <th scope="col">Nome</th>
+          <th scope="col">Prefixo</th>
+          <th scope="col">Criado em</th>
+          <th scope="col">Último uso</th>
+          <th scope="col">Status</th>
+          <th scope="col" class="text-right">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for token in tokens %}
+        <tr>
+          <td>{{ token.name }}</td>
+          <td><span class="mono" title="Prefixo do token">{{ token.masked }}</span></td>
+          <td class="mono">{{ token.created_at | dt }}</td>
+          <td class="mono">{{ token.last_used_at | dt if token.last_used_at else "—" }}</td>
+          <td>
+            {% if token.revoked_at %}
+            <span class="badge badge-danger">Revogado</span>
+            {% else %}
+            <span class="badge badge-success">Ativo</span>
+            {% endif %}
+          </td>
+          <td class="text-right">
+            {% if not token.revoked_at %}
+            <form method="post" action="/extensao/revogar" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <input type="hidden" name="token_id" value="{{ token.id }}">
+              <button type="submit" class="btn btn-danger btn-sm"
+                      onclick="return confirm('Revogar este token? A extensão precisará de um novo.')">
+                Revogar
+              </button>
+            </form>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p class="empty-title">Nenhum token ainda</p>
+    <p class="empty-desc">Gere um token acima para começar a usar a extensão.</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Instruções da extensão</h2>
+  </div>
+  <ol class="hint" style="line-height:1.6; padding-left:1.2rem; margin:0">
+    <li>Instale a extensão (passo 1 acima).</li>
+    <li>Abra a popup da extensão e cole a <strong>URL do backend</strong>.</li>
+    <li>Cole o <strong>token</strong> gerado e salve.</li>
+    <li>Use o botão "Testar conexão" (em breve) ou faça um upload curto para validar.</li>
+    <li>Entre em uma sala do Google Meet, clique em <strong>Gravar</strong> na popup e pare quando terminar.</li>
+  </ol>
+</section>
+
+<script>
+document.addEventListener("click", (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.dataset.copy) return;
+  const node = document.getElementById(target.dataset.copy);
+  if (!node) return;
+  const text = node.textContent || "";
+  if (!text) return;
+  navigator.clipboard?.writeText(text).then(
+    () => {
+      const original = target.textContent;
+      target.textContent = "Copiado!";
+      setTimeout(() => { target.textContent = original; }, 1200);
+    },
+    () => {},
+  );
+});
+</script>
+{% endblock %}

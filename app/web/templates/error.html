@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/_error_panel.html" import error_panel %}
 {% block content %}
-<section class="card narrow"><h1>Error</h1><p>{{ message }}</p></section>
+{{ error_panel(message, code | default(''), action | default(''), doc_url | default(''), retry_url | default('')) }}
 {% endblock %}

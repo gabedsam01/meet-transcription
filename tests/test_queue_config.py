@@ -22,3 +22,21 @@ def test_reads_overrides_and_lowercases_backend():
     assert s.redis_url == "redis://localhost:6379/1"
     assert s.queue_name == "myq"
     assert s.global_lock_ttl_seconds == 60
+
+
+def test_provider_concurrency_defaults_and_overrides():
+    s = QueueSettings.from_env({})
+    assert s.cloud_concurrency == 5
+    assert s.local_concurrency == 1
+    assert s.provider_lock_ttl_seconds == 14400
+
+    s2 = QueueSettings.from_env(
+        {
+            "CLOUD_TRANSCRIPTION_CONCURRENCY": "10",
+            "LOCAL_TRANSCRIPTION_CONCURRENCY": "1",
+            "PROVIDER_LOCK_TTL_SECONDS": "7200",
+        }
+    )
+    assert s2.cloud_concurrency == 10
+    assert s2.local_concurrency == 1
+    assert s2.provider_lock_ttl_seconds == 7200

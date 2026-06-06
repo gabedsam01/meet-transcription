@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Configuração</p>
+    <h1 class="page-title">Modelos</h1>
+    <p class="page-subtitle">
+      Escolha o provedor e o modelo de transcrição, configure as chaves (armazenadas
+      <strong>criptografadas</strong>, nunca exibidas de novo) e um fallback opcional.
+      Cada usuário tem sua própria configuração.
+    </p>
+  </div>
+</div>
+
+{% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Provedor ativo</h2>
+      <p class="card-subtitle">Selecione o provedor principal e o modelo</p>
+    </div>
+    {% if provider_ready %}<span class="badge badge-success">Pronto</span>{% else %}<span class="badge badge-warning">Incompleto</span>{% endif %}
+  </div>
+  <form method="post" action="/models/provider" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="form-field">
+      <label class="form-label" for="provider">Provedor</label>
+      <select class="select" name="provider" id="provider">
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ "selected" if p.id == model_settings.primary_provider else "" }}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="model">Modelo</label>
+      <select class="select" name="model" id="model">
+        {% for p in providers %}
+        <optgroup label="{{ p.label }}">
+          {% for m in p.models %}
+          <option value="{{ m }}" {{ "selected" if (p.id == model_settings.primary_provider and m == model_settings.primary_model) else "" }}>{{ m }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-field" style="align-self:end">
+      <button type="submit" class="btn btn-primary">Salvar provedor</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Credenciais por provedor</h2>
+      <p class="card-subtitle">API key é obrigatória para provedores em nuvem. Mostramos apenas os últimos 4 caracteres.</p>
+    </div>
+  </div>
+  <div class="provider-grid">
+    {% for p in providers %}
+    <article class="provider-card {% if p.configured %}is-active{% endif %}" id="provider-{{ p.id }}">
+      <div class="flex-between" style="margin-bottom:.35rem">
+        <p class="provider-name">{{ p.label }} <span class="mono muted">({{ p.id }})</span></p>
+        {% if not p.requires_api_key %}
+        <span class="badge badge-success">Sem chave</span>
+        {% elif p.configured %}
+        <span class="badge badge-success">Configurado</span>
+        {% else %}
+        <span class="badge badge-danger">Não configurado</span>
+        {% endif %}
+      </div>
+      <p class="provider-meta">{{ p.diarization }}</p>
+      {% if p.size_note %}<p class="hint">{{ p.size_note }}</p>{% endif %}
+      {% if p.configured %}<p class="hint mono">{{ p.masked }}</p>{% endif %}
+      {% if p.requires_api_key %}
+      <form method="post" action="/models/credentials" class="form-grid mt-1">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="provider" value="{{ p.id }}">
+        <div class="form-field">
+          <label class="form-label" for="api-key-{{ p.id }}">{{ p.label }} API Key</label>
+          <input class="input" id="api-key-{{ p.id }}" name="api_key" type="password" autocomplete="off" required placeholder="Cole a chave aqui">
+        </div>
+        {% if p.id == "assemblyai" %}
+        <div class="form-field">
+          <label class="form-label form-checkbox">
+            <input type="checkbox" name="speaker_labels" value="true" checked>
+            <span>Ativar identificação de locutores (Speaker Labels)</span>
+          </label>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="speakers-expected-{{ p.id }}">Número esperado de locutores (opcional)</label>
+          <input class="input" id="speakers-expected-{{ p.id }}" name="speakers_expected" type="number" min="1" placeholder="Ex: 2">
+        </div>
+        {% endif %}
+        <div class="actions-row">
+          <button type="submit" class="btn btn-primary">Salvar chave</button>
+          {% if p.configured %}
+          <button type="submit" formaction="/models/test" class="btn btn-secondary">Testar</button>
+          {% endif %}
+        </div>
+      </form>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Fallback</h2>
+      <p class="card-subtitle">Se o provedor principal estiver sem chave, o worker usa o fallback configurado.</p>
+    </div>
+    <span class="badge {% if model_settings.fallback_enabled %}badge-success{% else %}badge-neutral{% endif %}">{{ "Ativo" if model_settings.fallback_enabled else "Inativo" }}</span>
+  </div>
+  <form method="post" action="/models/fallback" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="form-field">
+      <label class="form-label form-checkbox">
+        <input type="checkbox" name="fallback_enabled" value="true" {{ "checked" if model_settings.fallback_enabled else "" }}>
+        <span>Ativar fallback</span>
+      </label>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="fallback-provider">Provedor de fallback</label>
+      <select class="select" name="fallback_provider" id="fallback-provider">
+        <option value="">— nenhum —</option>
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ "selected" if p.id == model_settings.fallback_provider else "" }}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="fallback-model">Modelo de fallback</label>
+      <select class="select" name="fallback_model" id="fallback-model">
+        <option value="">— padrão do provedor —</option>
+        {% for p in providers %}
+        <optgroup label="{{ p.label }}">
+          {% for m in p.models %}
+          <option value="{{ m }}" {{ "selected" if (p.id == model_settings.fallback_provider and m == model_settings.fallback_model) else "" }}>{{ m }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-field" style="align-self:end">
+      <button type="submit" class="btn btn-primary">Salvar fallback</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Diarização &amp; limites</h2>
+  </div>
+  <ul class="list">
+    <li><strong>Deepgram:</strong> diarização real (separação de locutores).</li>
+    <li><strong>Gemini:</strong> pseudo-diarização via prompt — não garantida.</li>
+    <li><strong>OpenRouter:</strong> depende do modelo, geralmente sem diarização.</li>
+    <li><strong>Groq:</strong> sem diarização real (apenas timestamps de segmentos/palavras).</li>
+    <li><strong>AssemblyAI:</strong> diarização real (separação de locutores) otimizada para reuniões.</li>
+    <li><strong>Local:</strong> sem diarização no MVP.</li>
+  </ul>
+  <div class="actions-row mt-1">
+    <a class="btn btn-ghost" href="/settings">← Voltar para configurações</a>
+  </div>
+</section>
+{% endblock %}

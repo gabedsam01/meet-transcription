@@ -1,23 +1,60 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h1>Settings</h1>
-  <p class="hint">Choose what you want to configure.</p>
-  <div class="options">
-    <div class="option">
-      <div>
-        <h2>Drive folders</h2>
-        <p class="muted">Source and destination Google Drive folders (paste a folder URL).</p>
-      </div>
-      <a class="button button-sm" href="/settings/drive">Configure</a>
-    </div>
-    <div class="option">
-      <div>
-        <h2>Deepgram API key</h2>
-        <p class="muted">Your personal speech-to-text key, stored encrypted.</p>
-      </div>
-      <a class="button button-sm" href="/settings/deepgram">Configure</a>
-    </div>
+<div class="page-header">
+  <div>
+    <p class="page-eyebrow">Configuração</p>
+    <h1 class="page-title">Configurações</h1>
+    <p class="page-subtitle">Gerencie sua conta, integrações e preferências.</p>
   </div>
+</div>
+
+<section class="card-grid">
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Extensão</h2>
+        <p class="card-subtitle">Tokens e instruções da extensão Chrome.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/extensao">Configurar</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Google Drive</h2>
+        <p class="card-subtitle">Pastas de origem e destino (opcional).</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/settings/drive">Configurar</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Modelos</h2>
+        <p class="card-subtitle">Provedor de transcrição, modelo e chaves (criptografadas).</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/models">Configurar</a>
+  </article>
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Automação</h2>
+        <p class="card-subtitle">Verificação automática da pasta do Drive.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/settings/automation">Configurar</a>
+  </article>
+  {% if user.role == "admin" %}
+  <article class="card">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Admin / Sistema</h2>
+        <p class="card-subtitle">Fila, saúde, usuários e logs.</p>
+      </div>
+    </div>
+    <a class="btn btn-primary" href="/admin/system">Acessar</a>
+  </article>
+  {% endif %}
 </section>
 {% endblock %}

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,21 +7,59 @@
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="/">Meet Transcription</a>
-      {% if user %}
-      <nav>
-        <a href="/">Dashboard</a>
-        <a href="/jobs">Jobs</a>
-        <a href="/settings/drive">Drive Settings</a>
-        <a href="/settings/deepgram">Deepgram</a>
-        {% if user.role == "admin" %}<a href="/admin/users">Admin Users</a>{% endif %}
-        <form action="/logout" method="post"><button type="submit">Logout</button></form>
-      </nav>
-      {% endif %}
-    </header>
-    <main class="shell">
-      {% block content %}{% endblock %}
-    </main>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/">
+          <span class="brand-mark">MT</span>
+          <span class="brand-text">Meet Transcription</span>
+        </a>
+        {% if user %}
+        <button type="button" class="nav-toggle" id="navToggle" aria-label="Abrir menu" aria-expanded="false" aria-controls="mainNav">
+          <svg width="20" height="14" viewBox="0 0 20 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M0 1h20M0 7h20M0 13h20" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </button>
+        <nav class="nav" id="mainNav">
+          <div class="nav-group" id="navGroupMain">
+            <a class="nav-link{% if active_nav == 'transcriptions' or active_nav == 'jobs' %} is-active{% endif %}" href="/transcricoes">Transcrições</a>
+            <a class="nav-link{% if active_nav == 'models' %} is-active{% endif %}" href="/models">Modelos</a>
+            <a class="nav-link{% if active_nav == 'extension' %} is-active{% endif %}" href="/extensao">Extensão</a>
+            <a class="nav-link{% if active_nav == 'settings' %} is-active{% endif %}" href="/configuracoes">Configurações</a>
+          </div>
+          {% if user.role == "admin" %}
+          <div class="nav-group nav-group-admin" id="navGroupAdmin">
+            <a class="nav-link{% if active_nav == 'admin_users' %} is-active{% endif %}" href="/admin/users">Usuários</a>
+            <a class="nav-link{% if active_nav == 'admin_system' %} is-active{% endif %}" href="/admin/system">Sistema</a>
+          </div>
+          {% endif %}
+          <form action="/logout" method="post" style="margin:0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" class="btn btn-ghost btn-sm">Sair</button>
+          </form>
+        </nav>
+        {% endif %}
+      </header>
+      <main class="page">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    <script>
+    (function() {
+      var toggle = document.getElementById('navToggle');
+      var nav = document.getElementById('mainNav');
+      if (!toggle || !nav) return;
+      toggle.addEventListener('click', function() {
+        var open = nav.classList.toggle('is-visible');
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      // Close mobile nav when a link is clicked
+      nav.addEventListener('click', function(e) {
+        if (e.target.tagName === 'A' && window.innerWidth <= 768) {
+          nav.classList.remove('is-visible');
+          toggle.setAttribute('aria-expanded', 'false');
+        }
+      });
+    })();
+    </script>
   </body>
 </html>

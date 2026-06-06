@@ -17,10 +17,13 @@ from sqlalchemy.orm import Session
 from app.database.models import (
     DeepgramCredential,
     GoogleToken,
+    ProviderCredential,
     TranscriptionJob,
     Transcript,
     User,
     UserDriveSettings,
+    UserExtensionToken,
+    UserModelSettings,
 )
 
 
@@ -164,6 +167,92 @@ class DeepgramCredentialRepository:
         credential.encrypted_api_key = encrypted_api_key
         self.session.flush()
         return credential
+
+
+class ProviderCredentialRepository:
+    """Per-user, per-provider encrypted API keys.
+
+    Reads transparently fall back to the legacy ``deepgram_credentials`` row when
+    no ``provider_credentials`` row exists yet for ``provider='deepgram'`` — so
+    keys saved before the Models tab keep working without a forced migration.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_for_user(self, user_id: int, provider: str) -> ProviderCredential | None:
+        return self.session.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.user_id == user_id,
+                ProviderCredential.provider == provider,
+            )
+        )
+
+    def get_encrypted(self, user_id: int, provider: str) -> str | None:
+        row = self.get_for_user(user_id, provider)
+        if row is not None:
+            return row.encrypted_api_key
+        if provider == "deepgram":
+            legacy = self.session.scalar(
+                select(DeepgramCredential).where(DeepgramCredential.user_id == user_id)
+            )
+            if legacy is not None:
+                return legacy.encrypted_api_key
+        return None
+
+    def list_for_user(self, user_id: int) -> dict[str, str]:
+        rows = self.session.scalars(
+            select(ProviderCredential).where(ProviderCredential.user_id == user_id)
+        ).all()
+        creds = {row.provider: row.encrypted_api_key for row in rows}
+        if "deepgram" not in creds:
+            legacy = self.session.scalar(
+                select(DeepgramCredential).where(DeepgramCredential.user_id == user_id)
+            )
+            if legacy is not None:
+                creds["deepgram"] = legacy.encrypted_api_key
+        return creds
+
+    def upsert_for_user(
+        self, user_id: int, provider: str, *, encrypted_api_key: str
+    ) -> ProviderCredential:
+        row = self.get_for_user(user_id, provider)
+        if row is None:
+            row = ProviderCredential(user_id=user_id, provider=provider)
+            self.session.add(row)
+        row.encrypted_api_key = encrypted_api_key
+        self.session.flush()
+        return row
+
+
+class UserModelSettingsRepository:
+    FIELDS = (
+        "primary_provider",
+        "primary_model",
+        "fallback_enabled",
+        "fallback_provider",
+        "fallback_model",
+        "local_engine",
+        "local_model",
+        "local_quantization",
+    )
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_for_user(self, user_id: int) -> UserModelSettings | None:
+        return self.session.scalar(
+            select(UserModelSettings).where(UserModelSettings.user_id == user_id)
+        )
+
+    def upsert_for_user(self, user_id: int, **fields: Any) -> UserModelSettings:
+        row = self.get_for_user(user_id)
+        if row is None:
+            row = UserModelSettings(user_id=user_id)
+            self.session.add(row)
+        _apply(row, fields, self.FIELDS)
+        self.session.flush()
+        return row
 
 
 class UserDriveSettingsRepository:
@@ -322,3 +411,77 @@ class TranscriptRepository:
             .where(Transcript.user_id == user_id)
             .order_by(Transcript.id.desc())
         ).all()
+
+
+class UserExtensionTokenRepository:
+    """Per-user Chrome-extension upload tokens.
+
+    Only ``token_hash`` crosses the repository boundary; the real plaintext is
+    generated once in the web layer and never persisted. ``list_for_user``
+    returns every token, including revoked ones, ordered newest-first — the UI
+    renders a small status badge so the user knows which are still active.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> UserExtensionToken:
+        token = UserExtensionToken(
+            user_id=user_id,
+            name=name.strip() or "Token",
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+        )
+        self.session.add(token)
+        self.session.flush()
+        return token
+
+    def get(self, token_id: int) -> UserExtensionToken | None:
+        return self.session.get(UserExtensionToken, token_id)
+
+    def get_for_user(self, token_id: int, user_id: int) -> UserExtensionToken | None:
+        """Owner-scoped lookup used by the revoke action."""
+        return self.session.scalar(
+            select(UserExtensionToken).where(
+                UserExtensionToken.id == token_id,
+                UserExtensionToken.user_id == user_id,
+            )
+        )
+
+    def list_for_user(self, user_id: int) -> Sequence[UserExtensionToken]:
+        return self.session.scalars(
+            select(UserExtensionToken)
+            .where(UserExtensionToken.user_id == user_id)
+            .order_by(UserExtensionToken.created_at.desc(), UserExtensionToken.id.desc())
+        ).all()
+
+    def find_by_hash(self, token_hash: str) -> UserExtensionToken | None:
+        """Lookup by hash. Returns active OR revoked rows — callers must check
+        ``revoked_at`` themselves to keep the policy in one place (the web
+        auth helper)."""
+        return self.session.scalar(
+            select(UserExtensionToken).where(UserExtensionToken.token_hash == token_hash)
+        )
+
+    def revoke(self, token_id: int, user_id: int, *, now: datetime | None = None) -> bool:
+        """Soft-revoke a token. Returns ``True`` if a row was updated."""
+        token = self.get_for_user(token_id, user_id)
+        if token is None or token.revoked_at is not None:
+            return False
+        token.revoked_at = now or _utcnow()
+        self.session.flush()
+        return True
+
+    def touch(self, token_id: int, *, now: datetime | None = None) -> None:
+        """Stamp ``last_used_at`` on a successful auth — best effort, never fatal."""
+        token = self.session.get(UserExtensionToken, token_id)
+        if token is not None:
+            token.last_used_at = now or _utcnow()
+            self.session.flush()

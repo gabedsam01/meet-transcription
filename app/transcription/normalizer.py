@@ -79,6 +79,182 @@ def normalize_deepgram(
     )
 
 
+def normalize_openrouter(
+    raw: dict[str, Any], *, model: str, language: str | None
+) -> dict[str, Any]:
+    """Normalize an OpenRouter audio-transcriptions response.
+
+    OpenRouter mirrors the OpenAI transcription schema: a top-level ``text`` and,
+    when the model supports it, a ``segments`` list with ``start``/``end``. Some
+    models return only ``text`` — then we synthesize a single segment so the TXT
+    download and the schema stay uniform. No diarization is assumed.
+    """
+    data = raw if isinstance(raw, dict) else {}
+    raw_segments = data.get("segments") or []
+    segments = [
+        segment(
+            s.get("start", 0),
+            s.get("end", 0),
+            s.get("text") or "",
+        )
+        for s in raw_segments
+        if isinstance(s, dict) and (s.get("text") or "").strip()
+    ]
+    text = (data.get("text") or "").strip()
+    if segments and not text:
+        text = segments_text(segments)
+    if text and not segments:
+        segments = [segment(0.0, 0.0, text)]
+    return normalized_payload(
+        provider="openrouter",
+        engine="openrouter",
+        model=model,
+        language=data.get("language") or language,
+        text=text,
+        segments=segments,
+        raw=data,
+    )
+
+
+def normalize_groq(
+    raw: dict[str, Any], *, model: str, language: str | None
+) -> dict[str, Any]:
+    """Normalize a Groq audio-transcriptions response.
+
+    Supports verbose_json containing segments and words.
+    No diarization is assumed (speaker stays None).
+    """
+    data = raw if isinstance(raw, dict) else {}
+    raw_segments = data.get("segments") or []
+    segments = [
+        segment(
+            s.get("start", 0.0),
+            s.get("end", 0.0),
+            s.get("text") or "",
+        )
+        for s in raw_segments
+        if isinstance(s, dict) and (s.get("text") or "").strip()
+    ]
+
+    # Word timestamps normalization
+    raw_words = data.get("words") or []
+    words = [
+        {
+            "word": (w.get("word") or "").strip(),
+            "start": round(float(w.get("start") or 0.0), 3),
+            "end": round(float(w.get("end") or 0.0), 3),
+        }
+        for w in raw_words
+        if isinstance(w, dict) and (w.get("word") or "").strip()
+    ]
+
+    text = (data.get("text") or "").strip()
+    if segments and not text:
+        text = segments_text(segments)
+    if text and not segments:
+        segments = [segment(0.0, 0.0, text)]
+    return normalized_payload(
+        provider="groq",
+        engine="groq",
+        model=model,
+        language=data.get("language") or language,
+        text=text,
+        segments=segments,
+        words=words,
+        raw=data,
+    )
+
+
+def normalize_assemblyai(
+    raw: dict[str, Any], *, model: str, language: str | None
+) -> dict[str, Any]:
+    """Normalize an AssemblyAI transcription response.
+
+    Supports utterances containing segments and words.
+    Scale millisecond timestamps to seconds.
+    """
+    data = raw if isinstance(raw, dict) else {}
+    raw_utterances = data.get("utterances") or []
+
+    segments = []
+    for u in raw_utterances:
+        if not isinstance(u, dict):
+            continue
+        text = (u.get("text") or "").strip()
+        if not text:
+            continue
+        raw_spk = u.get("speaker")
+        if raw_spk:
+            spk_str = str(raw_spk)
+            if not spk_str.lower().startswith("speaker"):
+                speaker = f"Speaker {spk_str}"
+            else:
+                speaker = spk_str
+        else:
+            speaker = None
+
+        seg = segment(
+            float(u.get("start", 0)) / 1000.0,
+            float(u.get("end", 0)) / 1000.0,
+            text,
+            speaker=speaker,
+        )
+        seg["raw_speaker"] = raw_spk
+        segments.append(seg)
+
+    text = (data.get("text") or "").strip()
+    if segments and not text:
+        text = segments_text(segments)
+    if text and not segments:
+        segments = [segment(0.0, 0.0, text)]
+
+    # Words normalization
+    raw_words = data.get("words") or []
+    words = [
+        {
+            "word": (w.get("word") or "").strip(),
+            "start": round(float(w.get("start") or 0.0) / 1000.0, 3),
+            "end": round(float(w.get("end") or 0.0) / 1000.0, 3),
+            "speaker": f"Speaker {w.get('speaker')}" if w.get('speaker') and not str(w.get('speaker')).lower().startswith("speaker") else w.get('speaker'),
+        }
+        for w in raw_words
+        if isinstance(w, dict) and (w.get("word") or "").strip()
+    ]
+
+    return normalized_payload(
+        provider="assemblyai",
+        engine="assemblyai",
+        model=model,
+        language=data.get("language") or language,
+        text=text,
+        segments=segments,
+        words=words,
+        raw=data,
+    )
+
+
+def normalize_gemini(
+    text: str, *, model: str, language: str | None, raw: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Normalize a Gemini transcription into the shared schema.
+
+    Gemini returns free-form generated text (no reliable timestamps), so we store
+    one segment covering the whole transcript. Speaker labels, if any, are part of
+    the text — never trusted as structured diarization (``speaker`` stays None).
+    """
+    cleaned = (text or "").strip()
+    segments = [segment(0.0, 0.0, cleaned)] if cleaned else []
+    return normalized_payload(
+        provider="gemini",
+        engine="gemini",
+        model=model,
+        language=language,
+        text=cleaned,
+        segments=segments,
+        raw=raw if raw is not None else {},
+    )
+
+
 def render_local_text(
     payload: dict[str, Any], original_name: str, file_id: str
 ) -> str:
@@ -116,6 +292,11 @@ def render_local_text(
         lines.extend([payload.get("text") or "Transcrição não disponível.", ""])
     lines.extend(["==================================================", "", "Fim da transcrição."])
     return "\n".join(lines) + "\n"
+
+
+# Engine-agnostic alias: the header/segment rendering is identical for cloud and
+# local payloads, so cloud providers reuse the same TXT layout.
+render_transcript_text = render_local_text
 
 
 def _deepgram_plain(results: dict[str, Any]) -> str:

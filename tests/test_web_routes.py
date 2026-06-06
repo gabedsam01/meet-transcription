@@ -1,6 +1,11 @@
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 from app.core.models import GoogleToken as WorkerGoogleToken, Settings as WorkerSettings
 from app.repositories.memory import build_memory_repositories
@@ -125,15 +130,18 @@ def test_settings_drive_rejects_bad_url(tmp_path):
 
 
 def test_deepgram_save_encrypts_and_masks(tmp_path):
+    # The legacy /settings/deepgram POST is now an alias that writes the key into
+    # the per-provider store (provider='deepgram'), encrypted, and never echoes it.
     client, repos = _client(tmp_path)
     with client:
         _login(client)
         client.post("/settings/deepgram", data={"deepgram_api_key": "dg-mysecretkey"},
                     follow_redirects=False)
         admin = repos.users.get_by_email("admin")
-        assert repos.deepgram_credentials.get_encrypted_for_user(admin.id) != "dg-mysecretkey"
-        page = client.get("/settings/deepgram").text
-        assert "Configured" in page
+        stored = repos.provider_credentials.get_encrypted(admin.id, "deepgram")
+        assert stored is not None and stored != "dg-mysecretkey"
+        page = client.get("/models").text  # alias redirects here
+        assert "Configurado" in page
         assert "dg-mysecretkey" not in page
 
 
@@ -146,7 +154,7 @@ def test_run_once_blocks_without_deepgram_key(tmp_path):
         client.post("/jobs/run-once", follow_redirects=False)
         page = client.get("/jobs").text
     assert worker.jobs.list_jobs_for_user(1) == []
-    assert "Configure sua Deepgram API Key antes de iniciar uma transcrição." in page
+    assert "Configure a chave do provedor em Modelos antes de iniciar." in page
 
 
 def test_run_once_enqueues_pending_when_ready(tmp_path):
@@ -159,6 +167,103 @@ def test_run_once_enqueues_pending_when_ready(tmp_path):
     jobs = worker.jobs.list_jobs_for_user(1)
     assert len(jobs) == 1 and jobs[0].status == "pending"
     assert jobs[0].source_file_id == "file-1"
+
+
+def test_automation_settings_save_and_render(tmp_path):
+    app, worker = _app_with_worker(tmp_path)
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post("/settings/automation", data={
+            "auto_poll_enabled": "true",
+            "poll_interval_seconds": "120",
+            "max_files_per_poll": "3",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        saved = worker.automation.get_for_user(1)
+        assert saved.auto_poll_enabled is True
+        assert saved.poll_interval_seconds == 120
+        assert saved.max_files_per_poll == 3
+        page = client.get("/settings/automation").text
+        assert "120" in page  # interval rendered
+
+
+def test_check_now_creates_and_enqueues_jobs(tmp_path):
+    from app.queue.memory_queue import InMemoryTranscriptionQueue
+    app, worker = _app_with_worker(
+        tmp_path, deepgram_key="dg-key", files=[drive_file("f1", "a.mp4"), drive_file("f2", "b.mp4")]
+    )
+    queue = InMemoryTranscriptionQueue()
+    app.state.queue = queue
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post("/automation/check-now", follow_redirects=False)
+        assert r.status_code == 303
+    jobs = worker.jobs.list_jobs_for_user(1)
+    assert len(jobs) == 2 and all(j.status == "pending" for j in jobs)
+    assert len(queue.queued_job_ids()) == 2
+    assert worker.automation.get_for_user(1).last_poll_at is not None
+
+
+def test_check_now_survives_mark_poll_result_failure(tmp_path):
+    # Bookkeeping errors must flash, never 500 (the route's stated contract).
+    app, worker = _app_with_worker(
+        tmp_path, deepgram_key="dg-key", files=[drive_file("f1", "a.mp4")]
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    worker.automation.mark_poll_result = _boom
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post("/automation/check-now", follow_redirects=False)
+        assert r.status_code == 303  # redirected with a flash, not a 500
+    # The job was still created (the failure was only in status bookkeeping).
+    assert len(worker.jobs.list_jobs_for_user(1)) == 1
+
+
+def test_retry_failed_job_resets_and_reenqueues(tmp_path):
+    from app.queue.memory_queue import InMemoryTranscriptionQueue
+    app, worker = _app_with_worker(tmp_path)
+    queue = InMemoryTranscriptionQueue()
+    app.state.queue = queue
+    # A failed, dead-lettered job owned by user 1.
+    job = worker.jobs.create_job(1, "src-1", "a.mp4", _utcnow())
+    worker.jobs.mark_failed(job.id, "boom", _utcnow(), error_code="UNEXPECTED")
+    queue.mark_dead(job.id)
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post(f"/jobs/{job.id}/retry", follow_redirects=False)
+        assert r.status_code == 303
+    done = worker.jobs.get_job(job.id)
+    assert done.status == "pending"
+    assert done.attempts == 0
+    assert job.id in queue.queued_job_ids()
+    assert queue.dead_job_ids() == set()  # removed from the dead set
+
+
+def test_retry_other_users_job_is_404(tmp_path):
+    app, worker = _app_with_worker(tmp_path)
+    other = worker.jobs.create_job(999, "src-x", "x.mp4", _utcnow())
+    worker.jobs.mark_failed(other.id, "boom", _utcnow())
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post(f"/jobs/{other.id}/retry", follow_redirects=False)
+        assert r.status_code == 404
+
+
+def test_admin_queue_page_shows_stats(tmp_path):
+    from app.queue.memory_queue import InMemoryTranscriptionQueue
+    app, worker = _app_with_worker(tmp_path)
+    queue = InMemoryTranscriptionQueue()
+    queue.enqueue(1)
+    queue.mark_dead(2)
+    app.state.queue = queue
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/admin/queue")
+        assert page.status_code == 200
+        assert "Queue" in page.text or "Fila" in page.text
 
 
 def test_connect_google_redirects_with_state(tmp_path):
@@ -189,6 +294,60 @@ def test_oauth_callback_saves_token_and_identity(tmp_path, monkeypatch):
         admin = repos.users.get_by_email("admin")
         assert repos.google_tokens.get_for_user(admin.id) is not None
         assert repos.users.get_by_id(admin.id).google_email == "me@gmail.com"
+
+
+def test_onboarding_route_still_works(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/onboarding")
+        assert r.status_code == 200
+        assert "Configuração guiada" in r.text
+
+
+def test_search_route_redirects_to_transcricoes(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/search", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes"
+
+
+def test_search_with_query_redirects_to_transcricoes(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/search?q=meeting", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes?q=meeting"
+
+
+def test_jobs_route_redirects_to_transcricoes(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/jobs", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes"
+
+
+def test_transcricoes_renders_for_authenticated_user(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/transcricoes")
+        assert r.status_code == 200
+        assert "Transcrições" in r.text
+
+
+def test_mobile_nav_toggle_exists(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        text = client.get("/").text
+        assert 'id="navToggle"' in text
+        assert 'aria-expanded' in text
 
 
 def test_oauth_callback_rejects_bad_state(tmp_path):

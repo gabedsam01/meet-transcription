@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from app.transcription.provider_config import ModelSettings
 from app.web.repositories import (
     DriveSettings,
+    ExtensionToken,
     GoogleToken,
     Job,
     RepositoryBundle,
@@ -89,6 +91,47 @@ class InMemoryDeepgramCredentialsRepository:
         self._keys[user_id] = api_key_encrypted
 
 
+class InMemoryProviderCredentialsRepository:
+    """Mirrors the real adapter, including the legacy ``deepgram_credentials``
+    read-fallback, so tests exercise the same backward-compatible behaviour."""
+
+    def __init__(self, legacy_deepgram=None) -> None:
+        self._creds: dict[tuple[int, str], str] = {}
+        self._legacy_deepgram = legacy_deepgram
+
+    def get_encrypted(self, user_id: int, provider: str) -> str | None:
+        value = self._creds.get((user_id, provider))
+        if value is None and provider == "deepgram" and self._legacy_deepgram is not None:
+            return self._legacy_deepgram.get_encrypted_for_user(user_id)
+        return value
+
+    def save(self, user_id: int, provider: str, encrypted_api_key: str) -> None:
+        self._creds[(user_id, provider)] = encrypted_api_key
+
+    def list_encrypted(self, user_id: int) -> dict[str, str]:
+        creds = {
+            provider: value
+            for (uid, provider), value in self._creds.items()
+            if uid == user_id
+        }
+        if "deepgram" not in creds and self._legacy_deepgram is not None:
+            legacy = self._legacy_deepgram.get_encrypted_for_user(user_id)
+            if legacy is not None:
+                creds["deepgram"] = legacy
+        return creds
+
+
+class InMemoryUserModelSettingsRepository:
+    def __init__(self) -> None:
+        self._by_user: dict[int, ModelSettings] = {}
+
+    def get_for_user(self, user_id: int) -> ModelSettings | None:
+        return self._by_user.get(user_id)
+
+    def save_for_user(self, user_id: int, settings: ModelSettings) -> None:
+        self._by_user[user_id] = settings
+
+
 class InMemoryDriveSettingsRepository:
     def __init__(self) -> None:
         self._settings: dict[int, DriveSettings] = {}
@@ -98,6 +141,78 @@ class InMemoryDriveSettingsRepository:
 
     def save_for_user(self, user_id: int, settings: DriveSettings) -> None:
         self._settings[user_id] = settings
+
+
+class InMemoryExtensionTokensRepository:
+    """In-memory adapter for the per-user extension-token contract.
+
+    Mirrors the Postgres adapter closely enough for web-layer tests:
+    - ``create_for_user`` returns the persisted masked view (no raw token);
+    - ``find_by_hash`` returns the row for the auth helper to apply the
+      revoked/active policy;
+    - ``touch`` is best-effort and never fatal.
+    """
+
+    def __init__(self) -> None:
+        self._tokens: dict[int, ExtensionToken] = {}
+        self._by_hash: dict[str, int] = {}
+        self._seq = 0
+
+    def _next_id(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def list_for_user(self, user_id: int) -> list[ExtensionToken]:
+        return sorted(
+            (t for t in self._tokens.values() if t.user_id == user_id),
+            key=lambda t: t.id,
+            reverse=True,
+        )
+
+    def get_for_user(self, token_id: int, user_id: int) -> ExtensionToken | None:
+        token = self._tokens.get(token_id)
+        if token is None or token.user_id != user_id:
+            return None
+        return token
+
+    def find_by_hash(self, token_hash: str) -> ExtensionToken | None:
+        token_id = self._by_hash.get(token_hash)
+        if token_id is None:
+            return None
+        return self._tokens.get(token_id)
+
+    def create_for_user(
+        self,
+        user_id: int,
+        *,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> ExtensionToken:
+        token = ExtensionToken(
+            id=self._next_id(),
+            user_id=user_id,
+            name=(name or "Token").strip() or "Token",
+            masked=token_prefix,
+            created_at=_FIXED_TS,
+            last_used_at=None,
+            revoked_at=None,
+        )
+        self._tokens[token.id] = token
+        self._by_hash[token_hash] = token.id
+        return token
+
+    def revoke_for_user(self, token_id: int, user_id: int) -> bool:
+        token = self.get_for_user(token_id, user_id)
+        if token is None or token.revoked_at is not None:
+            return False
+        self._tokens[token_id] = replace(token, revoked_at=_FIXED_TS)
+        return True
+
+    def touch(self, token_id: int) -> None:
+        token = self._tokens.get(token_id)
+        if token is not None:
+            self._tokens[token_id] = replace(token, last_used_at=_FIXED_TS)
 
 
 class InMemoryTranscriptionJobsRepository:
@@ -142,10 +257,18 @@ class InMemoryTranscriptionJobsRepository:
 
 
 def build_fake_repositories() -> RepositoryBundle:
+    deepgram_credentials = InMemoryDeepgramCredentialsRepository()
     return RepositoryBundle(
         users=InMemoryUsersRepository(),
         google_tokens=InMemoryGoogleTokensRepository(),
-        deepgram_credentials=InMemoryDeepgramCredentialsRepository(),
+        deepgram_credentials=deepgram_credentials,
         drive_settings=InMemoryDriveSettingsRepository(),
         jobs=InMemoryTranscriptionJobsRepository(),
+        # Faithful to the Postgres adapter: provider_credentials reads fall back to
+        # the legacy deepgram_credentials row when no new row exists.
+        provider_credentials=InMemoryProviderCredentialsRepository(
+            legacy_deepgram=deepgram_credentials
+        ),
+        model_settings=InMemoryUserModelSettingsRepository(),
+        extension_tokens=InMemoryExtensionTokensRepository(),
     )

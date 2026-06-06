@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
+    <div>
+      <p class="page-eyebrow">Transcrições</p>
+      <h1 class="page-title">Transcrições</h1>
+      <p class="page-subtitle">Busque, visualize e exporte suas transcrições.</p>
+    </div>
+    <div class="page-actions">
+      <form method="post" action="/automation/check-now" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn-secondary">Verificar agora</button>
+      </form>
+      <form method="post" action="/jobs/run-once" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="btn btn-primary">Rodar agora</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
+<div class="alert alert-warning mb-1">
+  Fila indisponível. O sistema registra novas transcrições no banco, mas elas só serão processadas quando o Redis voltar.
+</div>
+{% endif %}
+
+{% if transcription_status and transcription_status.enabled and not transcription_status.local_valid %}
+<div class="alert alert-warning mb-1">
+  {{ transcription_status.message }} A transcrição local está desativada até corrigir a configuração.
+  {% if transcription_status.doc_url %}<a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Ver documentação de modelos locais</a>.{% endif %}
+  Configure um provedor na aba Modelos para iniciar uma transcrição.
+</div>
+{% elif transcription_status and transcription_status.local_valid %}
+<div class="alert alert-success mb-1">{{ transcription_status.message }} — nuvem opcional.</div>
+{% endif %}
+
+{% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
+{% if backend_error %}<div class="alert alert-danger mb-1">{{ backend_error }}</div>{% endif %}
+
+<div class="workspace-tabs" id="workspaceTabs">
+  <button type="button" class="workspace-tab is-active" data-tab="main">Transcrições</button>
+  <button type="button" class="workspace-tab" data-tab="side">Fila</button>
+</div>
+
+<div class="workspace">
+  <div class="workspace-main" id="workspaceMain">
+    <section class="card">
+      <form method="get" action="/transcricoes" class="search-form" style="margin:0">
+        <input class="input" type="search" name="q" value="{{ query or '' }}" placeholder="Buscar por palavra-chave, cliente, reunião…" aria-label="Buscar transcrições">
+        <button type="submit" class="btn btn-primary">Buscar</button>
+        {% if query %}<a class="btn btn-ghost" href="/transcricoes">Limpar</a>{% endif %}
+      </form>
+    </section>
+
+    {% if query %}
+      {% if results %}
+      <p class="hint">{{ results | length }} resultado(s) para “{{ query }}”.</p>
+      <div class="job-list">
+        {% for result in results %}
+        <article class="job-card">
+          <div class="job-card-header">
+            <div>
+              <a href="/jobs/{{ result.job_id }}" class="job-card-title">Job #{{ result.job_id }}</a>
+              <span class="job-card-meta">{{ result.created_at | dt }}</span>
+            </div>
+          </div>
+          <p class="snippet">{{ result.snippet }}</p>
+          <div class="job-card-actions">
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ result.job_id }}">Detalhes</a>
+            <a class="btn btn-ghost btn-sm" href="/jobs/{{ result.job_id }}/download">TXT</a>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <p class="empty-title">Nenhuma transcrição encontrada</p>
+        <p class="empty-desc">Não encontramos resultados para “{{ query }}”.</p>
+      </div>
+      {% endif %}
+    {% elif jobs %}
+    <div class="job-list">
+      {% for job in jobs %}
+      <article class="job-card">
+        <div class="job-card-header">
+          <div>
+            <a href="/jobs/{{ job.id }}" class="job-card-title">{{ job.source_file_name or 'Manual run' }}</a>
+            <span class="job-card-meta">{{ job.created_at | dt }} · <span class="badge badge-{{ job.status }}">{{ job.status }}</span></span>
+          </div>
+        </div>
+        <div class="job-card-actions">
+          {% if job.status == 'completed' %}
+          <a class="btn btn-primary btn-sm" href="/jobs/{{ job.id }}/download">TXT</a>
+          {% if job.transcript_drive_file_id %}
+          <a class="btn btn-secondary btn-sm" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Drive</a>
+          {% endif %}
+          {% for fmt, label in export_formats %}
+          <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}/download?format={{ fmt }}">{{ label }}</a>
+          {% endfor %}
+          <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}">Detalhes</a>
+          {% elif job.status == 'failed' %}
+          <form method="post" action="/jobs/{{ job.id }}/retry" style="margin:0; display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" class="btn btn-secondary btn-sm">Tentar novamente</button>
+          </form>
+          <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}">Detalhes</a>
+          {% else %}
+          <a class="btn btn-ghost btn-sm" href="/jobs/{{ job.id }}">Detalhes</a>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p class="empty-title">Nenhuma transcrição ainda</p>
+      <p class="empty-desc">Inicie uma transcrição manual ou configure a extensão.</p>
+      <div class="actions-row">
+        <a class="btn btn-primary" href="/extensao">Configurar extensão</a>
+        <a class="btn btn-secondary" href="/models">Configurar modelos</a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <aside class="workspace-side" id="workspaceSide">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Fila</h2>
+          <p class="card-subtitle">Status de processamento</p>
+        </div>
+      </div>
+      <div class="stat-card" style="padding:.75rem 0">
+        <p class="stat-value" style="font-size:1.2rem">{{ queue_status.pending if queue_status and queue_status.pending is not none else "—" }}</p>
+        <p class="stat-label">Em fila</p>
+      </div>
+      <div class="stat-card" style="padding:.75rem 0">
+        <p class="stat-value" style="font-size:1.2rem">{{ queue_status.processing if queue_status and queue_status.processing is not none else "—" }}</p>
+        <p class="stat-label">Processando</p>
+      </div>
+      <div class="mt-1">
+        {% if not queue_status or queue_status.mode == 'poll' %}
+        <span class="badge badge-neutral">Polling</span>
+        {% elif queue_status.available %}
+        <span class="badge badge-success">Online</span>
+        {% else %}
+        <span class="badge badge-danger">Indisponível</span>
+        {% endif %}
+      </div>
+      {% if user.role == "admin" %}
+      <div class="actions-row mt-1">
+        <a class="btn btn-ghost btn-sm" href="/admin/system">Ver sistema</a>
+      </div>
+      {% endif %}
+    </div>
+  </aside>
+</div>
+
+<script>
+(function() {
+  var tabs = document.getElementById('workspaceTabs');
+  var main = document.getElementById('workspaceMain');
+  var side = document.getElementById('workspaceSide');
+  if (!tabs || !main || !side) return;
+  tabs.addEventListener('click', function(e) {
+    var btn = e.target.closest('.workspace-tab');
+    if (!btn) return;
+    var target = btn.dataset.tab;
+    tabs.querySelectorAll('.workspace-tab').forEach(function(t) { t.classList.toggle('is-active', t === btn); });
+    if (target === 'main') {
+      main.style.display = '';
+      side.style.display = 'none';
+    } else {
+      main.style.display = 'none';
+      side.style.display = '';
+    }
+  });
+})();
+</script>
+{% endblock %}
