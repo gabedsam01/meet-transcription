@@ -3,12 +3,15 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.database.models import ProviderCredential
 from app.database.repositories import (
     DeepgramCredentialRepository,
     GoogleTokenRepository,
+    ProviderCredentialRepository,
     TranscriptionJobRepository,
     TranscriptRepository,
     UserDriveSettingsRepository,
+    UserModelSettingsRepository,
     UserRepository,
 )
 
@@ -238,3 +241,69 @@ def test_deepgram_credential_upsert(db):
     repo.upsert_for_user(user.id, encrypted_api_key="enc-2")
 
     assert repo.get_for_user(user.id).encrypted_api_key == "enc-2"
+
+
+def test_provider_credential_upsert_per_provider(db):
+    user = UserRepository(db).create(email="a@example.com")
+    db.flush()
+    repo = ProviderCredentialRepository(db)
+
+    repo.upsert_for_user(user.id, "openrouter", encrypted_api_key="or-1")
+    repo.upsert_for_user(user.id, "gemini", encrypted_api_key="gem-1")
+    repo.upsert_for_user(user.id, "openrouter", encrypted_api_key="or-2")  # update
+
+    assert repo.get_encrypted(user.id, "openrouter") == "or-2"
+    assert repo.get_encrypted(user.id, "gemini") == "gem-1"
+    assert repo.list_for_user(user.id) == {"openrouter": "or-2", "gemini": "gem-1"}
+
+
+def test_provider_credential_falls_back_to_legacy_deepgram(db):
+    user = UserRepository(db).create(email="a@example.com")
+    db.flush()
+    DeepgramCredentialRepository(db).upsert_for_user(user.id, encrypted_api_key="legacy-dg")
+    db.flush()
+    repo = ProviderCredentialRepository(db)
+
+    # No provider_credentials row yet: reads transparently use the legacy table.
+    assert repo.get_encrypted(user.id, "deepgram") == "legacy-dg"
+    assert repo.list_for_user(user.id) == {"deepgram": "legacy-dg"}
+
+    # A new provider_credentials row shadows the legacy value.
+    repo.upsert_for_user(user.id, "deepgram", encrypted_api_key="new-dg")
+    db.flush()
+    assert repo.get_encrypted(user.id, "deepgram") == "new-dg"
+    assert repo.list_for_user(user.id)["deepgram"] == "new-dg"
+
+
+def test_provider_credential_unique_per_user_provider(db):
+    user = UserRepository(db).create(email="a@example.com")
+    db.flush()
+    db.add_all([
+        ProviderCredential(user_id=user.id, provider="gemini", encrypted_api_key="x"),
+        ProviderCredential(user_id=user.id, provider="gemini", encrypted_api_key="y"),
+    ])
+    with pytest.raises(IntegrityError):
+        db.flush()
+
+
+def test_user_model_settings_upsert(db):
+    user = UserRepository(db).create(email="a@example.com")
+    db.flush()
+    repo = UserModelSettingsRepository(db)
+
+    repo.upsert_for_user(
+        user.id, primary_provider="openrouter", primary_model="openai/whisper-large-v3",
+    )
+    row = repo.get_for_user(user.id)
+    assert row.primary_provider == "openrouter"
+    assert row.primary_model == "openai/whisper-large-v3"
+    assert row.fallback_enabled is False
+
+    repo.upsert_for_user(
+        user.id, primary_provider="gemini", primary_model="gemini-2.5-flash",
+        fallback_enabled=True, fallback_provider="deepgram", fallback_model="nova-3",
+    )
+    row = repo.get_for_user(user.id)
+    assert row.primary_provider == "gemini"
+    assert row.fallback_enabled is True
+    assert row.fallback_provider == "deepgram"

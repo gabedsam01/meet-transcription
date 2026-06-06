@@ -81,13 +81,36 @@ web and worker run from the **same image** with different commands.
 
 ## 3. Transcription providers
 
+Providers are chosen per user in the **Models** tab (`/models`): pick a primary
+provider + model, save its API key (encrypted at rest), and optionally a fallback.
+The registry of providers/models lives in `app/transcription/provider_models.py`;
+see **[documentation/20-models-tab.md](documentation/20-models-tab.md)** and
+**[21-provider-registry.md](documentation/21-provider-registry.md)**.
+
 ### Deepgram
 
-- Requires a **per‑user API key** (Settings → Deepgram).
+- Requires a **per‑user API key** (Models → Deepgram).
 - The key is stored **encrypted at rest** (Fernet, key derived from
   `APP_SECRET_KEY`) and never shown again.
 - **Best for diarization / speaker labels** and is **fast**.
-- Has a **per‑use cost** and sends audio to an external service.
+- Models: `nova-3`, `nova-2`, `whisper`. Has a **per‑use cost**.
+
+### OpenRouter
+
+- Cloud router exposing many ASR models via one OpenAI‑compatible endpoint.
+- Requires a **per‑user API key** (Models → OpenRouter).
+- **Diarization depends on the model** (usually unavailable); timestamps mapped to
+  segments when present, otherwise a single text segment.
+- See **[documentation/23-openrouter-provider.md](documentation/23-openrouter-provider.md)**.
+
+### Google Gemini
+
+- Multimodal model that transcribes audio; **pseudo‑diarization via prompt only**
+  (never trusted as real speaker labels).
+- Requires a **per‑user API key** (Models → Gemini).
+- Size limits: **~70 MB inline**, **~99 MB via the Files API**; larger files are
+  refused with a friendly error. See
+  **[documentation/22-gemini-provider.md](documentation/22-gemini-provider.md)**.
 
 ### Local transcription
 
@@ -265,15 +288,19 @@ A mismatch causes `redirect_uri_mismatch`. Details:
 
 ---
 
-## 8. Configure Deepgram
+## 8. Configure Models (provider + key)
 
 1. Sign in to the web UI.
-2. Go to **Settings → Deepgram**.
-3. Paste your Deepgram API key and save (it is encrypted at rest).
-4. Use **Test** to verify the key works.
+2. Go to **Settings → Models** (or the **Models** nav link, `/models`).
+3. Choose the **primary provider** and **model** and save.
+4. Save the provider's **API key** (encrypted at rest, only the last 4 chars shown).
+5. Use **Test** to verify the key, and optionally enable a **fallback** provider.
 
-The key is required to transcribe **unless** a valid local engine is active (§11).
-Details: **[documentation/05-deepgram.md](documentation/05-deepgram.md)**.
+A cloud provider key is required to transcribe **unless** a valid local engine is
+active (§11). The old `/settings/deepgram` page now redirects to
+`/models?provider=deepgram` (the POST form still works as an alias).
+Details: **[documentation/20-models-tab.md](documentation/20-models-tab.md)** and
+**[05-deepgram.md](documentation/05-deepgram.md)**.
 
 ---
 
@@ -338,9 +365,16 @@ Put model files under the host `./models` directory (mounted at `/models`).
 | `true` | **valid** | **Local engine** used; **no** Deepgram key required. |
 | `true` | **invalid** | **Deepgram required.** UI shows *“Modelo local inválido. Consulte a documentação de modelos locais.”* with a docs link, and Run once is blocked until a Deepgram key is set. |
 
-There is **no silent fallback**: an invalid local configuration always surfaces a
-clear message; if there is also no Deepgram key, run‑once is blocked with a
-friendly message instead of failing later.
+There is **no silent fallback** for the local engine: an invalid local
+configuration always surfaces a clear message; if there is also no provider key,
+run‑once is blocked with a friendly message instead of failing later.
+
+**Cloud provider fallback (Models tab).** When a user picks a cloud provider
+(OpenRouter/Gemini/Deepgram) and enables a **fallback**, the worker tries the
+primary first and, if its key is missing, switches to the fallback provider
+(`app/transcription/registry.py::resolve_cloud_provider`). If neither is usable
+the job fails with a friendly, provider‑named message (never a traceback). An
+explicit cloud selection takes precedence over the env‑driven local engine.
 
 ---
 

@@ -28,10 +28,12 @@ from app.database.connection import (
     normalize_database_url,
 )
 from app.database.repositories import (
-    DeepgramCredentialRepository as CoreDeepgram,
     GoogleTokenRepository as CoreTokens,
+    ProviderCredentialRepository as CoreProviderCreds,
     UserDriveSettingsRepository as CoreSettings,
+    UserModelSettingsRepository as CoreModelSettings,
 )
+from app.transcription.provider_config import normalize_model_settings
 from app.web.security import decrypt_value, fernet_from_secret
 
 try:  # Prefer the real contract once the worker branch is merged.
@@ -112,6 +114,21 @@ def _to_job(j: models.TranscriptionJob | None) -> Job | None:
         updated_at=j.updated_at,
         started_at=j.started_at,
         processed_at=j.processed_at,
+    )
+
+
+def _to_model_settings(row):
+    if row is None:
+        return None
+    return normalize_model_settings(
+        primary_provider=row.primary_provider,
+        primary_model=row.primary_model,
+        fallback_enabled=row.fallback_enabled,
+        fallback_provider=row.fallback_provider,
+        fallback_model=row.fallback_model,
+        local_engine=row.local_engine,
+        local_model=row.local_model,
+        local_quantization=row.local_quantization,
     )
 
 
@@ -316,13 +333,24 @@ class PgSettingsRepository(_Bound):
             st = CoreSettings(s).get_for_user(user_id)
             if st is None:
                 return None
-            cred = CoreDeepgram(s).get_for_user(user_id)
+            # One read covers every provider key (incl. legacy deepgram_credentials
+            # via the repository's compatibility fallback). Decrypt to plaintext;
+            # the worker never sees ciphertext and never logs a key.
+            encrypted = CoreProviderCreds(s).list_for_user(user_id)
+            credentials = {
+                provider: self._dec.decrypt(value)
+                for provider, value in encrypted.items()
+            }
+            ms_row = CoreModelSettings(s).get_for_user(user_id)
+            model_settings = _to_model_settings(ms_row)
             return Settings(
                 user_id=user_id,
                 source_drive_folder_id=st.source_drive_folder_id or "",
                 destination_drive_folder_id=st.destination_drive_folder_id or "",
                 save_copy_to_drive=st.save_copy_to_drive,
-                deepgram_api_key=self._dec.decrypt(cred.encrypted_api_key) if cred else None,
+                deepgram_api_key=credentials.get("deepgram"),
+                model_settings=model_settings,
+                provider_credentials=credentials,
             )
 
 

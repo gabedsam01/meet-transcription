@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Models</h1>
+  <p class="hint">
+    Escolha o provedor e o modelo de transcrição, configure as chaves (armazenadas
+    <strong>criptografadas</strong>, nunca exibidas de novo) e um fallback opcional.
+    Cada usuário tem sua própria configuração.
+  </p>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+
+  <h2>Provedor principal</h2>
+  <form method="post" action="/models/provider" class="form-stack">
+    <label>Provedor
+      <select name="provider">
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ "selected" if p.id == model_settings.primary_provider else "" }}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Modelo
+      <select name="model">
+        {% for p in providers %}
+        <optgroup label="{{ p.label }}">
+          {% for m in p.models %}
+          <option value="{{ m }}" {{ "selected" if (p.id == model_settings.primary_provider and m == model_settings.primary_model) else "" }}>{{ m }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Salvar provedor</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Credenciais por provedor</h2>
+  <p class="hint">A API key é obrigatória para provedores em nuvem. Mostramos apenas os últimos 4 caracteres.</p>
+  <div class="options">
+    {% for p in providers %}
+    <div class="option" id="provider-{{ p.id }}">
+      <div>
+        <h3>{{ p.label }} <span class="mono muted">({{ p.id }})</span></h3>
+        <p class="muted">{{ p.diarization }}</p>
+        {% if p.size_note %}<p class="hint">{{ p.size_note }}</p>{% endif %}
+        <p>Status:
+          {% if not p.requires_api_key %}<strong class="ok">Sem chave necessária</strong>
+          {% elif p.configured %}<strong class="ok">Configurado</strong> (<span class="mono">{{ p.masked }}</span>)
+          {% else %}<strong class="off">Não configurado</strong>{% endif %}
+        </p>
+        {% if p.requires_api_key %}
+        <form method="post" action="/models/credentials" class="form-stack">
+          <input type="hidden" name="provider" value="{{ p.id }}">
+          <label>{{ p.label }} API Key<input name="api_key" type="password" autocomplete="off" required></label>
+          <div class="cta-row">
+            <button type="submit">Salvar chave</button>
+            {% if p.configured %}
+            <button type="submit" formaction="/models/test" class="button button-ghost button-sm">Testar</button>
+            {% endif %}
+          </div>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Fallback</h2>
+  <p class="hint">Se o provedor principal estiver sem chave, o worker usa o fallback configurado.</p>
+  <form method="post" action="/models/fallback" class="form-stack">
+    <label class="checkbox">
+      <input type="checkbox" name="fallback_enabled" value="true" {{ "checked" if model_settings.fallback_enabled else "" }}>
+      Ativar fallback
+    </label>
+    <label>Provedor de fallback
+      <select name="fallback_provider">
+        <option value="">— nenhum —</option>
+        {% for p in providers %}
+        <option value="{{ p.id }}" {{ "selected" if p.id == model_settings.fallback_provider else "" }}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Modelo de fallback
+      <select name="fallback_model">
+        <option value="">— padrão do provedor —</option>
+        {% for p in providers %}
+        <optgroup label="{{ p.label }}">
+          {% for m in p.models %}
+          <option value="{{ m }}" {{ "selected" if (p.id == model_settings.fallback_provider and m == model_settings.fallback_model) else "" }}>{{ m }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Salvar fallback</button>
+  </form>
+  <p class="hint">Status do fallback:
+    {% if model_settings.fallback_enabled %}<strong class="ok">ativo</strong> → {{ model_settings.fallback_provider }} / {{ model_settings.fallback_model }}
+    {% else %}<strong class="off">inativo</strong>{% endif %}
+  </p>
+</section>
+
+<section class="card">
+  <h2>Diarização &amp; limites</h2>
+  <ul class="list">
+    <li><strong>Deepgram:</strong> diarização real (separação de locutores).</li>
+    <li><strong>Gemini:</strong> pseudo-diarização via prompt — não garantida.</li>
+    <li><strong>OpenRouter:</strong> depende do modelo, geralmente sem diarização.</li>
+    <li><strong>Local:</strong> sem diarização no MVP.</li>
+  </ul>
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Voltar para settings</a></p>
+</section>
+{% endblock %}

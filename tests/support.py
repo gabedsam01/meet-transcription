@@ -50,11 +50,38 @@ class FakeDeepgramClient:
         }
         self.fail = fail
         self.api_key = None
+        self.model = None  # last model the client was built with
 
     def transcribe(self, video_path, api_key=None):
         if self.fail:
             raise RuntimeError("deepgram failed")
         return self.response
+
+
+class FakeCloudProvider:
+    """Stand-in for OpenRouter/Gemini in worker tests; records how it was built."""
+
+    def __init__(self, provider_id="openrouter"):
+        self.provider_id = provider_id
+        self.built = []  # (provider_id, api_key, model)
+        self.calls = []
+
+    def builder(self, provider_id, *, api_key, model):
+        self.built.append((provider_id, api_key, model))
+        return self
+
+    def transcribe(self, source_path, *, original_name, file_id):
+        from app.transcription.provider import TranscriptionResult
+
+        self.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="CLOUD TXT Olá",
+            payload={
+                "provider": self.provider_id, "engine": self.provider_id,
+                "model": "m", "language": "pt", "text": "Olá",
+                "segments": [], "words": [], "utterances": [], "raw": {},
+            },
+        )
 
 
 def make_worker_settings(tmp_dir, **overrides) -> WorkerSettings:
@@ -77,14 +104,16 @@ def make_worker_container(
     transcription_config=None,
     transcription_probes=None,
     build_local_provider=None,
+    build_cloud_provider=None,
     queue=None,
 ):
     repositories = repositories if repositories is not None else build_memory_repositories()
     drive = drive if drive is not None else FakeDriveClient()
     deepgram = deepgram if deepgram is not None else FakeDeepgramClient()
 
-    def build_deepgram(api_key):
+    def build_deepgram(api_key, model=None):
         deepgram.api_key = api_key
+        deepgram.model = model
         return deepgram
 
     return WorkerContainer(
@@ -96,5 +125,6 @@ def make_worker_container(
         transcription_config=transcription_config,
         transcription_probes=transcription_probes,
         build_local_provider=build_local_provider,
+        build_cloud_provider=build_cloud_provider,
         queue=queue,
     )

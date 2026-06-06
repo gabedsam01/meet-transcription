@@ -4,8 +4,14 @@ from app.core.models import GoogleToken, JobStatus, Settings
 from app.transcription.config import TranscriptionConfig
 from app.transcription.local_validation import ValidationProbes
 from app.transcription.provider import TranscriptionResult
+from app.transcription.provider_config import normalize_model_settings
 from app.worker.processor import JobProcessor
-from tests.support import FakeDeepgramClient, FakeDriveClient, make_worker_container
+from tests.support import (
+    FakeCloudProvider,
+    FakeDeepgramClient,
+    FakeDriveClient,
+    make_worker_container,
+)
 
 
 def _local_cfg(**over):
@@ -191,6 +197,98 @@ def test_process_falls_back_to_deepgram_when_local_invalid_with_key(tmp_path):
     transcript = container.repositories.transcripts.get_by_job(job.id)
     assert transcript.json_payload["provider"] == "deepgram"
     assert deepgram.api_key == "user-dg-key"
+
+
+def _seed_models(repos, *, ms, credentials, deepgram_key=None):
+    repos.settings.set(Settings(
+        user_id=7, source_drive_folder_id="src", destination_drive_folder_id="dst",
+        save_copy_to_drive=False, deepgram_api_key=deepgram_key,
+        model_settings=ms, provider_credentials=dict(credentials),
+    ))
+    repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
+
+
+def test_run_once_uses_configured_cloud_provider(tmp_path):
+    # Requirement 14: the worker honours the user's Models-tab selection.
+    cloud = FakeCloudProvider(provider_id="openrouter")
+    drive = FakeDriveClient()
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, drive=drive, deepgram=deepgram, build_cloud_provider=cloud.builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"openrouter": "or-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert cloud.built == [("openrouter", "or-key", "openai/whisper-large-v3")]
+    assert cloud.calls and drive.downloaded == ["src-1"]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["provider"] == "openrouter"
+    assert deepgram.api_key is None  # Deepgram never built
+
+
+def test_explicit_deepgram_model_selection_is_honoured(tmp_path):
+    # A user who picks Deepgram + a non-default model in the Models tab must get
+    # THAT model on the actual client (not the environment default).
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(tmp_path, deepgram=deepgram)
+    ms = normalize_model_settings(primary_provider="deepgram", primary_model="nova-2")
+    _seed_models(container.repositories, ms=ms, credentials={}, deepgram_key="dg-key")
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert deepgram.model == "nova-2"  # client built with the user's model
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["model"] == "nova-2"
+
+
+def test_cloud_provider_falls_back_to_deepgram_when_primary_key_missing(tmp_path):
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(
+        tmp_path, deepgram=deepgram, build_cloud_provider=FakeCloudProvider().builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="openrouter", primary_model="openai/whisper-large-v3",
+        fallback_enabled=True, fallback_provider="deepgram", fallback_model="nova-3",
+    )
+    # No openrouter key, but a deepgram key is available for the fallback.
+    _seed_models(container.repositories, ms=ms, credentials={"deepgram": "dg-key"})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["provider"] == "deepgram"
+    assert deepgram.api_key == "dg-key"
+
+
+def test_cloud_provider_fails_friendly_without_key_or_fallback(tmp_path):
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=FakeCloudProvider().builder
+    )
+    ms = normalize_model_settings(
+        primary_provider="gemini", primary_model="gemini-2.5-flash"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={})
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert "Gemini" in done.error_message  # friendly, names the provider
+    assert container.repositories.transcripts.get_by_job(job.id) is None
 
 
 def test_process_cleans_only_its_own_job_dir(tmp_path):

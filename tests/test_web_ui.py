@@ -179,7 +179,7 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
     auth = build_fake_repositories()
     auth.drive_settings.save_for_user(1, AuthDriveSettings("url", "src-folder", None, None, False))
     auth.google_tokens.save_for_user(1, AuthGoogleToken("a", "r", "u", "c", "s", "sc", None))
-    auth.deepgram_credentials.save_for_user(1, "encrypted-key")
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
     worker = build_memory_repositories()
     job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
     worker.jobs.mark_completed(job.id, _now())
@@ -189,11 +189,11 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
         text = client.get("/").text
 
     assert "Connected" in text  # Google
-    assert "Configured" in text  # Drive source + Deepgram
+    assert "Configured" in text  # Drive source + Models provider
     assert "Total jobs" in text
     assert "Last job" in text
     assert "badge-completed" in text  # last job status badge
-    assert "/settings/deepgram" in text  # Deepgram CTA
+    assert "/models" in text  # Models CTA (replaces the old Deepgram tab)
     assert "/jobs" in text  # Jobs CTA
 
 
@@ -205,16 +205,27 @@ def test_settings_landing_links_to_sections(tmp_path):
         _login(client)
         text = client.get("/settings").text
     assert "/settings/drive" in text
-    assert "/settings/deepgram" in text
+    assert "/models" in text
     assert "Drive folders" in text
-    assert "Deepgram API key" in text
+    assert "Models" in text
 
 
-def test_settings_deepgram_page_shows_status_without_full_key(tmp_path):
+def test_models_page_shows_status_without_full_key(tmp_path):
     with TestClient(_app(tmp_path, build_memory_repositories())) as client:
         _login(client)
-        page = client.get("/settings/deepgram")
+        page = client.get("/models")
     assert page.status_code == 200
-    assert "Deepgram API key" in page.text
-    assert "Not configured" in page.text  # no per-user key saved yet
-    assert "criptografada" in page.text  # encrypted-at-rest messaging
+    assert "Models" in page.text
+    assert "Não configurado" in page.text  # no per-user key saved yet
+    assert "criptografad" in page.text  # encrypted-at-rest messaging
+    # The model selectors list each provider's catalogue.
+    assert "nova-3" in page.text
+    assert "gemini-2.5-flash" in page.text
+
+
+def test_deepgram_settings_redirects_to_models(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        page = client.get("/settings/deepgram", follow_redirects=False)
+    assert page.status_code == 303
+    assert page.headers["location"] == "/models?provider=deepgram"

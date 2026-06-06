@@ -125,15 +125,18 @@ def test_settings_drive_rejects_bad_url(tmp_path):
 
 
 def test_deepgram_save_encrypts_and_masks(tmp_path):
+    # The legacy /settings/deepgram POST is now an alias that writes the key into
+    # the per-provider store (provider='deepgram'), encrypted, and never echoes it.
     client, repos = _client(tmp_path)
     with client:
         _login(client)
         client.post("/settings/deepgram", data={"deepgram_api_key": "dg-mysecretkey"},
                     follow_redirects=False)
         admin = repos.users.get_by_email("admin")
-        assert repos.deepgram_credentials.get_encrypted_for_user(admin.id) != "dg-mysecretkey"
-        page = client.get("/settings/deepgram").text
-        assert "Configured" in page
+        stored = repos.provider_credentials.get_encrypted(admin.id, "deepgram")
+        assert stored is not None and stored != "dg-mysecretkey"
+        page = client.get("/models").text  # alias redirects here
+        assert "Configurado" in page
         assert "dg-mysecretkey" not in page
 
 

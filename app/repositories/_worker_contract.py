@@ -8,7 +8,7 @@ structurally identical to ``feat/postgres-worker``' ``app/core/models.py``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -45,6 +45,8 @@ class Settings:
     destination_drive_folder_id: str
     save_copy_to_drive: bool = False
     deepgram_api_key: str | None = None
+    model_settings: object | None = None
+    provider_credentials: dict = field(default_factory=dict)
 
 
 @dataclass

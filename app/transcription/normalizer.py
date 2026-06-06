@@ -79,6 +79,65 @@ def normalize_deepgram(
     )
 
 
+def normalize_openrouter(
+    raw: dict[str, Any], *, model: str, language: str | None
+) -> dict[str, Any]:
+    """Normalize an OpenRouter audio-transcriptions response.
+
+    OpenRouter mirrors the OpenAI transcription schema: a top-level ``text`` and,
+    when the model supports it, a ``segments`` list with ``start``/``end``. Some
+    models return only ``text`` — then we synthesize a single segment so the TXT
+    download and the schema stay uniform. No diarization is assumed.
+    """
+    data = raw if isinstance(raw, dict) else {}
+    raw_segments = data.get("segments") or []
+    segments = [
+        segment(
+            s.get("start", 0),
+            s.get("end", 0),
+            s.get("text") or "",
+        )
+        for s in raw_segments
+        if isinstance(s, dict) and (s.get("text") or "").strip()
+    ]
+    text = (data.get("text") or "").strip()
+    if segments and not text:
+        text = segments_text(segments)
+    if text and not segments:
+        segments = [segment(0.0, 0.0, text)]
+    return normalized_payload(
+        provider="openrouter",
+        engine="openrouter",
+        model=model,
+        language=data.get("language") or language,
+        text=text,
+        segments=segments,
+        raw=data,
+    )
+
+
+def normalize_gemini(
+    text: str, *, model: str, language: str | None, raw: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Normalize a Gemini transcription into the shared schema.
+
+    Gemini returns free-form generated text (no reliable timestamps), so we store
+    one segment covering the whole transcript. Speaker labels, if any, are part of
+    the text — never trusted as structured diarization (``speaker`` stays None).
+    """
+    cleaned = (text or "").strip()
+    segments = [segment(0.0, 0.0, cleaned)] if cleaned else []
+    return normalized_payload(
+        provider="gemini",
+        engine="gemini",
+        model=model,
+        language=language,
+        text=cleaned,
+        segments=segments,
+        raw=raw if raw is not None else {},
+    )
+
+
 def render_local_text(
     payload: dict[str, Any], original_name: str, file_id: str
 ) -> str:
@@ -116,6 +175,11 @@ def render_local_text(
         lines.extend([payload.get("text") or "Transcrição não disponível.", ""])
     lines.extend(["==================================================", "", "Fim da transcrição."])
     return "\n".join(lines) + "\n"
+
+
+# Engine-agnostic alias: the header/segment rendering is identical for cloud and
+# local payloads, so cloud providers reuse the same TXT layout.
+render_transcript_text = render_local_text
 
 
 def _deepgram_plain(results: dict[str, Any]) -> str:

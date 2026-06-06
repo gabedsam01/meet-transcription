@@ -70,6 +70,18 @@ def test_allows_creation_without_deepgram_key_when_not_required():
     assert result.job.source_file_id == "file-1"
 
 
+def test_allows_creation_with_cloud_provider_credential_only():
+    # No Deepgram key, but an OpenRouter key is configured (Models tab): allowed.
+    repos = build_memory_repositories()
+    repos.settings.set(Settings(
+        7, "src", "dst", False, None, provider_credentials={"openrouter": "or-key"},
+    ))
+    repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
+    result = _call(repos, FakeDriveClient(files=[drive_file("file-1", "a.mp4")]))
+    assert result.status == "created"
+    assert result.job.source_file_id == "file-1"
+
+
 def test_creates_pending_job_for_first_new_video():
     repos, drive = _build([drive_file("file-1", "a.mp4"), drive_file("file-2", "b.mp4")])
     result = _call(repos, drive)

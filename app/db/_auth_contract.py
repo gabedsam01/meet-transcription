@@ -66,3 +66,5 @@ class RepositoryBundle:
     deepgram_credentials: object
     drive_settings: object
     jobs: object
+    provider_credentials: object | None = None
+    model_settings: object | None = None
