@@ -139,6 +139,19 @@ class InMemoryTranscriptRepository:
         with self._lock:
             return _copy(self._by_job.get(job_id))
 
+    def search_transcripts(self, user_id, query, limit=20) -> list[Transcript]:
+        needle = (query or "").strip().lower()
+        if not needle:
+            return []
+        with self._lock:
+            matches = [
+                t for t in self._by_job.values()
+                if t.user_id == user_id and needle in (t.text or "").lower()
+            ]
+        # Newest first; transcripts are created in id order.
+        matches.sort(key=lambda t: t.id, reverse=True)
+        return [_copy(t) for t in matches[: max(0, limit)]]
+
 
 class InMemorySettingsRepository:
     def __init__(self) -> None:

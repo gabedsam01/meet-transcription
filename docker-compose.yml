@@ -44,6 +44,18 @@ x-transcription-env: &transcription-env
   WHISPER_CPP_BINARY: ${WHISPER_CPP_BINARY:-}
   LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD: ${LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD:-false}
   LOCAL_TRANSCRIPTION_DOC_URL: ${LOCAL_TRANSCRIPTION_DOC_URL:-https://github.com/gabedsam01/meet-transcription/blob/main/docs/architecture/local-transcription.md}
+  # Observability: text (default) or json structured logs (secrets are redacted).
+  LOG_FORMAT: ${LOG_FORMAT:-text}
+  # Optional outbound webhooks (worker fires job.completed/job.failed). Disabled
+  # unless WEBHOOK_URL is set; delivery is best-effort and never blocks a job.
+  WEBHOOK_URL: ${WEBHOOK_URL:-}
+  WEBHOOK_EVENTS: ${WEBHOOK_EVENTS:-job.completed,job.failed}
+  WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-10}
+  WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-2}
+  # Meeting summaries (roadmap; OFF and not yet implemented).
+  SUMMARY_ENABLED: ${SUMMARY_ENABLED:-false}
+  SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-none}
+  SUMMARY_MODEL: ${SUMMARY_MODEL:-}
 
 services:
   postgres:
@@ -116,8 +128,19 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/oauth/google/callback}
       WORKER_REPOSITORY_BACKEND: ${WORKER_REPOSITORY_BACKEND:-postgres}
       TMP_DIR: ${TMP_DIR:-/app/tmp}
+      # Build metadata surfaced by GET /version (no secrets; safe to leave blank).
+      APP_VERSION: ${APP_VERSION:-}
+      GIT_COMMIT: ${GIT_COMMIT:-}
+      BUILD_TIME: ${BUILD_TIME:-}
     ports:
       - "8000:8000"
+    # Liveness probe against the public /health endpoint (no auth, no DB needed).
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     volumes:
       - ./data:/app/data   # scratch/temp only; the database lives in Postgres
       - ./tmp:/app/tmp

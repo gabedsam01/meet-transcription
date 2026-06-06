@@ -305,6 +305,29 @@ class PgTranscriptRepository(_Bound):
             stmt = select(models.Transcript).where(models.Transcript.job_id == job_id)
             return _to_transcript(s.scalar(stmt))
 
+    def search_transcripts(
+        self, user_id: int, query: str, limit: int = 20
+    ) -> list[Transcript]:
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        # Full-text search on transcript_text, scoped to the user. The 'simple'
+        # config needs no language extension and is always available; a GIN index
+        # on the same expression backs this (see migration 0002).
+        tsvector = func.to_tsvector("simple", models.Transcript.transcript_text)
+        tsquery = func.plainto_tsquery("simple", needle)
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.Transcript)
+                .where(
+                    models.Transcript.user_id == user_id,
+                    tsvector.op("@@")(tsquery),
+                )
+                .order_by(models.Transcript.created_at.desc(), models.Transcript.id.desc())
+                .limit(max(0, limit))
+            )
+            return [_to_transcript(t) for t in s.scalars(stmt)]
+
 
 class PgSettingsRepository(_Bound):
     def __init__(self, session_factory: sessionmaker, decryptor: _Decryptor) -> None:

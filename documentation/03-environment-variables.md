@@ -199,6 +199,27 @@ docker build \
   -t ghcr.io/gabedsam01/meet-transcription:local .
 ```
 
+### Observability, webhooks, and summaries
+
+Consumed by the web and/or worker services. All optional with safe defaults, so
+`docker compose config` works without setting any of them. See
+[34-observability.md](34-observability.md), [35-webhooks.md](35-webhooks.md), and
+[19-roadmap.md](19-roadmap.md).
+
+| Name | Required | Example | Service(s) | Description | Risk if wrong |
+| --- | --- | --- | --- | --- | --- |
+| `LOG_FORMAT` | No (default `text`) | `json` | web, worker | Log output format: `text` (human) or `json` (structured, one object/line). Secrets are redacted in both. | Unknown value falls back to `text`. |
+| `APP_VERSION` | No | `0.2.0` | web | Version string surfaced by `GET /version`. | Blank → defaults to the built-in version. |
+| `GIT_COMMIT` | No | `a1b2c3d` | web | Commit surfaced by `GET /version` (or `GIT_SHA`). | Blank → `unknown`. |
+| `BUILD_TIME` | No | `2026-06-05T00:00:00Z` | web | Build timestamp surfaced by `GET /version`. | Blank → `null`. |
+| `WEBHOOK_URL` | No (disabled if blank) | `https://hooks.example/meet` | worker | POST target for job events. Blank disables webhooks. | Unreachable URL → delivery fails (best-effort; the job is unaffected). |
+| `WEBHOOK_EVENTS` | No (default `job.completed,job.failed`) | `job.failed` | worker | Comma-separated events to send. | Typo → that event is silently not sent. |
+| `WEBHOOK_TIMEOUT_SECONDS` | No (default `10`) | `10` | worker | Per-request webhook timeout. | Too low → more timeouts/retries. |
+| `WEBHOOK_MAX_RETRIES` | No (default `2`) | `2` | worker | Extra retries on transient failures (429/5xx/network). | `0` = deliver once, no retry. |
+| `SUMMARY_ENABLED` | No (default `false`) | `false` | web | Meeting summaries toggle (roadmap; no LLM call yet; surfaced by `GET /version`). | Enabling has no effect until a provider ships. |
+| `SUMMARY_PROVIDER` | No (default `none`) | `none` | web | Future summary provider name. | — |
+| `SUMMARY_MODEL` | No | — | web | Future summary model name. | — |
+
 ### Legacy CLI only (`python -m app.main`)
 
 These are consumed **only** by the legacy env-driven CLI worker

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Buscar transcrições</h1>
+  <p class="hint">Busca o texto das suas transcrições concluídas (apenas as suas).</p>
+  <form method="get" action="/search" class="search-form">
+    <input type="search" name="q" value="{{ query }}" placeholder="Ex.: orçamento, próxima reunião…" aria-label="Buscar transcrições">
+    <button type="submit">Buscar</button>
+  </form>
+
+  {% if backend_error %}<div class="notice notice-warn">{{ backend_error }}</div>{% endif %}
+
+  {% if query %}
+    {% if results %}
+    <p class="hint">{{ results | length }} resultado(s) para “{{ query }}”.</p>
+    <ul class="search-results">
+      {% for result in results %}
+      <li class="search-result">
+        <a href="/jobs/{{ result.job_id }}">Job #{{ result.job_id }}</a>
+        <span class="muted mono">· {{ result.created_at | dt }}</span>
+        <p class="snippet">{{ result.snippet }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Nenhuma transcrição encontrada para “{{ query }}”.</p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

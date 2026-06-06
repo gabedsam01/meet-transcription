@@ -71,9 +71,39 @@ label.checkbox input { width: auto; }
 .option { display: flex; justify-content: space-between; align-items: center; gap: 1rem; border: 1px solid var(--line); border-radius: 12px; padding: 1rem; }
 .stack > * + * { margin-top: .35rem; }
 
+/* Friendly error component (error.html / partials/_error_panel.html) */
+.error-panel { border-color: #ecc0bb; }
+.error-panel-head { display: flex; align-items: center; gap: .6rem; }
+.error-mark { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: 999px; background: #f7dcd9; color: #9d2b22; font-weight: 700; }
+.error-code { margin: .25rem 0 .5rem; color: var(--muted); }
+.error-message { font-size: 1.05rem; margin: .25rem 0; }
+
+/* Onboarding checklist + steps */
+.checklist { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: .5rem; }
+.checklist li { display: flex; align-items: center; gap: .6rem; }
+.check-mark { display: inline-flex; align-items: center; justify-content: center; width: 1.4rem; height: 1.4rem; border-radius: 999px; border: 1px solid var(--line); font-weight: 700; }
+.check-mark.ok { background: rgba(31, 111, 91, .12); border-color: var(--accent); }
+.check-mark.off { background: rgba(157, 43, 34, .08); border-color: #ecc0bb; }
+.steps { list-style: none; padding: 0; margin: 1rem 0; display: grid; gap: .75rem; }
+.step { border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1rem; }
+.step-done { background: rgba(31, 111, 91, .06); }
+.step-row { display: flex; gap: .9rem; align-items: flex-start; }
+.step-num { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 1.9rem; height: 1.9rem; border-radius: 999px; border: 1px solid var(--line); font-weight: 700; }
+.step-body { flex: 1; }
+.step-body h3 { margin: 0 0 .25rem; }
+
+/* Transcript search */
+.search-form { display: flex; gap: .6rem; margin: 1rem 0; flex-wrap: wrap; }
+.search-form input { flex: 1; min-width: 220px; }
+.search-results { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: .9rem; }
+.search-result { border-bottom: 1px solid var(--line); padding-bottom: .75rem; }
+.search-result .snippet { margin: .35rem 0 0; color: var(--ink); }
+.export-row { flex-wrap: wrap; }
+
 @media (max-width: 760px) {
   .hero, .row-between, .option { align-items: flex-start; flex-direction: column; }
   .grid { grid-template-columns: 1fr; }
   .detail { grid-template-columns: 1fr; gap: .15rem 0; }
   .detail dd { margin-bottom: .6rem; }
+  .search-form { flex-direction: column; }
 }
