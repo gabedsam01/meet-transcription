@@ -68,7 +68,7 @@ def test_run_once_creates_pending_job_without_processing(tmp_path):
         _login(client)
         response = client.post("/jobs/run-once", follow_redirects=False)
         assert response.status_code == 303
-        assert response.headers["location"] == "/jobs"
+        assert response.headers["location"] == "/transcricoes"
 
     jobs = repos.jobs.list_jobs_for_user(1)
     assert len(jobs) == 1
@@ -82,7 +82,7 @@ def test_run_once_without_settings_redirects_with_message(tmp_path):
     with TestClient(app) as client:
         _login(client)
         client.post("/jobs/run-once", follow_redirects=False)
-        page = client.get("/jobs")
+        page = client.get("/transcricoes")
     assert "Configure a pasta de origem em Drive Settings primeiro." in page.text
     assert repos.jobs.list_jobs_for_user(1) == []
 
@@ -144,7 +144,7 @@ def test_jobs_page_lists_jobs_and_shows_download_and_drive_links(tmp_path):
 
     with TestClient(app) as client:
         _login(client)
-        page = client.get("/jobs")
+        page = client.get("/transcricoes")
 
     text = page.text
     assert "meet.mp4" in text
@@ -161,7 +161,7 @@ def test_jobs_page_handles_backend_unavailable_gracefully(tmp_path, monkeypatch)
     app = create_app(_web_settings(tmp_path), repositories=build_fake_repositories())
     with TestClient(app) as client:
         _login(client)
-        page = client.get("/jobs")
+        page = client.get("/transcricoes")
     assert page.status_code == 200
     assert "WORKER_REPOSITORY_BACKEND" in page.text
 
@@ -181,7 +181,7 @@ def test_run_once_flashes_error_when_drive_fails(tmp_path):
         _login(client)
         response = client.post("/jobs/run-once", follow_redirects=False)
         assert response.status_code == 303  # graceful redirect, not a 500
-        page = client.get("/jobs")
+        page = client.get("/transcricoes")
 
     assert "Não foi possível iniciar a transcrição agora." in page.text
     assert repos.jobs.list_jobs_for_user(1) == []

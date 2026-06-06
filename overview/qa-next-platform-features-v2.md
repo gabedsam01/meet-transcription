@@ -319,6 +319,37 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 
 ---
 
+## 22. Transcriptions workspace — unify Jobs + Search (PR #7)
+
+### What changed
+
+- **New unified workspace** at `/transcricoes` combining:
+  - Search bar (previously `/search`);
+  - Job list with cards (previously `/jobs`);
+  - Export actions (TXT, JSON, SRT, VTT, MD) inline on each card;
+  - Retry button for failed jobs inline;
+  - Compact **queue panel** on the right (30% width on desktop) showing pending/processing counts and queue status.
+- **Desktop layout**: 70/30 split — main content (search + cards) + sidebar (queue panel).
+- **Mobile layout**: tabbed interface `[Transcrições] [Fila]` switching between main content and queue panel.
+- **Backward compatibility**:
+  - `/jobs` → 303 redirect to `/transcricoes`;
+  - `/search` → 303 redirect to `/transcricoes` (with `?q=` preserved);
+  - `/search?q=term` → `/transcricoes?q=term`;
+  - `/jobs/{id}` detail page stays, back-link updated to `/transcricoes`.
+
+### Files changed
+
+- `app/web/templates/transcriptions.html` — new unified workspace template.
+- `app/web/templates/jobs.html` — kept but no longer used by primary route (fallback).
+- `app/web/templates/search.html` — kept but no longer used by primary route (fallback).
+- `app/web/templates/job_detail.html` — back-link updated.
+- `app/web/templates/base.html` — nav link points to `/transcricoes`.
+- `app/web/static/styles.css` — `.workspace`, `.workspace-main`, `.workspace-side`, `.workspace-tabs`, `.job-card` styles.
+- `app/web/main.py` — `/transcricoes` route, `/jobs` redirect, `/search` redirect, all internal redirects updated.
+- `tests/test_web_ui.py`, `tests/test_web_routes.py` — coverage for workspace, redirects, search, mobile tabs, back-link.
+
+---
+
 ## UI/UX implementation after Kimi + Stitch audit (2026-06-06)
 
 ### Design system

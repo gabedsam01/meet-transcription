@@ -422,6 +422,51 @@ button:not(.btn):hover, .button:not(.btn):hover { background: var(--primary-dark
   .data-table { font-size: .85rem; }
 }
 
+/* Workspace layout (transcriptions) */
+.workspace { display: flex; gap: 1.5rem; align-items: flex-start; }
+.workspace-main { flex: 1; min-width: 0; }
+.workspace-side { width: 280px; flex-shrink: 0; }
+.workspace-tabs { display: none; }
+
+.job-list { display: grid; gap: .75rem; }
+.job-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  box-shadow: var(--shadow-card);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.job-card:hover { border-color: var(--primary); }
+.job-card-title { font-weight: 600; color: var(--text); }
+.job-card-meta { font-size: .82rem; color: var(--muted); margin-top: .15rem; }
+.job-card-actions { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .5rem; }
+
+@media (max-width: 768px) {
+  .workspace { flex-direction: column; }
+  .workspace-side { width: 100%; display: none; }
+  .workspace-main { width: 100%; }
+  .workspace-tabs { display: flex; gap: .25rem; margin-bottom: 1rem; }
+  .workspace-tab {
+    flex: 1;
+    padding: .5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: .88rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+  }
+  .workspace-tab.is-active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+  }
+}
+
 @media (max-width: 540px) {
   .page-title { font-size: 1.2rem; }
   .card { padding: 1rem; }

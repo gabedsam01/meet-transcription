@@ -305,13 +305,40 @@ def test_onboarding_route_still_works(tmp_path):
         assert "Configuração guiada" in r.text
 
 
-def test_search_route_still_works(tmp_path):
+def test_search_route_redirects_to_transcricoes(tmp_path):
     client, _ = _client(tmp_path)
     with client:
         _login(client)
-        r = client.get("/search")
+        r = client.get("/search", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes"
+
+
+def test_search_with_query_redirects_to_transcricoes(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/search?q=meeting", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes?q=meeting"
+
+
+def test_jobs_route_redirects_to_transcricoes(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/jobs", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/transcricoes"
+
+
+def test_transcricoes_renders_for_authenticated_user(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/transcricoes")
         assert r.status_code == 200
-        assert "Buscar" in r.text
+        assert "Transcrições" in r.text
 
 
 def test_mobile_nav_toggle_exists(tmp_path):

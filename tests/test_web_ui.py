@@ -143,17 +143,18 @@ def test_job_detail_is_scoped_to_owner(tmp_path):
     assert resp.status_code == 404  # never expose another user's job
 
 
-def test_long_source_id_is_truncated_but_full_value_in_title(tmp_path):
+def test_long_source_id_shown_on_detail_page(tmp_path):
     worker = build_memory_repositories()
     long_id = "1zv32QWERTYUIOPASDFGHtBD5"
-    worker.jobs.create_job(1, long_id, "meeting.mp4", _now())
+    job = worker.jobs.create_job(1, long_id, "meeting.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
 
     with TestClient(_app(tmp_path, worker)) as client:
         _login(client)
-        text = client.get("/jobs").text
+        detail_text = client.get(f"/jobs/{job.id}").text
 
-    assert "1zv32Q…tBD5" in text  # truncated for display
-    assert f'title="{long_id}"' in text  # full value still available on hover
+    assert long_id in detail_text  # full value on detail page
+    assert "meeting.mp4" in detail_text
 
 
 def test_failed_job_shows_badge_on_list_and_error_on_detail(tmp_path):
@@ -193,7 +194,7 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
     assert "Transcrições recentes" in text
     assert "badge-completed" in text  # last job status badge
     assert "/models" in text  # Models CTA
-    assert "/jobs" in text  # Jobs CTA
+    assert "/transcricoes" in text  # Transcriptions CTA
 
 
 def test_dashboard_shows_onboarding_when_not_ready(tmp_path):
@@ -302,3 +303,73 @@ def test_deepgram_settings_redirects_to_models(tmp_path):
         page = client.get("/settings/deepgram", follow_redirects=False)
     assert page.status_code == 303
     assert page.headers["location"] == "/models?provider=deepgram"
+
+
+# --- transcriptions workspace -----------------------------------------------
+
+
+def test_transcricoes_shows_job_cards_and_queue_panel(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
+
+    with TestClient(_app(tmp_path, worker, auth=auth)) as client:
+        _login(client)
+        text = client.get("/transcricoes").text
+
+    assert "a.mp4" in text
+    assert "badge-completed" in text
+    assert "TXT" in text
+    assert "Fila" in text  # queue panel
+    assert "Em fila" in text
+    assert "Processando" in text
+
+
+def test_transcricoes_search_returns_results(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "file-1", "a.mp4", _now())
+    worker.transcripts.create(job.id, 1, "meeting about budget", None, None, _now())
+    worker.jobs.mark_completed(job.id, _now())
+
+    with TestClient(_app(tmp_path, worker, auth=auth)) as client:
+        _login(client)
+        text = client.get("/transcricoes?q=budget").text
+
+    assert "budget" in text
+    assert "resultado" in text
+
+
+def test_transcricoes_search_scoped_to_owner(tmp_path):
+    worker = build_memory_repositories()
+    other_job = worker.jobs.create_job(2, "f", "other.mp4", _now())
+    worker.transcripts.create(other_job.id, 2, "secret meeting", None, None, _now())
+    worker.jobs.mark_completed(other_job.id, _now())
+
+    with TestClient(_app(tmp_path, worker)) as client:
+        _login(client)
+        text = client.get("/transcricoes?q=secret").text
+
+    assert "Nenhuma transcrição encontrada" in text
+
+
+def test_transcricoes_mobile_tabs_exist(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/transcricoes").text
+    assert 'id="workspaceTabs"' in text
+    assert 'data-tab="main"' in text
+    assert 'data-tab="side"' in text
+
+
+def test_job_detail_back_link_to_transcricoes(tmp_path):
+    worker = build_memory_repositories()
+    job = worker.jobs.create_job(1, "f", "meet.mp4", _now())
+    worker.jobs.mark_completed(job.id, _now())
+    with TestClient(_app(tmp_path, worker)) as client:
+        _login(client)
+        text = client.get(f"/jobs/{job.id}").text
+    assert "/transcricoes" in text

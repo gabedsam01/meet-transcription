@@ -78,7 +78,7 @@
 </section>
 
 <div class="actions-row">
-  <a class="btn btn-ghost" href="/jobs">← Voltar para transcrições</a>
+  <a class="btn btn-ghost" href="/transcricoes">← Voltar para transcrições</a>
   {% if job.status == 'failed' %}
   <form method="post" action="/jobs/{{ job.id }}/retry" style="margin:0">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

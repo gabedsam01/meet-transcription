@@ -932,7 +932,7 @@ def create_app(settings: WebSettings | None = None,
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             _set_flash(request, error)
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
         automation = (
             worker_repos.automation.get_for_user(user.id)
             if worker_repos.automation else None
@@ -955,7 +955,7 @@ def create_app(settings: WebSettings | None = None,
         except Exception:  # noqa: BLE001 - surface as a flash, never a 500.
             logging.exception("check-now failed for user_id=%s", user.id)
             _set_flash(request, "Não foi possível verificar agora. Tente novamente.")
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
 
         for job_id in result.job_ids:
             if app.state.queue is not None:
@@ -977,7 +977,7 @@ def create_app(settings: WebSettings | None = None,
             _set_flash(request, f"{result.created} novo(s) job(s) enfileirado(s).")
         else:
             _set_flash(request, result.error_message or "Nenhum vídeo novo para transcrever.")
-        return RedirectResponse("/jobs", status_code=303)
+        return RedirectResponse("/transcricoes", status_code=303)
 
     @app.post("/jobs/{job_id}/retry")
     def retry_job(request: Request, job_id: int, user=Depends(require_user),
@@ -985,7 +985,7 @@ def create_app(settings: WebSettings | None = None,
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             _set_flash(request, error)
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
         job = worker_repos.jobs.get_job(job_id)
         # Owner-scoped: another user's (or unknown) job 404s so it never leaks.
         if job is None or job.user_id != user.id:
@@ -995,7 +995,7 @@ def create_app(settings: WebSettings | None = None,
             )
         if job.status != "failed":
             _set_flash(request, "Só é possível repetir jobs com falha.")
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
         worker_repos.jobs.reset_job_for_retry(job_id, _utc_now())
         if app.state.queue is not None:
             try:
@@ -1004,7 +1004,7 @@ def create_app(settings: WebSettings | None = None,
             except Exception:  # noqa: BLE001 - reconciler re-enqueues if Redis is down.
                 logging.exception("Could not re-enqueue retried job_id=%s", job_id)
         _set_flash(request, "Job re-enfileirado para nova tentativa.")
-        return RedirectResponse("/jobs", status_code=303)
+        return RedirectResponse("/transcricoes", status_code=303)
 
     @app.get("/admin/queue", response_class=HTMLResponse)
     def admin_queue(request: Request, admin=Depends(require_admin)):
@@ -1038,18 +1038,43 @@ def create_app(settings: WebSettings | None = None,
             version_info=get_version_info(),
         ))
 
-    @app.get("/jobs", response_class=HTMLResponse)
-    def jobs_page(request: Request, user=Depends(require_user)):
+    @app.get("/transcricoes", response_class=HTMLResponse)
+    def transcriptions_page(request: Request, user=Depends(require_user), q: str = ""):
         worker_repos, error = _resolve_worker_repositories()
-        jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
-        return templates.TemplateResponse(request, "jobs.html", _ctx(request, user,
-            active_nav="jobs",
+        query = (q or "").strip()
+        jobs = []
+        results = []
+        if query and worker_repos is not None:
+            try:
+                found = worker_repos.transcripts.search_transcripts(user.id, query, limit=25)
+            except Exception:  # noqa: BLE001 - search must never 500 the page.
+                found = []
+                error = error or "Busca indisponível no momento."
+            results = [
+                {
+                    "job_id": t.job_id,
+                    "snippet": helpers.search_snippet(t.text, query),
+                    "created_at": t.created_at,
+                }
+                for t in found
+            ]
+        elif worker_repos is not None:
+            jobs = worker_repos.jobs.list_jobs_for_user(user.id)
+        return templates.TemplateResponse(request, "transcriptions.html", _ctx(request, user,
+            active_nav="transcriptions",
             jobs=jobs,
+            query=query or None,
+            results=results,
             message=_pop_flash(request),
             backend_error=error,
             transcription_status=app.state.transcription_status,
             queue_status=_queue_status(),
+            export_formats=available_formats(),
         ))
+
+    @app.get("/jobs", response_class=HTMLResponse)
+    def jobs_page(request: Request, user=Depends(require_user)):
+        return RedirectResponse("/transcricoes", status_code=303)
 
     @app.post("/jobs/run-once")
     def run_once(request: Request, user=Depends(require_user),
@@ -1057,7 +1082,7 @@ def create_app(settings: WebSettings | None = None,
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             _set_flash(request, error)
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
         try:
             result = create_next_pending_job(
                 worker_repos,
@@ -1070,7 +1095,7 @@ def create_app(settings: WebSettings | None = None,
         except Exception:  # noqa: BLE001 - surface Drive/credential errors as a flash, not a 500.
             logging.exception("run-once failed to create a job for user_id=%s", user.id)
             _set_flash(request, "Não foi possível iniciar a transcrição agora. Tente novamente.")
-            return RedirectResponse("/jobs", status_code=303)
+            return RedirectResponse("/transcricoes", status_code=303)
         flash_message = RUN_ONCE_MESSAGES.get(result.status, "Run-once finalizado.")
         # Enqueue the pending job for the worker. Best-effort: if Redis is down the
         # job stays pending in Postgres and the worker reconciles it on startup/idle.
@@ -1090,7 +1115,7 @@ def create_app(settings: WebSettings | None = None,
                     "processada assim que a fila voltar."
                 )
         _set_flash(request, flash_message)
-        return RedirectResponse("/jobs", status_code=303)
+        return RedirectResponse("/transcricoes", status_code=303)
 
     @app.post("/api/recordings/upload")
     async def upload_recording(
@@ -1252,8 +1277,8 @@ def create_app(settings: WebSettings | None = None,
                 _ctx(request, user,
                     code="job_not_found",
                     message="Job not found.",
-                    action="Verifique o link ou volte à lista de jobs.",
-                    retry_url="/jobs",
+                    action="Verifique o link ou volte à lista de transcrições.",
+                    retry_url="/transcricoes",
                 ),
                 status_code=404,
             )
@@ -1266,7 +1291,7 @@ def create_app(settings: WebSettings | None = None,
             except Exception:
                 pass
         return templates.TemplateResponse(request, "job_detail.html", _ctx(request, user,
-            active_nav="jobs",
+            active_nav="transcriptions",
             job=job,
             export_formats=available_formats(),
             transcript_text=transcript_text,
@@ -1275,28 +1300,9 @@ def create_app(settings: WebSettings | None = None,
     @app.get("/search", response_class=HTMLResponse)
     def search(request: Request, user=Depends(require_user), q: str = ""):
         query = (q or "").strip()
-        worker_repos, error = _resolve_worker_repositories()
-        results = []
-        if query and worker_repos is not None:
-            try:
-                found = worker_repos.transcripts.search_transcripts(user.id, query, limit=25)
-            except Exception:  # noqa: BLE001 - search must never 500 the page.
-                found = []
-                error = error or "Busca indisponível no momento."
-            results = [
-                {
-                    "job_id": t.job_id,
-                    "snippet": helpers.search_snippet(t.text, query),
-                    "created_at": t.created_at,
-                }
-                for t in found
-            ]
-        return templates.TemplateResponse(request, "search.html", _ctx(request, user,
-            active_nav="search",
-            query=query,
-            results=results,
-            backend_error=error,
-        ))
+        if query:
+            return RedirectResponse(f"/transcricoes?q={query}", status_code=303)
+        return RedirectResponse("/transcricoes", status_code=303)
 
     @app.get("/admin/users", response_class=HTMLResponse)
     def admin_users(request: Request, admin=Depends(require_admin)):
