@@ -12,11 +12,15 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://meet.google.com/*",
-    "http://localhost:8000/*"
+    "https://meet.google.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*"
   ],
   "background": {
-    "service_worker": "src/background.js"
+    "service_worker": "src/background.js",
+    "type": "module"
   },
   "action": {
     "default_title": "Meet Audio Recorder",

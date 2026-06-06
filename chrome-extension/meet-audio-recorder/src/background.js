@@ -19,6 +19,13 @@
 // The service worker is the SINGLE source of recording state, so the popup can
 // reopen at any time and re-read it via "get-state".
 
+import { pingBackend } from "./api.js";
+import {
+  backendOriginPattern,
+  normalizeBackendUrl,
+  PERMISSION_DENIED_MESSAGE,
+} from "./config.js";
+
 const OFFSCREEN_DOCUMENT_PATH = "src/offscreen.html";
 
 // In-memory recording state. Survives popup closes; resets if the worker is
@@ -29,7 +36,9 @@ const state = {
   meetingUrl: "",
   meetingTitle: "",
   startedAt: "",
+  phase: "idle",
   lastError: "",
+  lastWarning: "",
   lastUpload: null,
 };
 
@@ -74,6 +83,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(getPublicState());
       return false;
 
+    case "test-connection":
+      testConnection()
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((err) =>
+          sendResponse({ ok: false, error: userMessage(err) }),
+        );
+      return true;
+
     case "content-call-ended":
       // The user left the Meet call; stop ONLY if this is the tab we are
       // recording, so a second Meet tab ending its call can't cut our recording.
@@ -102,7 +119,9 @@ async function startRecording(tabId) {
     throw new Error("Já existe uma gravação em andamento.");
   }
   state.lastError = "";
+  state.lastWarning = "";
   state.lastUpload = null; // clear the previous run's "uploaded" message.
+  state.phase = "idle";
 
   const tab = await resolveTab(tabId);
   if (!tab || !tab.id) {
@@ -112,15 +131,13 @@ async function startRecording(tabId) {
     throw new Error("A aba ativa não é uma reunião do Google Meet.");
   }
 
-  // (1) Mint the media stream id for THIS tab. Requires the user gesture that
-  // came from the popup button click.
+  // (1) Mint the media stream id for THIS tab immediately. This is the only part
+  // that requires the popup's user gesture; backend ping happens after this but
+  // before the offscreen recorder starts recording.
   const streamId = await getMediaStreamId(tab.id);
 
-  // (2) Load persisted backend settings (URL + token).
-  const settings = await loadSettings();
-  if (!settings.backendUrl || !settings.token) {
-    throw new Error("Configure a URL do backend e o token antes de gravar.");
-  }
+  // (2) Validate backend configuration before actually recording any audio.
+  const settings = await loadValidatedSettings({ ping: true });
   const withMic = settings.captureMic === true;
 
   // (3) Ensure the offscreen document exists.
@@ -144,6 +161,8 @@ async function startRecording(tabId) {
       meeting_url: state.meetingUrl,
       meeting_title: state.meetingTitle,
       started_at: state.startedAt,
+      include_microphone: withMic,
+      extension_version: extensionVersion(),
     },
     settings: {
       backendUrl: settings.backendUrl,
@@ -153,6 +172,7 @@ async function startRecording(tabId) {
 
   // Optimistically mark recording; the offscreen "offscreen-started" confirms.
   state.recording = true;
+  state.phase = "recording";
   await showRecordingBadge(true);
 }
 
@@ -196,6 +216,7 @@ async function stopRecording() {
   if (!state.recording) {
     return; // nothing to do; keep it idempotent
   }
+  state.phase = "uploading";
   try {
     await chrome.runtime.sendMessage({ target: "offscreen", type: "offscreen-stop" });
   } finally {
@@ -216,26 +237,30 @@ function handleOffscreenReply(message) {
   switch (message.type) {
     case "offscreen-started":
       state.recording = true;
+      state.phase = "recording";
       void showRecordingBadge(true);
       break;
 
     case "offscreen-stopped":
       state.recording = false;
+      state.phase = "uploading";
       void showRecordingBadge(false);
       if (message.micError) {
-        state.lastError = message.micError;
+        state.lastWarning = message.micError;
       }
       break;
 
     case "offscreen-uploaded":
       state.lastUpload = message.result || {};
       state.lastError = "";
+      state.phase = "uploaded";
       // The recording is fully done; tear down the offscreen document.
       void closeOffscreenDocument();
       break;
 
     case "offscreen-error":
       state.recording = false;
+      state.phase = "uploadError";
       state.lastError = message.message || "Erro na gravação.";
       void showRecordingBadge(false);
       void closeOffscreenDocument();
@@ -344,7 +369,9 @@ function getPublicState() {
     meetingUrl: state.meetingUrl,
     meetingTitle: state.meetingTitle,
     startedAt: state.startedAt,
+    phase: state.phase,
     error: state.lastError,
+    warning: state.lastWarning,
     lastUpload: state.lastUpload,
   };
 }
@@ -381,6 +408,47 @@ async function loadSettings() {
     token: stored.uploadToken || "",
     captureMic: stored.captureMic === true,
   };
+}
+
+/**
+ * Validate saved config, runtime host permission, and optionally the token.
+ * @param {{ping?: boolean}} [options]
+ * @returns {Promise<{backendUrl:string, token:string, captureMic:boolean, pingResult?:Object}>}
+ */
+async function loadValidatedSettings({ ping = false } = {}) {
+  const settings = await loadSettings();
+  const backendUrl = normalizeBackendUrl(settings.backendUrl);
+  if (!settings.token) {
+    throw new Error("Configure o token de upload nas configurações.");
+  }
+  const permission = backendOriginPattern(backendUrl);
+  const allowed = await chrome.permissions.contains({ origins: [permission] });
+  if (!allowed) {
+    throw new Error(PERMISSION_DENIED_MESSAGE);
+  }
+  const result = ping
+    ? await pingBackend({
+        backendUrl,
+        token: settings.token,
+        extensionVersion: extensionVersion(),
+      })
+    : undefined;
+  return { ...settings, backendUrl, pingResult: result };
+}
+
+/** @returns {Promise<{userEmail:string}>} */
+async function testConnection() {
+  const settings = await loadValidatedSettings({ ping: true });
+  return { userEmail: settings.pingResult?.user_email || "" };
+}
+
+/** @returns {string} */
+function extensionVersion() {
+  try {
+    return chrome.runtime.getManifest().version || "";
+  } catch {
+    return "";
+  }
 }
 
 /**

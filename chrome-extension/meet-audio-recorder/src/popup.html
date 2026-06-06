@@ -9,7 +9,10 @@
   <body>
     <main class="panel">
       <header class="header">
-        <h1 class="title">Meet Audio Recorder</h1>
+        <div>
+          <h1 class="title">Meet Audio Recorder</h1>
+          <p class="subtitle">Envie gravações para o seu painel.</p>
+        </div>
         <!-- Visual recording indicator: red pulsing dot when active. -->
         <span id="indicator" class="indicator idle" aria-live="polite">
           <span class="dot"></span>
@@ -26,15 +29,10 @@
         </button>
       </section>
 
-      <label class="check-row">
-        <input id="capture-mic" type="checkbox" />
-        <span>Também gravar meu microfone</span>
-      </label>
+      <p id="status" class="status" role="status" aria-live="polite">Parado</p>
 
-      <p id="status" class="status" role="status" aria-live="polite"></p>
-
-      <details class="settings">
-        <summary>Configurações</summary>
+      <section class="settings" aria-label="Configurações da extensão">
+        <h2 class="section-title">Configuração</h2>
         <form id="settings-form" class="settings-form">
           <label class="field">
             <span class="field-label">URL do backend</span>
@@ -42,7 +40,7 @@
               id="backend-url"
               type="url"
               inputmode="url"
-              placeholder="http://localhost:8000"
+              placeholder="https://seu-backend.exemplo.com"
               autocomplete="off"
             />
           </label>
@@ -53,23 +51,31 @@
             <input
               id="upload-token"
               type="password"
-              placeholder="EXTENSION_UPLOAD_TOKEN"
+              placeholder="Cole o token gerado em /extensao"
               autocomplete="off"
             />
           </label>
 
+          <label class="check-row">
+            <input id="capture-mic" type="checkbox" />
+            <span>Também gravar meu microfone</span>
+          </label>
+
           <div class="settings-actions">
             <button id="save-settings" class="btn btn-secondary" type="submit">
-              Salvar configurações
+              Salvar
+            </button>
+            <button id="test-connection" class="btn btn-ghost" type="button">
+              Testar conexão
             </button>
           </div>
           <p id="settings-status" class="settings-status" aria-live="polite"></p>
         </form>
-      </details>
+      </section>
 
       <p class="hint">
-        A captura de áudio exige um clique seu em "Iniciar gravação" em uma aba
-        do Google Meet. Gravamos em WebM/Opus.
+        Salve a URL e o token, aceite a permissão do domínio e teste a conexão
+        antes de gravar. Abra uma aba do Google Meet para iniciar.
       </p>
     </main>
 

@@ -16,7 +16,7 @@
 //   { target:"background", type:"offscreen-uploaded", result }
 //   { target:"background", type:"offscreen-error", message }
 
-import { TabRecorder } from "./recorder.js";
+import { RECORDING_MIME_TYPE, TabRecorder } from "./recorder.js";
 import { uploadRecording } from "./api.js";
 
 // Single recorder instance for this offscreen document's lifetime.
@@ -84,6 +84,9 @@ async function handleStop() {
       started_at: pendingMetadata.started_at || endedAt,
       ended_at: endedAt,
       duration_seconds: durationSeconds,
+      include_microphone: pendingMetadata.include_microphone === true,
+      extension_version: pendingMetadata.extension_version || "",
+      mime_type: blob.type || RECORDING_MIME_TYPE,
     };
 
     sendToBackground({ type: "offscreen-stopped", micError });

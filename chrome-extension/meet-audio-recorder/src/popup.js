@@ -1,19 +1,19 @@
 // popup.js
 //
-// The popup UI. It:
-//   * lets the user start/stop a recording (the Start click is the REQUIRED
-//     user gesture for chrome.tabCapture — see background.js);
-//   * shows a clear recording indicator;
-//   * persists the backend URL, upload token, and mic preference in
-//     chrome.storage.local. The token field is type=password (masked) and is
-//     NEVER logged anywhere.
-//
-// Message protocol (popup -> background): "start-recording", "stop-recording",
-// "get-state". The popup is stateless: it always re-reads state on open.
+// Popup UI controller. It keeps token handling secret-safe, asks for backend host
+// permission at runtime, and makes the connection/recording state clear for a
+// non-technical user.
+
+import {
+  backendOriginPattern,
+  normalizeBackendUrl,
+  PERMISSION_DENIED_MESSAGE,
+} from "./config.js";
 
 const els = {
   startBtn: document.getElementById("start-btn"),
   stopBtn: document.getElementById("stop-btn"),
+  testConnectionBtn: document.getElementById("test-connection"),
   indicator: document.getElementById("indicator"),
   indicatorLabel: document.getElementById("indicator-label"),
   status: document.getElementById("status"),
@@ -24,14 +24,19 @@ const els = {
   settingsStatus: document.getElementById("settings-status"),
 };
 
-// Sentinel shown in the token field when a token is already stored, so we never
-// have to read the real secret back into the popup.
 const TOKEN_PLACEHOLDER = "••••••••";
-let hasStoredToken = false;
+const STATUS_LABELS = {
+  idle: "Parado",
+  recording: "Gravando",
+  uploading: "Enviando",
+  uploaded: "Upload concluído",
+  uploadError: "Erro no upload",
+  invalidToken: "Token inválido",
+  backendUnavailable: "Backend indisponível",
+  permissionPending: "Permissão pendente",
+};
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
+let hasStoredToken = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadSettingsIntoForm();
@@ -39,34 +44,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   els.startBtn.addEventListener("click", onStartClick);
   els.stopBtn.addEventListener("click", onStopClick);
+  els.testConnectionBtn.addEventListener("click", onTestConnectionClick);
   els.captureMic.addEventListener("change", onMicToggle);
   els.settingsForm.addEventListener("submit", onSaveSettings);
 });
 
-// ---------------------------------------------------------------------------
-// Recording controls
-// ---------------------------------------------------------------------------
-
 async function onStartClick() {
-  setStatus("");
+  setStatusState("idle", "");
   els.startBtn.disabled = true;
   try {
-    // This message is sent synchronously inside the click handler, preserving
-    // the user gesture that chrome.tabCapture requires in the worker.
     const reply = await sendToBackground({ type: "start-recording" });
     if (!reply || !reply.ok) {
       throw new Error((reply && reply.error) || "Não foi possível iniciar.");
     }
-    setStatus("Gravando…");
+    setStatusState("recording");
   } catch (err) {
-    setStatus(messageOf(err), true);
+    setStatusState(classifyError(messageOf(err)), messageOf(err));
   } finally {
     await refreshState();
   }
 }
 
 async function onStopClick() {
-  setStatus("Finalizando e enviando…");
+  setStatusState("uploading");
   els.stopBtn.disabled = true;
   try {
     const reply = await sendToBackground({ type: "stop-recording" });
@@ -74,20 +74,64 @@ async function onStopClick() {
       throw new Error((reply && reply.error) || "Não foi possível parar.");
     }
   } catch (err) {
-    setStatus(messageOf(err), true);
+    setStatusState("uploadError", messageOf(err));
   } finally {
     await refreshState();
   }
 }
 
 async function onMicToggle() {
-  // Persist the preference immediately so it applies to the next recording.
   await chrome.storage.local.set({ captureMic: els.captureMic.checked });
 }
 
-// ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
+async function onSaveSettings(event) {
+  event.preventDefault();
+  await saveAndPing();
+}
+
+async function onTestConnectionClick() {
+  await saveAndPing();
+}
+
+async function saveAndPing() {
+  setSettingsStatus("Permissão pendente", "warning");
+  setButtonsBusy(true);
+  try {
+    const backendUrl = normalizeBackendUrl(els.backendUrl.value);
+    const permission = backendOriginPattern(backendUrl);
+    const granted = await chrome.permissions.request({ origins: [permission] });
+    if (!granted) {
+      throw new Error(PERMISSION_DENIED_MESSAGE);
+    }
+
+    const tokenInput = els.uploadToken.value;
+    const toSave = { backendUrl, captureMic: els.captureMic.checked };
+    if (tokenInput && tokenInput !== TOKEN_PLACEHOLDER) {
+      toSave.uploadToken = tokenInput;
+      hasStoredToken = true;
+      els.uploadToken.value = TOKEN_PLACEHOLDER;
+    } else if (!tokenInput) {
+      toSave.uploadToken = "";
+      hasStoredToken = false;
+    }
+    await chrome.storage.local.set(toSave);
+
+    const reply = await sendToBackground({ type: "test-connection" });
+    if (!reply || !reply.ok) {
+      throw new Error((reply && reply.error) || "Backend indisponível.");
+    }
+    const email = reply.userEmail || "usuário autorizado";
+    setSettingsStatus(`Conectado como ${email}`, "ok");
+    setStatusState("idle");
+  } catch (err) {
+    const message = messageOf(err);
+    setSettingsStatus(message, classifyError(message) === "permissionPending" ? "warning" : "error");
+    setStatusState(classifyError(message), message);
+  } finally {
+    setButtonsBusy(false);
+    await refreshState();
+  }
+}
 
 async function loadSettingsIntoForm() {
   const stored = await chrome.storage.local.get([
@@ -99,50 +143,19 @@ async function loadSettingsIntoForm() {
   els.captureMic.checked = stored.captureMic === true;
 
   hasStoredToken = Boolean(stored.uploadToken);
-  // Show a mask if a token already exists; never reveal the real value.
   els.uploadToken.value = hasStoredToken ? TOKEN_PLACEHOLDER : "";
 }
-
-async function onSaveSettings(event) {
-  event.preventDefault();
-  const backendUrl = els.backendUrl.value.trim();
-  const tokenInput = els.uploadToken.value;
-
-  const toSave = { backendUrl };
-
-  // Only overwrite the token when the user actually typed a new one (i.e. it is
-  // not the untouched mask). This avoids clobbering a stored token with "••••".
-  if (tokenInput && tokenInput !== TOKEN_PLACEHOLDER) {
-    toSave.uploadToken = tokenInput;
-    hasStoredToken = true;
-    els.uploadToken.value = TOKEN_PLACEHOLDER;
-  } else if (!tokenInput) {
-    // Empty field means "clear the token".
-    toSave.uploadToken = "";
-    hasStoredToken = false;
-  }
-
-  await chrome.storage.local.set(toSave);
-  setSettingsStatus("Configurações salvas.");
-}
-
-// ---------------------------------------------------------------------------
-// State / rendering
-// ---------------------------------------------------------------------------
 
 async function refreshState() {
   let st;
   try {
     st = await sendToBackground({ type: "get-state" });
   } catch {
-    st = { recording: false };
+    st = { recording: false, phase: "idle" };
   }
-  renderState(st || { recording: false });
+  renderState(st || { recording: false, phase: "idle" });
 }
 
-/**
- * @param {Object} st - the public state from background.js.
- */
 function renderState(st) {
   const recording = Boolean(st.recording);
   els.startBtn.disabled = recording;
@@ -151,44 +164,65 @@ function renderState(st) {
 
   els.indicator.classList.toggle("recording", recording);
   els.indicator.classList.toggle("idle", !recording);
-  els.indicatorLabel.textContent = recording ? "Gravando" : "Parado";
+  els.indicatorLabel.textContent = recording ? STATUS_LABELS.recording : STATUS_LABELS.idle;
 
   if (st.error) {
-    setStatus(st.error, true);
+    setStatusState(classifyError(st.error), st.error);
   } else if (recording) {
-    setStatus("Gravando…");
+    setStatusState("recording");
+  } else if (st.phase === "uploading") {
+    setStatusState("uploading");
   } else if (st.lastUpload) {
-    setStatus("Gravação enviada com sucesso.");
+    setStatusState(
+      "uploaded",
+      st.warning ? `${STATUS_LABELS.uploaded}. ${st.warning}` : STATUS_LABELS.uploaded,
+    );
+  } else if (st.warning) {
+    setStatusState("permissionPending", st.warning);
+  } else {
+    setStatusState("idle");
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Send a message to the service worker and await its reply.
- * @param {Object} message
- * @returns {Promise<any>}
- */
 function sendToBackground(message) {
   return chrome.runtime.sendMessage(message);
 }
 
-function setStatus(text, isError = false) {
-  els.status.textContent = text || "";
-  els.status.classList.toggle("error", Boolean(isError));
+function setStatusState(state, message) {
+  const label = STATUS_LABELS[state] || STATUS_LABELS.idle;
+  els.status.textContent = message || label;
+  els.status.classList.toggle("error", isErrorState(state));
+  els.status.classList.toggle("warning", state === "permissionPending");
 }
 
-function setSettingsStatus(text) {
+function setSettingsStatus(text, tone = "ok") {
   els.settingsStatus.textContent = text || "";
+  els.settingsStatus.classList.toggle("error", tone === "error");
+  els.settingsStatus.classList.toggle("warning", tone === "warning");
 }
 
-/**
- * Extract a safe display message from an error. Never contains the token.
- * @param {unknown} err
- * @returns {string}
- */
+function setButtonsBusy(busy) {
+  els.testConnectionBtn.disabled = busy;
+  els.startBtn.disabled = busy;
+}
+
+function isErrorState(state) {
+  return ["uploadError", "invalidToken", "backendUnavailable"].includes(state);
+}
+
+function classifyError(message) {
+  if (/permissão/i.test(message)) {
+    return "permissionPending";
+  }
+  if (/token/i.test(message)) {
+    return "invalidToken";
+  }
+  if (/backend|cors|bloqueou|conectar/i.test(message)) {
+    return "backendUnavailable";
+  }
+  return "uploadError";
+}
+
 function messageOf(err) {
   if (err && typeof err.message === "string" && err.message) {
     return err.message;

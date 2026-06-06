@@ -488,3 +488,27 @@ Follow-up commit range on top of the four merges above that turns the
 - compileall: OK
 - alembic heads: single head `0002_extension_tokens`
 - `docker compose config`: OK (Google envs empty; build still validates)
+
+## 20. Chrome recorder dynamic permissions (PR #7)
+
+- **Manifest:** removed the hardcoded backend host from `host_permissions`; kept
+  only `https://meet.google.com/*` and added `optional_host_permissions` for
+  runtime backend access (`https://*/*`, `http://localhost/*`, the MV3 any-port
+  localhost pattern).
+- **Runtime permission:** the popup normalizes the backend URL, requests access
+  only to the entered origin, and saves configuration only when Chrome grants
+  that permission. Denial shows a clear Portuguese error.
+- **Ping before recording:** saving or testing configuration calls
+  `/api/recordings/ping` with the token in `FormData`; recording also validates
+  the token after minting the tab-capture stream id and before the offscreen
+  recorder starts.
+- **Upload contract:** uploads now send `upload_token` in `multipart/form-data`
+  plus `meeting_url`, timestamps, duration, mic flag, extension version, and MIME
+  type. Secrets stay out of query strings and logs.
+- **UX/errors:** popup exposes `Salvar`, `Testar conexão`, `Iniciar gravação`,
+  `Parar gravação`; states cover `Parado`, `Gravando`, `Enviando`,
+  `Upload concluído`, `Erro no upload`, `Token inválido`,
+  `Backend indisponível`, and `Permissão pendente`.
+- **Docs/tests:** extension README now documents the no-manifest-edit flow and
+  dependency-free Node tests cover URL normalization, permission origin building,
+  upload form fields, and friendly fetch errors.

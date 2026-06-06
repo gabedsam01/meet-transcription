@@ -34,24 +34,42 @@ change or the "call ended" screen), or manual via the **"Parar gravação"** but
 
 ## Configure backend URL + upload token
 
-Open the popup, expand **Configurações**, and set:
+1. In the web app, sign in and open `/extensao`.
+2. Generate an upload token. The raw token is shown only once.
+3. Open the extension popup and fill in:
 
 - **URL do backend** — the origin of your backend, e.g. `http://localhost:8000`.
-  Recordings are POSTed to `${backendUrl}/api/recordings/upload`.
-- **Token de upload** — your `EXTENSION_UPLOAD_TOKEN`. The field is **masked**
+  Production URLs must start with `https://`; `http://localhost:<port>` is allowed
+  for local development.
+- **Token de upload** — the token generated in `/extensao`. The field is **masked**
   (`type=password`); once saved it shows as `••••••••` and the real value is
   never read back into the popup or logged anywhere.
+- **Também gravar meu microfone** — optional. When enabled, Chrome may ask for
+  microphone permission the first time.
 
-Click **Salvar configurações**. Both values are stored in
-`chrome.storage.local`. To capture your mic too, tick **"Também gravar meu
-microfone"** (Chrome will ask for mic permission the first time).
+Click **Salvar**. Chrome will ask the extension for access to exactly the backend
+origin you entered (for example, `https://meet-transcription.example/*`). The
+extension saves the configuration only after that permission is granted, then
+pings `${backendUrl}/api/recordings/ping` and shows **Conectado como <email>**
+when the token is valid.
 
-> **Changing the backend origin:** `manifest.json` ships with the placeholder
-> host permission `http://localhost:8000/*`. If your backend lives elsewhere
-> (e.g. `https://meet.example.com`), edit `host_permissions` in `manifest.json`
-> to include that origin and reload the unpacked extension. The Backend URL field
-> alone is not enough — the host must be in `host_permissions` for `fetch` to
-> reach it.
+Use **Testar conexão** any time you change the URL/token or want to confirm the
+token is still valid.
+
+> You no longer need to edit `manifest.json` for each backend domain. Backend
+> access is requested dynamically with `optional_host_permissions`.
+
+---
+
+## Record a Google Meet
+
+1. Open a Google Meet tab.
+2. Click the extension icon.
+3. Confirm the status is connected, or click **Testar conexão**.
+4. Click **Iniciar gravação**.
+5. Click **Parar gravação** when done, or leave the call and the content script
+   will stop it automatically.
+6. Open the web panel and check `/jobs` for the queued transcription.
 
 ---
 
@@ -93,7 +111,8 @@ While recording, a red **REC** badge appears on the toolbar icon
 | `activeTab` | Identify the Meet tab you clicked from. |
 | `scripting` | Reserved for injecting helpers into the Meet page when needed. |
 | host `https://meet.google.com/*` | Run the content script on Meet. |
-| host `http://localhost:8000/*` | Upload recordings to the backend (edit me). |
+| optional host `https://*/*` | Ask runtime permission for the exact HTTPS backend origin the user entered. |
+| optional host `http://localhost/*` | Ask runtime permission for local development backends on any port. |
 
 ---
 
@@ -103,23 +122,26 @@ The recording is uploaded as **`multipart/form-data`** to:
 
 ```
 POST {backendUrl}/api/recordings/upload
-Authorization: Bearer <EXTENSION_UPLOAD_TOKEN>
 ```
 
 Form fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
+| `upload_token` | string | Token generated in `/extensao`; never sent in query string. |
 | `file` | file | The audio blob (`audio/webm;codecs=opus`). Field name is exactly `file`. |
 | `meeting_url` | string | The Meet URL. |
 | `meeting_title` | string | The tab title. |
 | `started_at` | string | ISO 8601 timestamp. |
 | `ended_at` | string | ISO 8601 timestamp. |
 | `duration_seconds` | number | Recording length in seconds. |
+| `include_microphone` | boolean string | `true` when mic capture was enabled. |
+| `extension_version` | string | Extension manifest version. |
+| `mime_type` | string | Recorded MIME type. |
 | `source` | string | Always `"chrome-extension"`. |
 
-The backend is expected to authorize with the **Bearer `EXTENSION_UPLOAD_TOKEN`**
-and to reject files larger than **`EXTENSION_UPLOAD_MAX_MB`** (HTTP 413). Non-2xx
+The backend authorizes with `upload_token` (or compatible legacy headers) and
+rejects files larger than **`EXTENSION_UPLOAD_MAX_MB`** (HTTP 413). Non-2xx
 responses surface a short, secret-free error in the popup.
 
 ---
@@ -131,6 +153,7 @@ responses surface a short, secret-free error in the popup.
 - **Tab capture needs a click.** See the one-click requirement above.
 - **Mic is opt-in.** If permission is denied, recording continues with **tab
   audio only** rather than failing.
-- **Secrets.** The upload token is sent only in the `Authorization` header and is
-  never logged, never echoed in errors, and never displayed after saving.
+- **Secrets.** The upload token is sent in `multipart/form-data`, never in the
+  query string, never logged, never echoed in errors, and never displayed after
+  saving.
 - **Minimum Chrome 116** for the offscreen `USER_MEDIA` reason used here.
