@@ -25,9 +25,15 @@ Target architecture is **five services** (see `docker-compose.yml`):
 - **worker** — `python -m app.worker.main` (DB-driven job processor). Code in `app/worker/`.
 
 Web enqueues a `job_id` on "Run once"; the worker dequeues, takes the global lock,
-claims the job in Postgres, and processes it — **one transcription at a time**.
-Postgres stays authoritative: if Redis is lost, the worker re-enqueues pending jobs
-on startup and while idle (`requeue_pending_jobs`).
+claims the job in Postgres, and processes it under **provider-aware concurrency**:
+cloud providers (Deepgram, I/O-bound) run several in parallel
+(`CLOUD_TRANSCRIPTION_CONCURRENCY`, default 5) via a Redis semaphore; local CPU
+engines run **one at a time** (`LOCAL_TRANSCRIPTION_CONCURRENCY`, default 1) via a
+single Redis lock. Postgres stays authoritative: if Redis is lost, the worker
+re-enqueues pending jobs on startup and while idle (`requeue_pending_jobs`). The
+worker also runs an in-process **auto-poll** thread that scans each user's Drive
+folder and enqueues new media (no sixth container). `QUEUE_BACKEND=none` poll mode
+and the legacy CLI stay strictly one-at-a-time.
 
 Transcription has a pluggable provider layer (`app/transcription/`): Deepgram
 (per-user key) or a local CPU engine, selected by the rule in
@@ -61,9 +67,13 @@ The **legacy worker** is the original env-driven CLI `python -m app.main`
    separate.
 7. **Never commit secrets.** `.env`, `secrets/*.json`, `token.json`, and
    `data/processed_files.json` are git-ignored and must stay that way.
-8. **Redis is the queue/lock, NOT the source of truth.** Postgres is always the
-   final defense against duplicates (`claim_job` is atomic). Anything Redis loses
-   must be recoverable from Postgres (`requeue_pending_jobs`). The worker default
+8. **Redis is the queue/locks/semaphore, NOT the source of truth.** Postgres is
+   always the final defense against duplicates (`claim_job` is atomic). Anything
+   Redis loses must be recoverable from Postgres (`requeue_pending_jobs`, gated by
+   `next_retry_at`). Concurrency is **provider-aware**: cloud providers run a
+   configurable number in parallel (default 5); local CPU runs 1. Token locks
+   acquire with a unique token and release only if still owner (atomic Lua);
+   the cloud semaphore acquires atomically via Lua. The worker default
    `QUEUE_BACKEND=none` keeps the legacy poll loop; `redis` is the production mode.
 9. **Local transcription is CPU-only and off by default.** No GPU. Heavy engines
    (faster-whisper, whisper.cpp) are NOT installed in the base image — they are
@@ -83,15 +93,23 @@ The **legacy worker** is the original env-driven CLI `python -m app.main`
   `app/repositories/postgres.py`. UI job reads are user-scoped via the
   `JobRepository.get_job` / `list_jobs_for_user` contract methods.
 - The `JobRepository` contract (`app/core/ports.py`) is: `claim_next_pending_job`,
-  `claim_job`, `list_pending_jobs`, `create_job`, `get_job`, `mark_completed`,
-  `mark_failed`, `find_existing_job`, `reset_stale_processing_jobs`,
+  `claim_job`, `list_pending_jobs` (optional `now` gates `next_retry_at`),
+  `create_job`, `get_job`, `mark_completed`, `mark_failed` (optional `error_code`),
+  `schedule_retry`, `reset_job_for_retry`, `count_jobs_created_since`,
+  `count_jobs_by_status`, `find_existing_job`, `reset_stale_processing_jobs`,
   `list_jobs_for_user`. `claim_job`/`list_pending_jobs` back the Redis path; keep
   all names and implement new ones in BOTH adapters (memory + postgres) and the
   `runtime_checkable` Protocol (update `tests/test_core_ports.py::_Stub`).
+  Per-user auto-poll/guardrails live in `AutomationSettingsRepository`
+  (`Repositories.automation`).
 - The queue lives in `app/queue/` (`TranscriptionQueue` port + redis/memory
-  adapters + `requeue_pending_jobs`); the provider layer in `app/transcription/`
-  (config, validation, normalizer, resolver, deepgram/faster-whisper/whisper.cpp
-  providers). The normalized transcript schema is stored in
+  adapters + `requeue_pending_jobs`). Beyond enqueue/dequeue it exposes
+  provider slots (`acquire/release_provider_slot` — cloud semaphore / local lock),
+  a generic `acquire/release_named_lock` (`lock:auto_poll`), and observability
+  (`mark_processing`/`mark_dead`/`queue_stats`/`dead_job_ids`). The provider layer
+  in `app/transcription/` (config, validation, normalizer, resolver,
+  deepgram/faster-whisper/whisper.cpp providers, `provider_kind` for cloud/local
+  classification). The normalized transcript schema is stored in
   `transcripts.transcript_json`; `transcripts.transcript_text` holds the TXT.
 
 ## Validation commands

@@ -3,15 +3,23 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from app.core.models import Job
-from app.errors import AppError, DriveFolderMissingError, GoogleTokenMissingError
+from app.errors import (
+    AppError,
+    DriveFolderMissingError,
+    GoogleTokenMissingError,
+    classify_error,
+)
 from app.processor import sanitize_filename
 from app.transcription.config import TranscriptionConfig
 from app.transcription.deepgram_provider import DeepgramProvider
 from app.transcription.factory import build_local_provider, resolve_provider
+from app.transcription.provider_kind import classify_provider_kind
 from app.worker.container import WorkerContainer
 
 LOGGER = logging.getLogger(__name__)
@@ -21,36 +29,69 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class ResolvedProvider:
+    """A job's resolved transcription provider plus the context to run it.
+
+    ``kind`` ('cloud'/'local') drives which concurrency slot the queue loop
+    acquires before processing; it is derived from the resolved provider's
+    identity, not merely from whether a local engine is configured.
+    """
+
+    provider: Any
+    name: str
+    kind: str
+    status: Any
+    settings: Any
+    token: Any
+
+
 class JobProcessor:
     def __init__(self, container: WorkerContainer, now=_utc_now) -> None:
         self.container = container
         self._now = now
 
-    def process(self, job: Job) -> None:
+    def resolve(self, job: Job) -> ResolvedProvider:
+        """Load settings/token and resolve the provider + concurrency kind.
+
+        Raises a terminal :class:`AppError` (missing settings/token, or no
+        provider available) — the caller dead-letters those without retry.
+        """
+        repos = self.container.repositories
+        settings = repos.settings.get(job.user_id)
+        if settings is None:
+            raise DriveFolderMissingError("User settings are required before transcription")
+        token = repos.google_tokens.get(job.user_id)
+        if token is None:
+            raise GoogleTokenMissingError("Google token is required before transcription")
+        provider, status = self._resolve_provider(settings)
+        name = getattr(provider, "name", None)
+        if not name:
+            name = "local" if getattr(status, "local_valid", False) else "deepgram"
+        return ResolvedProvider(
+            provider=provider, name=name, kind=classify_provider_kind(name),
+            status=status, settings=settings, token=token,
+        )
+
+    def process(self, job: Job, resolved: ResolvedProvider | None = None) -> None:
         repos = self.container.repositories
         job_dir = Path(self.container.settings.tmp_dir) / "jobs" / str(job.id)
         started = time.monotonic()
         try:
-            settings = repos.settings.get(job.user_id)
-            if settings is None:
-                raise DriveFolderMissingError("User settings are required before transcription")
-            token = repos.google_tokens.get(job.user_id)
-            if token is None:
-                raise GoogleTokenMissingError("Google token is required before transcription")
+            if resolved is None:
+                resolved = self.resolve(job)
+            settings = resolved.settings
             if not job.source_file_id:
                 raise DriveFolderMissingError("Job has no source_file_id to download")
 
-            # Pick the transcription provider per the local/Deepgram product rule.
-            # A valid local engine needs no Deepgram key; otherwise a per-user key is
-            # required and its absence raises a clear, Deepgram-mentioning error.
-            provider, status = self._resolve_provider(settings)
-            label = status.summary if status.local_valid else "deepgram"
+            provider = resolved.provider
+            label = resolved.name
             LOGGER.info(
-                "Transcription started: job_id=%s user_id=%s provider=%s",
-                job.id, job.user_id, label,
+                "Transcription started: job_id=%s user_id=%s provider=%s kind=%s",
+                job.id, job.user_id, label, resolved.kind,
             )
 
-            credentials = self.container.credentials_from_token(token)
+            credentials = self.container.credentials_from_token(resolved.token)
             drive = self.container.build_drive_client(
                 credentials,
                 settings.source_drive_folder_id,
@@ -91,12 +132,45 @@ class JobProcessor:
                 job.id, label, time.monotonic() - started,
             )
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
-            # Friendly message for the UI; full traceback only in the logs.
-            user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
-            LOGGER.exception("Transcription failed: job_id=%s reason=%s", job.id, exc)
-            repos.jobs.mark_failed(job.id, user_message, self._now())
+            self._handle_failure(job, exc)
         finally:
             _cleanup_job_dir(job_dir)
+
+    def _handle_failure(self, job: Job, exc: Exception) -> None:
+        """Retry transient failures with backoff; dead-letter terminal/exhausted ones.
+
+        ``attempts`` was already incremented when the job was claimed, so the first
+        failure has ``attempts == 1``. Friendly message for the UI; traceback to logs.
+        """
+        repos = self.container.repositories
+        settings = self.container.settings
+        code, retryable, retry_after = classify_error(exc)
+        user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
+        LOGGER.exception("Transcription failed: job_id=%s code=%s", job.id, code)
+
+        if retryable and job.attempts < settings.job_max_attempts:
+            delay = _backoff(
+                job.attempts, settings.job_retry_base_seconds,
+                settings.job_retry_max_seconds, retry_after,
+            )
+            repos.jobs.schedule_retry(
+                job.id, self._now(),
+                next_retry_at=self._now() + timedelta(seconds=delay),
+                error_code=code, error_message=user_message,
+            )
+            LOGGER.info(
+                "Job scheduled for retry: job_id=%s attempt=%s delay_seconds=%s",
+                job.id, job.attempts, delay,
+            )
+            return
+
+        repos.jobs.mark_failed(job.id, user_message, self._now(), error_code=code)
+        queue = self.container.queue
+        if queue is not None:
+            try:
+                queue.mark_dead(job.id)
+            except Exception:  # noqa: BLE001 - DLQ bookkeeping must not crash the loop.
+                LOGGER.warning("Could not add job_id=%s to the dead-letter set", job.id)
 
     def _resolve_provider(self, settings):
         config = self.container.transcription_config or TranscriptionConfig.disabled()
@@ -116,6 +190,20 @@ class JobProcessor:
             build_deepgram_provider=build_deepgram_provider,
             probes=self.container.transcription_probes,
         )
+
+
+def _backoff(attempts: int, base: int, maximum: int, retry_after: int | None) -> int:
+    """Exponential backoff in seconds, floored by a provider's Retry-After.
+
+    ``attempts`` is the post-claim count (1 on first failure), so the first retry
+    waits ``base`` seconds, then doubles, capped at ``maximum``.
+    """
+    delay = min(maximum, base * (2 ** max(0, attempts - 1)))
+    if retry_after:
+        # Honor Retry-After as a floor, but never exceed the configured maximum:
+        # a provider returning an absurd Retry-After must not park a job for days.
+        delay = max(delay, min(int(retry_after), maximum))
+    return delay
 
 
 def _cleanup_job_dir(job_dir: Path) -> None:

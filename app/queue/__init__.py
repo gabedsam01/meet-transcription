@@ -31,22 +31,31 @@ def build_queue(settings: QueueSettings) -> TranscriptionQueue | None:
         from app.queue.redis_queue import RedisTranscriptionQueue
 
         return RedisTranscriptionQueue.from_url(
-            settings.redis_url, queue_name=settings.queue_name
+            settings.redis_url,
+            queue_name=settings.queue_name,
+            cloud_concurrency=settings.cloud_concurrency,
         )
     if settings.backend == "memory":
-        return InMemoryTranscriptionQueue()
+        return InMemoryTranscriptionQueue(cloud_concurrency=settings.cloud_concurrency)
     return None
 
 
-def requeue_pending_jobs(repositories, queue: TranscriptionQueue) -> int:
+def requeue_pending_jobs(repositories, queue: TranscriptionQueue, now=None) -> int:
     """Re-enqueue every Postgres ``pending`` job that is not already queued.
 
     Safe to call repeatedly (enqueue is deduped). Returns how many ids were newly
     enqueued. This is the self-heal path for a lost/empty Redis queue and the
-    worker's startup reconciliation.
+    worker's startup reconciliation. When ``now`` is given, jobs still in retry
+    backoff (``next_retry_at`` in the future) are skipped, so a retry is never
+    woken before its scheduled time.
     """
     count = 0
-    for job in repositories.jobs.list_pending_jobs():
+    jobs = (
+        repositories.jobs.list_pending_jobs(now)
+        if now is not None
+        else repositories.jobs.list_pending_jobs()
+    )
+    for job in jobs:
         # ensure_queued (not enqueue) so a job orphaned in the dedupe set by a
         # mid-dequeue Redis failure is still re-pushed onto the list.
         if queue.ensure_queued(job.id):

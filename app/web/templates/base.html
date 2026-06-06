@@ -15,7 +15,9 @@
         <a href="/jobs">Jobs</a>
         <a href="/settings/drive">Drive Settings</a>
         <a href="/settings/deepgram">Deepgram</a>
+        <a href="/settings/automation">Automação</a>
         {% if user.role == "admin" %}<a href="/admin/users">Admin Users</a>{% endif %}
+        {% if user.role == "admin" %}<a href="/admin/queue">Fila</a>{% endif %}
         <form action="/logout" method="post"><button type="submit">Logout</button></form>
       </nav>
       {% endif %}

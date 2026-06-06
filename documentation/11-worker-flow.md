@@ -1,5 +1,11 @@
 # Worker Flow
 
+> **Automation additions.** Besides consuming the queue, the worker now runs an
+> in-process **auto-poll** thread ([28](28-auto-polling.md)), processes jobs under
+> **provider-aware concurrency** ([30](30-provider-concurrency.md)), and handles
+> **retries / dead-letter** ([31](31-retries-dead-letter.md)). This page describes
+> the core single-job flow those build on.
+
 The **worker** is the out-of-band job processor of Meet Transcription. It runs as a
 dedicated container (`command: python -m app.worker.main`) sharing the same image as
 the web service, and it is the **only** place where downloading, transcription, and

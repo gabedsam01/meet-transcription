@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Automação</h1>
+  <p class="hint">
+    Quando ativada, o worker verifica sua pasta de origem no Drive periodicamente e
+    enfileira transcrições para vídeos/áudios novos — sem precisar clicar em "Run once".
+  </p>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+  {% if backend_error %}<div class="notice notice-warn">{{ backend_error }}</div>{% endif %}
+
+  <form method="post" action="/settings/automation" class="form-stack">
+    <label class="checkbox">
+      <input type="checkbox" name="auto_poll_enabled" value="true"
+             {% if automation and automation.auto_poll_enabled %}checked{% endif %}>
+      Ativar verificação automática
+    </label>
+    <label>Intervalo entre verificações (segundos)
+      <input name="poll_interval_seconds" type="number" min="60" max="86400"
+             value="{{ automation.poll_interval_seconds if automation else 300 }}">
+    </label>
+    <label>Máximo de arquivos por verificação
+      <input name="max_files_per_poll" type="number" min="1" max="100"
+             value="{{ automation.max_files_per_poll if automation else 5 }}">
+    </label>
+    <button type="submit">Salvar</button>
+  </form>
+
+  <div class="row-between" style="margin-top:1rem">
+    <form method="post" action="/automation/check-now">
+      <button type="submit" class="button button-ghost button-sm">Verificar agora</button>
+    </form>
+  </div>
+
+  <h2 style="margin-top:1.5rem">Status</h2>
+  {% if automation %}
+  <ul class="muted">
+    <li>Última verificação: {% if automation.last_poll_at %}<span class="mono">{{ automation.last_poll_at | dt }}</span>{% else %}—{% endif %}</li>
+    <li>Último sucesso: {% if automation.last_success_at %}<span class="mono">{{ automation.last_success_at | dt }}</span>{% else %}—{% endif %}</li>
+    {% if automation.last_error_message %}
+    <li>Último erro: {{ automation.last_error_message }}{% if automation.last_error_code %} <span class="mono">({{ automation.last_error_code }})</span>{% endif %}</li>
+    {% endif %}
+  </ul>
+  {% else %}
+  <p class="muted">Ainda não houve nenhuma verificação.</p>
+  {% endif %}
+
+  <p class="cta-row"><a class="button button-ghost button-sm" href="/settings">← Voltar para configurações</a></p>
+</section>
+{% endblock %}

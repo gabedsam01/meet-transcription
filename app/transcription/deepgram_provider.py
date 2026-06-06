@@ -16,6 +16,8 @@ class DeepgramProvider:
     Deepgram response preserved under ``raw``.
     """
 
+    name = "deepgram"  # provider identity for cloud/local concurrency classification
+
     def __init__(self, client, *, model: str, language: str) -> None:
         self._client = client
         self._model = model

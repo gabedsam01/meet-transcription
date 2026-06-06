@@ -1,6 +1,29 @@
 from pathlib import Path
 
-from app.drive_client import build_drive_credentials, is_ready_video_file, sort_drive_files, to_drive_file
+from app.drive_client import (
+    build_drive_credentials,
+    is_ready_media_file,
+    is_ready_video_file,
+    sort_drive_files,
+    to_drive_file,
+)
+
+
+def test_is_ready_media_file_accepts_audio_by_mime_and_extension():
+    assert is_ready_media_file({"name": "call", "mimeType": "audio/mpeg", "size": "5"}) is True
+    assert is_ready_media_file({"name": "call.mp3", "mimeType": "application/octet-stream", "size": "5"}) is True
+    assert is_ready_media_file({"name": "call.m4a", "mimeType": "", "size": "5"}) is True
+    assert is_ready_media_file({"name": "call.wav", "mimeType": "", "size": "5"}) is True
+
+
+def test_is_ready_media_file_still_accepts_mp4_and_rejects_unknown():
+    assert is_ready_media_file({"name": "m.mp4", "mimeType": "video/mp4", "size": "5"}) is True
+    assert is_ready_media_file({"name": "m.mov", "mimeType": "video/quicktime", "size": "5"}) is False
+
+
+def test_is_ready_media_file_rejects_trashed_or_zero_size():
+    assert is_ready_media_file({"name": "a.mp3", "mimeType": "audio/mpeg", "trashed": True, "size": "5"}) is False
+    assert is_ready_media_file({"name": "a.mp3", "mimeType": "audio/mpeg", "size": "0"}) is False
 
 
 def test_is_ready_video_file_accepts_mp4_mime_type():

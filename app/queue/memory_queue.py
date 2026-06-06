@@ -13,13 +13,21 @@ class InMemoryTranscriptionQueue:
     cross-process expiry to worry about in one process).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, cloud_concurrency: int = 5) -> None:
         self._items: deque[int] = deque()
         self._queued: set[int] = set()
         self._cond = threading.Condition()
         self._lock_state = threading.Lock()
         self._lock_token: str | None = None
         self._token_seq = 0
+        # Provider concurrency + observability state (TTL is irrelevant in-process).
+        self._cloud_capacity = max(1, cloud_concurrency)
+        self._cloud_slots: set[str] = set()
+        self._local_token: str | None = None
+        self._slot_seq = 0
+        self._processing: set[int] = set()
+        self._dead: set[int] = set()
+        self._named_locks: dict[str, str] = {}
 
     def enqueue(self, job_id: int) -> bool:
         with self._cond:
@@ -72,6 +80,72 @@ class InMemoryTranscriptionQueue:
         with self._lock_state:
             if self._lock_token == token:
                 self._lock_token = None
+
+    def acquire_named_lock(self, name: str, ttl_seconds: int) -> str | None:
+        with self._lock_state:
+            if name in self._named_locks:
+                return None
+            self._slot_seq += 1
+            token = f"named-{self._slot_seq}"
+            self._named_locks[name] = token
+            return token
+
+    def release_named_lock(self, name: str, token: str) -> None:
+        with self._lock_state:
+            if self._named_locks.get(name) == token:
+                self._named_locks.pop(name, None)
+
+    def acquire_provider_slot(self, kind: str, ttl_seconds: int) -> str | None:
+        with self._lock_state:
+            self._slot_seq += 1
+            token = f"slot-{self._slot_seq}"
+            if kind == "local":
+                if self._local_token is not None:
+                    return None
+                self._local_token = token
+                return token
+            if len(self._cloud_slots) >= self._cloud_capacity:
+                return None
+            self._cloud_slots.add(token)
+            return token
+
+    def release_provider_slot(self, kind: str, token: str) -> None:
+        with self._lock_state:
+            if kind == "local":
+                if self._local_token == token:
+                    self._local_token = None
+                return
+            self._cloud_slots.discard(token)
+
+    def mark_processing(self, job_id: int) -> None:
+        with self._lock_state:
+            self._processing.add(job_id)
+
+    def clear_processing(self, job_id: int) -> None:
+        with self._lock_state:
+            self._processing.discard(job_id)
+
+    def mark_dead(self, job_id: int) -> None:
+        with self._lock_state:
+            self._dead.add(job_id)
+
+    def remove_dead(self, job_id: int) -> None:
+        with self._lock_state:
+            self._dead.discard(job_id)
+
+    def dead_job_ids(self) -> set[int]:
+        with self._lock_state:
+            return set(self._dead)
+
+    def queue_stats(self) -> dict[str, int]:
+        with self._cond:
+            queued = len(self._items)
+        with self._lock_state:
+            return {
+                "queued": queued,
+                "processing": len(self._processing),
+                "dead": len(self._dead),
+            }
 
     def queued_job_ids(self) -> set[int]:
         with self._cond:

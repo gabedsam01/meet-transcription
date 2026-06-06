@@ -32,6 +32,11 @@ x-transcription-env: &transcription-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   QUEUE_NAME: ${QUEUE_NAME:-transcription}
   TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS: ${TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS:-14400}
+  # Provider-aware concurrency: cloud (Deepgram, I/O-bound) runs several in
+  # parallel; local CPU engines run one at a time. Slots reclaim after the TTL.
+  CLOUD_TRANSCRIPTION_CONCURRENCY: ${CLOUD_TRANSCRIPTION_CONCURRENCY:-5}
+  LOCAL_TRANSCRIPTION_CONCURRENCY: ${LOCAL_TRANSCRIPTION_CONCURRENCY:-1}
+  PROVIDER_LOCK_TTL_SECONDS: ${PROVIDER_LOCK_TTL_SECONDS:-14400}
   LOCAL_TRANSCRIPTION_ENABLED: ${LOCAL_TRANSCRIPTION_ENABLED:-false}
   LOCAL_TRANSCRIPTION_ENGINE: ${LOCAL_TRANSCRIPTION_ENGINE:-faster-whisper}
   LOCAL_TRANSCRIPTION_MODEL: ${LOCAL_TRANSCRIPTION_MODEL:-small}
@@ -147,6 +152,22 @@ services:
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
       STALE_JOB_TIMEOUT_MINUTES: ${STALE_JOB_TIMEOUT_MINUTES:-30}
       TMP_DIR: ${TMP_DIR:-/app/tmp}
+      # Queue consumers (redis mode) + retry/backoff + dead-letter policy.
+      TRANSCRIPTION_QUEUE_CONCURRENCY: ${TRANSCRIPTION_QUEUE_CONCURRENCY:-5}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      JOB_RETRY_BASE_SECONDS: ${JOB_RETRY_BASE_SECONDS:-60}
+      JOB_RETRY_MAX_SECONDS: ${JOB_RETRY_MAX_SECONDS:-3600}
+      # Auto-poll: scan each enabled user's Drive folder on an interval. OFF by
+      # default — a fresh deploy must not crawl Drive before the user reviews their
+      # folder/provider/limits. Users opt in per-account at /settings/automation.
+      AUTO_POLL_ENABLED: ${AUTO_POLL_ENABLED:-false}
+      AUTO_POLL_INTERVAL_SECONDS: ${AUTO_POLL_INTERVAL_SECONDS:-300}
+      AUTO_POLL_MAX_USERS_PER_TICK: ${AUTO_POLL_MAX_USERS_PER_TICK:-50}
+      AUTO_POLL_MAX_FILES_PER_USER: ${AUTO_POLL_MAX_FILES_PER_USER:-5}
+      AUTO_POLL_LOCK_TTL_SECONDS: ${AUTO_POLL_LOCK_TTL_SECONDS:-240}
+      # Cost guardrails (0 = unlimited; per-user settings override these globals).
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-0}
+      DAILY_JOBS_LIMIT: ${DAILY_JOBS_LIMIT:-0}
     volumes:
       - ./data:/app/data
       - ./tmp:/app/tmp
