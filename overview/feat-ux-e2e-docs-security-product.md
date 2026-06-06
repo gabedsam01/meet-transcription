@@ -161,8 +161,8 @@ curl -s localhost:8000/version     # version, commit, providers
 - Wire `APP_VERSION`/`GIT_COMMIT`/`BUILD_TIME` from the Docker build/CI.
 
 ## 13. PR
-Opened against `main` — see the PR link recorded with the push (title:
-"Add onboarding, E2E, security docs and product UX").
+https://github.com/gabedsam01/meet-transcription/pull/6 — "Add onboarding, E2E,
+security docs and product UX" (base `main`).
 
 ## 14. Explicit confirmations
 - **Did NOT reintroduce SQLite** — no `sqlite3`/`app.db`/`database_path`; PostgreSQL
