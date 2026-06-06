@@ -60,3 +60,25 @@ def short_datetime(value) -> str:
 def drive_download_url(file_id) -> str:
     """Build a direct-download Drive URL for a transcript file id."""
     return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+
+def search_snippet(text: str | None, query: str, radius: int = 100) -> str:
+    """A short excerpt of ``text`` centered on the first match of ``query``.
+
+    Whitespace/newlines are collapsed and the excerpt is bracketed with ellipses
+    when it is clipped. Falls back to the leading characters when the query is not
+    found. Used to render transcript search results without dumping whole bodies.
+    """
+    body = " ".join((text or "").split())
+    if not body:
+        return ""
+    needle = (query or "").strip().lower()
+    idx = body.lower().find(needle) if needle else -1
+    if idx == -1:
+        excerpt = body[: radius * 2]
+        return excerpt + ("…" if len(body) > len(excerpt) else "")
+    start = max(0, idx - radius)
+    end = min(len(body), idx + len(needle) + radius)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(body) else ""
+    return f"{prefix}{body[start:end]}{suffix}"

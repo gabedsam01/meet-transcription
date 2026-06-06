@@ -16,6 +16,14 @@
     <a class="button button-ghost" href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Open in Drive</a>
     {% endif %}
   </p>
+  {% if export_formats %}
+  <p class="hint">Exportar como:</p>
+  <p class="cta-row export-row">
+    {% for fmt, label in export_formats %}
+    <a class="button button-sm button-ghost" href="/jobs/{{ job.id }}/download?format={{ fmt }}">{{ label }}</a>
+    {% endfor %}
+  </p>
+  {% endif %}
   {% endif %}
 
   <dl class="detail">

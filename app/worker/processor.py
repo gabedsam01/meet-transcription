@@ -7,11 +7,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.models import Job
-from app.errors import AppError, DriveFolderMissingError, GoogleTokenMissingError
+from app.errors import (
+    AppError,
+    DriveFolderMissingError,
+    GoogleTokenMissingError,
+    error_code,
+    is_retryable,
+)
+from app.observability import log_event
 from app.processor import sanitize_filename
 from app.transcription.config import TranscriptionConfig
 from app.transcription.deepgram_provider import DeepgramProvider
 from app.transcription.factory import build_local_provider, resolve_provider
+from app.webhooks import JOB_COMPLETED, JOB_FAILED
 from app.worker.container import WorkerContainer
 
 LOGGER = logging.getLogger(__name__)
@@ -30,6 +38,7 @@ class JobProcessor:
         repos = self.container.repositories
         job_dir = Path(self.container.settings.tmp_dir) / "jobs" / str(job.id)
         started = time.monotonic()
+        completed = False
         try:
             settings = repos.settings.get(job.user_id)
             if settings is None:
@@ -45,9 +54,9 @@ class JobProcessor:
             # required and its absence raises a clear, Deepgram-mentioning error.
             provider, status = self._resolve_provider(settings)
             label = status.summary if status.local_valid else "deepgram"
-            LOGGER.info(
-                "Transcription started: job_id=%s user_id=%s provider=%s",
-                job.id, job.user_id, label,
+            log_event(
+                "transcription.started", logger=LOGGER,
+                job_id=job.id, user_id=job.user_id, provider=label,
             )
 
             credentials = self.container.credentials_from_token(token)
@@ -86,17 +95,57 @@ class JobProcessor:
             repos.jobs.mark_completed(
                 job.id, self._now(), transcript_drive_file_id=transcript_drive_file_id
             )
-            LOGGER.info(
-                "Transcription completed: job_id=%s provider=%s duration_seconds=%.1f",
-                job.id, label, time.monotonic() - started,
-            )
+            completed = True
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
             # Friendly message for the UI; full traceback only in the logs.
             user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
             LOGGER.exception("Transcription failed: job_id=%s reason=%s", job.id, exc)
+            log_event(
+                "transcription.failed", logger=LOGGER, level=logging.ERROR,
+                job_id=job.id, user_id=job.user_id,
+                error_code=error_code(exc), retryable=is_retryable(exc),
+                duration_seconds=round(time.monotonic() - started, 3),
+            )
             repos.jobs.mark_failed(job.id, user_message, self._now())
+            # The webhook is external egress: send only the stable error_code and a
+            # curated, secret-free message (AppError.user_message) — never raw str(exc),
+            # which could carry third-party/internal error text.
+            self._emit_webhook(
+                JOB_FAILED, job_id=job.id, user_id=job.user_id, status="failed",
+                source_file_id=job.source_file_id, source_file_name=job.source_file_name,
+                error_code=error_code(exc),
+                error_message=(
+                    exc.user_message if isinstance(exc, AppError)
+                    else "Falha no processamento da transcrição."
+                ),
+            )
         finally:
             _cleanup_job_dir(job_dir)
+
+        # Success bookkeeping runs AFTER the try/finally, so a logging or webhook hiccup
+        # can never route a genuinely-completed job into the failure handler above.
+        if completed:
+            log_event(
+                "transcription.completed", logger=LOGGER,
+                job_id=job.id, user_id=job.user_id, provider=label,
+                duration_seconds=round(time.monotonic() - started, 3),
+                error_code=None, retryable=False,
+            )
+            self._emit_webhook(
+                JOB_COMPLETED, job_id=job.id, user_id=job.user_id, status="completed",
+                source_file_id=job.source_file_id, source_file_name=job.source_file_name,
+                error_code=None, error_message=None,  # same payload shape as job.failed
+            )
+
+    def _emit_webhook(self, event: str, **data) -> None:
+        """Fire an outbound webhook best-effort. Never affects the job outcome."""
+        notifier = self.container.webhook_notifier
+        if notifier is None:
+            return
+        try:
+            notifier.notify(event, data)
+        except Exception:  # noqa: BLE001 - a webhook must never fail a job.
+            LOGGER.warning("Webhook emission raised for %s; job is unaffected", event)
 
     def _resolve_provider(self, settings):
         config = self.container.transcription_config or TranscriptionConfig.disabled()

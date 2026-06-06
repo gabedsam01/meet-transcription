@@ -11,6 +11,7 @@ from app.queue import QueueSettings, build_queue
 from app.repositories import build_repositories
 from app.transcription.config import TranscriptionConfig
 from app.transcription.factory import build_local_provider as _build_local_provider
+from app.webhooks import WebhookNotifier, WebhookSettings
 from app.worker.config import WorkerSettings
 
 
@@ -28,6 +29,8 @@ class WorkerContainer:
     build_local_provider: Callable | None = None
     queue: object | None = None
     queue_lock_ttl: int = 14400
+    # Optional outbound webhooks (job.completed / job.failed). None = disabled.
+    webhook_notifier: object | None = None
 
 
 def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
@@ -36,6 +39,8 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
     transcription_config = TranscriptionConfig.from_env()
     queue_settings = QueueSettings.from_env()
     queue = build_queue(queue_settings)
+    webhook_settings = WebhookSettings.from_env()
+    webhook_notifier = WebhookNotifier(webhook_settings) if webhook_settings.enabled else None
 
     def build_drive_client(credentials, source_folder_id, destination_folder_id):
         return DriveClient.from_credentials(
@@ -63,4 +68,5 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         build_local_provider=_build_local_provider,
         queue=queue,
         queue_lock_ttl=queue_settings.global_lock_ttl_seconds,
+        webhook_notifier=webhook_notifier,
     )
