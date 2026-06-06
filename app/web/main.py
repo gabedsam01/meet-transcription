@@ -328,10 +328,13 @@ def create_app(settings: WebSettings | None = None,
                 except Exception:  # noqa: BLE001 - Postgres has it pending; reconciler heals.
                     logging.exception("Could not enqueue job_id=%s after check-now", job_id)
         if worker_repos.automation is not None:
-            worker_repos.automation.mark_poll_result(
-                user.id, _utc_now(), success=not result.error_code,
-                error_code=result.error_code, error_message=result.error_message,
-            )
+            try:
+                worker_repos.automation.mark_poll_result(
+                    user.id, _utc_now(), success=not result.error_code,
+                    error_code=result.error_code, error_message=result.error_message,
+                )
+            except Exception:  # noqa: BLE001 - bookkeeping must never 500 the page.
+                logging.exception("Could not record poll result for user_id=%s", user.id)
         if result.error_code:
             _set_flash(request, result.error_message or "Verificação falhou.")
         elif result.created:

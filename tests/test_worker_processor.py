@@ -269,6 +269,8 @@ def test_backoff_grows_and_is_floored_by_retry_after():
     assert _backoff(3, 60, 3600, None) == 240
     assert _backoff(10, 60, 3600, None) == 3600           # capped at max
     assert _backoff(1, 60, 3600, 200) == 200              # floored by Retry-After
+    # A huge Retry-After must still respect the maximum cap (no multi-day parking).
+    assert _backoff(1, 60, 3600, 100000) == 3600
 
 
 def _with_max_attempts(container, n):

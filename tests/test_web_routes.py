@@ -201,6 +201,24 @@ def test_check_now_creates_and_enqueues_jobs(tmp_path):
     assert worker.automation.get_for_user(1).last_poll_at is not None
 
 
+def test_check_now_survives_mark_poll_result_failure(tmp_path):
+    # Bookkeeping errors must flash, never 500 (the route's stated contract).
+    app, worker = _app_with_worker(
+        tmp_path, deepgram_key="dg-key", files=[drive_file("f1", "a.mp4")]
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    worker.automation.mark_poll_result = _boom
+    with TestClient(app) as client:
+        _login(client)
+        r = client.post("/automation/check-now", follow_redirects=False)
+        assert r.status_code == 303  # redirected with a flash, not a 500
+    # The job was still created (the failure was only in status bookkeeping).
+    assert len(worker.jobs.list_jobs_for_user(1)) == 1
+
+
 def test_retry_failed_job_resets_and_reenqueues(tmp_path):
     from app.queue.memory_queue import InMemoryTranscriptionQueue
     app, worker = _app_with_worker(tmp_path)

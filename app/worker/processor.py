@@ -200,7 +200,9 @@ def _backoff(attempts: int, base: int, maximum: int, retry_after: int | None) ->
     """
     delay = min(maximum, base * (2 ** max(0, attempts - 1)))
     if retry_after:
-        delay = max(delay, int(retry_after))
+        # Honor Retry-After as a floor, but never exceed the configured maximum:
+        # a provider returning an absurd Retry-After must not park a job for days.
+        delay = max(delay, min(int(retry_after), maximum))
     return delay
 
 
