@@ -66,6 +66,118 @@ class WhisperCppBinaryNotFoundError(LocalTranscriptionConfigError):
     )
 
 
+# --- cloud provider registry (Deepgram / OpenRouter / Gemini) ---------------
+#
+# These carry richer diagnostics than the base AppError so the Models tab can
+# render an actionable message and a docs link without ever leaking a key or a
+# traceback. Every instance exposes ``code``, ``user_message`` (friendly, shown
+# in the UI), ``technical_message`` (logs only), ``retryable`` and ``docs_url``.
+
+PROVIDER_DOCS_URL = (
+    "https://github.com/gabedsam01/meet-transcription/blob/main/"
+    "documentation/21-provider-registry.md"
+)
+
+
+class ProviderError(TranscriptionProviderError):
+    """Base for cloud-provider failures with structured, secret-free metadata."""
+
+    code: str = "provider_error"
+    retryable: bool = False
+    docs_url: str | None = PROVIDER_DOCS_URL
+    default_user_message = "Não foi possível transcrever com o provedor selecionado."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        user_message: str | None = None,
+        docs_url: str | None = None,
+        retryable: bool | None = None,
+        provider: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.provider = provider
+        if docs_url is not None:
+            self.docs_url = docs_url
+        if retryable is not None:
+            self.retryable = retryable
+
+    @property
+    def technical_message(self) -> str:
+        """The exception text — for logs/diagnostics, never shown in the UI."""
+        return str(self)
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "user_message": self.user_message,
+            "technical_message": self.technical_message,
+            "retryable": self.retryable,
+            "docs_url": self.docs_url,
+            "provider": self.provider,
+        }
+
+
+class ProviderNotConfiguredError(ProviderError):
+    code = "provider_not_configured"
+    default_user_message = (
+        "Nenhum provedor de transcrição configurado. Escolha um provedor na aba Models."
+    )
+
+
+class ProviderCredentialMissingError(ProviderError):
+    code = "provider_credential_missing"
+    default_user_message = (
+        "Falta a API key do provedor selecionado. Configure-a na aba Models."
+    )
+
+
+class ProviderCredentialInvalidError(ProviderError):
+    code = "provider_credential_invalid"
+    default_user_message = (
+        "A API key do provedor é inválida ou não tem permissão. Verifique a chave na aba Models."
+    )
+
+
+class ProviderRateLimitedError(ProviderError):
+    code = "provider_rate_limited"
+    retryable = True
+    default_user_message = (
+        "O provedor está limitando as requisições (rate limit). Tente novamente em instantes."
+    )
+
+
+class ProviderFileTooLargeError(ProviderError):
+    code = "provider_file_too_large"
+    default_user_message = (
+        "O arquivo é grande demais para o provedor selecionado. Use um arquivo menor "
+        "ou outro provedor."
+    )
+
+
+class ProviderResponseError(ProviderError):
+    code = "provider_response_error"
+    default_user_message = (
+        "O provedor retornou uma resposta inesperada. Tente novamente ou use outro provedor."
+    )
+
+
+class ProviderUnavailableError(ProviderError):
+    code = "provider_unavailable"
+    retryable = True
+    default_user_message = (
+        "O provedor está indisponível no momento. Tente novamente em instantes."
+    )
+
+
+class ProviderModelUnsupportedError(ProviderError):
+    code = "provider_model_unsupported"
+    default_user_message = (
+        "O modelo selecionado não é suportado por este provedor. Escolha outro modelo na aba Models."
+    )
+
+
 # --- queue / locking --------------------------------------------------------
 
 
@@ -106,6 +218,16 @@ __all__ = [
     "LocalTranscriptionConfigError",
     "ModelNotFoundError",
     "WhisperCppBinaryNotFoundError",
+    "PROVIDER_DOCS_URL",
+    "ProviderError",
+    "ProviderNotConfiguredError",
+    "ProviderCredentialMissingError",
+    "ProviderCredentialInvalidError",
+    "ProviderRateLimitedError",
+    "ProviderFileTooLargeError",
+    "ProviderResponseError",
+    "ProviderUnavailableError",
+    "ProviderModelUnsupportedError",
     "QueueUnavailableError",
     "QueueLockError",
     "GoogleTokenMissingError",
