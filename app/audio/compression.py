@@ -104,8 +104,14 @@ def prepare_audio_for_provider(
             warnings=[],
         )
 
-    backend_name = select_backend(plan)
-    input_size_mb = input_path.stat().st_size / (1024 * 1024) if input_path.exists() else 0.0
+    input_size_bytes = input_path.stat().st_size if input_path.exists() else 0
+    if input_size_bytes <= limit_bytes:
+        backend_name = "no-op"
+    elif runner is not None:
+        backend_name = "ffmpeg_cli"
+    else:
+        backend_name = select_backend(plan)
+    input_size_mb = input_size_bytes / (1024 * 1024)
 
     if backend_name == "no-op":
         LOGGER.info(

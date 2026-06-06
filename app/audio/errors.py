@@ -38,7 +38,7 @@ class FfmpegError(AudioError):
 class FfmpegNotFoundError(AudioError):
     """ffmpeg executable is missing from the system."""
 
-    default_user_message = "O executável ffmpeg não foi encontrado no sistema. Por favor, instale o ffmpeg para prosseguir."
+    default_user_message = "Não foi possível processar o áudio: o executável ffmpeg não foi encontrado no sistema. Instale o ffmpeg ou use uma imagem Docker com suporte a processamento de áudio."
 
 
 __all__ = [
