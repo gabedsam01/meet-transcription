@@ -70,6 +70,11 @@ e cria `user_automation_settings` (FK→users CASCADE, único por user, índice
 `AUTO_POLL_LOCK_TTL_SECONDS=240`, `MAX_FILE_SIZE_MB=0`, `DAILY_JOBS_LIMIT=0`
 (0 = ilimitado). Todas com default seguro em `.env.example`/`docker-compose.yml`.
 
+> **Default de automação:** `AUTO_POLL_ENABLED` fica **false** por padrão no
+> `docker-compose.yml` e no `.env.example`. A automação é **opt-in por usuário**
+> via UI (`/settings/automation`); um deploy novo não varre o Drive até alguém
+> ligar. (`WorkerSettings.from_env` também usa `false`.)
+
 ## 7. Testes adicionados/alterados
 Cobrem: classificação cloud/local; classificação de erros + mapeamento Deepgram
 429/401/413; colunas/tabela/migration; retry/guardrail/observability no repo

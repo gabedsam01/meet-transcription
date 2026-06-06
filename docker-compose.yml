@@ -157,8 +157,10 @@ services:
       JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
       JOB_RETRY_BASE_SECONDS: ${JOB_RETRY_BASE_SECONDS:-60}
       JOB_RETRY_MAX_SECONDS: ${JOB_RETRY_MAX_SECONDS:-3600}
-      # Auto-poll: scan each enabled user's Drive folder on an interval.
-      AUTO_POLL_ENABLED: ${AUTO_POLL_ENABLED:-true}
+      # Auto-poll: scan each enabled user's Drive folder on an interval. OFF by
+      # default — a fresh deploy must not crawl Drive before the user reviews their
+      # folder/provider/limits. Users opt in per-account at /settings/automation.
+      AUTO_POLL_ENABLED: ${AUTO_POLL_ENABLED:-false}
       AUTO_POLL_INTERVAL_SECONDS: ${AUTO_POLL_INTERVAL_SECONDS:-300}
       AUTO_POLL_MAX_USERS_PER_TICK: ${AUTO_POLL_MAX_USERS_PER_TICK:-50}
       AUTO_POLL_MAX_FILES_PER_USER: ${AUTO_POLL_MAX_FILES_PER_USER:-5}
