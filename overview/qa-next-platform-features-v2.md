@@ -80,8 +80,12 @@ conflicts); #2–#4 layered increasing overlap, resolved below.
 
 ## 5. Final services (`docker-compose.yml`)
 
-`postgres`, `redis`, `migrate`, `web`, `worker` — confirmed by `docker compose config
---services`. (No `model-init` service was added; local model files are mounted read-only.)
+Five always-on services: `postgres`, `redis`, `migrate`, `web`, `worker` — confirmed by
+`docker compose config --services` (a plain `docker compose up` starts exactly these).
+Plus an **optional** `model-init` one-shot (`python -m app.model_init`) gated behind the
+`model-init` Compose profile (`depends_on: []`, `restart: "no"`) for preparing local model
+files; it never starts by default and nothing depends on it. Run it only when using local
+engines: `docker compose --profile model-init run --rm model-init`.
 
 ## 6. Final providers
 

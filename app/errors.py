@@ -99,24 +99,22 @@ class LocalTranscriptionUnavailableError(TranscriptionProviderError):
 
     error_code = "CONFIG"
     retryable = False
+    code = "local_transcription_unavailable"
+    doc_url = f"{DOCS_BASE}/06-local-transcription.md"
     default_user_message = (
         "Transcrição indisponível: configure uma Deepgram API Key ou um modelo "
         "local válido."
     )
-    code = "local_transcription_unavailable"
-    retryable = False
-    doc_url = f"{DOCS_BASE}/06-local-transcription.md"
 
 
 class DeepgramKeyRequiredError(TranscriptionProviderError):
     error_code = "CONFIG"
     retryable = False
+    code = "deepgram_key_required"
+    doc_url = f"{DOCS_BASE}/05-deepgram.md"
     default_user_message = (
         "Configure sua Deepgram API Key antes de iniciar uma transcrição."
     )
-    code = "deepgram_key_required"
-    retryable = False
-    doc_url = f"{DOCS_BASE}/05-deepgram.md"
 
 
 class LocalTranscriptionConfigError(TranscriptionProviderError):
@@ -124,12 +122,11 @@ class LocalTranscriptionConfigError(TranscriptionProviderError):
 
     error_code = "CONFIG"
     retryable = False
+    code = "local_transcription_invalid"
+    doc_url = f"{DOCS_BASE}/06-local-transcription.md"
     default_user_message = (
         "Modelo local inválido. Consulte a documentação de modelos locais."
     )
-    code = "local_transcription_invalid"
-    retryable = False
-    doc_url = f"{DOCS_BASE}/06-local-transcription.md"
 
 
 class ModelNotFoundError(LocalTranscriptionConfigError):
