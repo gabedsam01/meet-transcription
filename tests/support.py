@@ -67,6 +67,11 @@ def make_worker_settings(tmp_dir, **overrides) -> WorkerSettings:
         deepgram_model="nova-3", deepgram_language="pt-BR",
         deepgram_smart_format=True, deepgram_punctuate=True,
         deepgram_diarize=True, deepgram_utterances=True,
+        queue_concurrency=5, job_max_attempts=3, job_retry_base_seconds=60,
+        job_retry_max_seconds=3600, auto_poll_enabled=False,
+        auto_poll_interval_seconds=300, auto_poll_max_users_per_tick=50,
+        auto_poll_max_files_per_user=5, auto_poll_lock_ttl_seconds=240,
+        max_file_size_mb=0, daily_jobs_limit=0,
     )
     base.update(overrides)
     return WorkerSettings(**base)

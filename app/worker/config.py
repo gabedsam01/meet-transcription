@@ -21,6 +21,20 @@ class WorkerSettings:
     deepgram_punctuate: bool
     deepgram_diarize: bool
     deepgram_utterances: bool
+    # Queue consumers + retry/backoff policy (redis-queue mode).
+    queue_concurrency: int = 5
+    job_max_attempts: int = 3
+    job_retry_base_seconds: int = 60
+    job_retry_max_seconds: int = 3600
+    # Auto-poll loop.
+    auto_poll_enabled: bool = False
+    auto_poll_interval_seconds: int = 300
+    auto_poll_max_users_per_tick: int = 50
+    auto_poll_max_files_per_user: int = 5
+    auto_poll_lock_ttl_seconds: int = 240
+    # Cost guardrail global defaults (0 = unlimited; per-user settings override).
+    max_file_size_mb: int = 0
+    daily_jobs_limit: int = 0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "WorkerSettings":
@@ -38,6 +52,25 @@ class WorkerSettings:
             deepgram_punctuate=parse_bool(values.get("DEEPGRAM_PUNCTUATE", "true")),
             deepgram_diarize=parse_bool(values.get("DEEPGRAM_DIARIZE", "true")),
             deepgram_utterances=parse_bool(values.get("DEEPGRAM_UTTERANCES", "true")),
+            queue_concurrency=_positive_int(values, "TRANSCRIPTION_QUEUE_CONCURRENCY", 5),
+            job_max_attempts=_positive_int(values, "JOB_MAX_ATTEMPTS", 3),
+            job_retry_base_seconds=_positive_int(values, "JOB_RETRY_BASE_SECONDS", 60),
+            job_retry_max_seconds=_positive_int(values, "JOB_RETRY_MAX_SECONDS", 3600),
+            auto_poll_enabled=parse_bool(values.get("AUTO_POLL_ENABLED", "false")),
+            auto_poll_interval_seconds=_positive_int(
+                values, "AUTO_POLL_INTERVAL_SECONDS", 300
+            ),
+            auto_poll_max_users_per_tick=_positive_int(
+                values, "AUTO_POLL_MAX_USERS_PER_TICK", 50
+            ),
+            auto_poll_max_files_per_user=_positive_int(
+                values, "AUTO_POLL_MAX_FILES_PER_USER", 5
+            ),
+            auto_poll_lock_ttl_seconds=_positive_int(
+                values, "AUTO_POLL_LOCK_TTL_SECONDS", 240
+            ),
+            max_file_size_mb=_non_negative_int(values, "MAX_FILE_SIZE_MB", 0),
+            daily_jobs_limit=_non_negative_int(values, "DAILY_JOBS_LIMIT", 0),
         )
 
 
@@ -51,4 +84,18 @@ def _positive_int(env: Mapping[str, str], key: str, default: int) -> int:
         raise ValueError(f"{key} must be an integer") from exc
     if number <= 0:
         raise ValueError(f"{key} must be greater than zero")
+    return number
+
+
+def _non_negative_int(env: Mapping[str, str], key: str, default: int) -> int:
+    """Like ``_positive_int`` but 0 is allowed (used for '0 = unlimited' limits)."""
+    raw = env.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        number = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an integer") from exc
+    if number < 0:
+        raise ValueError(f"{key} must not be negative")
     return number

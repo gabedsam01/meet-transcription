@@ -28,6 +28,7 @@ class WorkerContainer:
     build_local_provider: Callable | None = None
     queue: object | None = None
     queue_lock_ttl: int = 14400
+    provider_lock_ttl: int = 14400
 
 
 def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
@@ -63,4 +64,5 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         build_local_provider=_build_local_provider,
         queue=queue,
         queue_lock_ttl=queue_settings.global_lock_ttl_seconds,
+        provider_lock_ttl=queue_settings.provider_lock_ttl_seconds,
     )

@@ -31,10 +31,12 @@ def build_queue(settings: QueueSettings) -> TranscriptionQueue | None:
         from app.queue.redis_queue import RedisTranscriptionQueue
 
         return RedisTranscriptionQueue.from_url(
-            settings.redis_url, queue_name=settings.queue_name
+            settings.redis_url,
+            queue_name=settings.queue_name,
+            cloud_concurrency=settings.cloud_concurrency,
         )
     if settings.backend == "memory":
-        return InMemoryTranscriptionQueue()
+        return InMemoryTranscriptionQueue(cloud_concurrency=settings.cloud_concurrency)
     return None
 
 

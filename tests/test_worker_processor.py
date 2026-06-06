@@ -1,11 +1,22 @@
 from datetime import datetime, timezone
 
 from app.core.models import GoogleToken, JobStatus, Settings
+from app.errors import DeepgramRateLimitError, ProviderKeyInvalidError
+from app.queue.memory_queue import InMemoryTranscriptionQueue
 from app.transcription.config import TranscriptionConfig
 from app.transcription.local_validation import ValidationProbes
 from app.transcription.provider import TranscriptionResult
-from app.worker.processor import JobProcessor
+from app.worker.processor import JobProcessor, _backoff
 from tests.support import FakeDeepgramClient, FakeDriveClient, make_worker_container
+
+
+class RaisingDeepgram:
+    def __init__(self, exc):
+        self.exc = exc
+        self.api_key = None
+
+    def transcribe(self, video_path, api_key=None):
+        raise self.exc
 
 
 def _local_cfg(**over):
@@ -120,7 +131,9 @@ def test_process_fails_when_no_per_user_deepgram_key(tmp_path):
     assert "Deepgram" in done.error_message
 
 
-def test_process_marks_failed_on_transcription_error(tmp_path):
+def test_process_reschedules_a_transient_error_for_retry(tmp_path):
+    # An unknown/transient error is retried (not failed) until the attempt cap, so a
+    # blip never permanently fails a job. attempts==1 here (< max) -> reschedule.
     container = make_worker_container(
         tmp_path, deepgram=FakeDeepgramClient(fail=True)
     )
@@ -130,8 +143,11 @@ def test_process_marks_failed_on_transcription_error(tmp_path):
     JobProcessor(container).process(job)
 
     done = container.repositories.jobs.get_job(job.id)
-    assert done.status == JobStatus.FAILED.value
-    assert "deepgram failed" in done.error_message
+    assert done.status == JobStatus.PENDING.value          # back to pending for retry
+    assert done.next_retry_at is not None                  # with a backoff gate
+    assert done.last_error_code == "UNEXPECTED"
+    assert done.attempts == 1                              # preserved
+    assert done.source_file_id == "src-1"                  # never lost on retry
     assert container.repositories.transcripts.get_by_job(job.id) is None
 
 
@@ -191,6 +207,73 @@ def test_process_falls_back_to_deepgram_when_local_invalid_with_key(tmp_path):
     transcript = container.repositories.transcripts.get_by_job(job.id)
     assert transcript.json_payload["provider"] == "deepgram"
     assert deepgram.api_key == "user-dg-key"
+
+
+def test_rate_limit_schedules_retry_with_backoff(tmp_path):
+    container = make_worker_container(
+        tmp_path, deepgram=RaisingDeepgram(DeepgramRateLimitError(retry_after_seconds=90)),
+        queue=InMemoryTranscriptionQueue(),
+    )
+    _seed(container.repositories)
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.PENDING.value
+    assert done.last_error_code == "RATE_LIMIT"
+    assert done.next_retry_at is not None
+    assert container.queue.dead_job_ids() == set()  # retry, not dead-lettered
+
+
+def test_terminal_key_invalid_dead_letters_without_retry(tmp_path):
+    queue = InMemoryTranscriptionQueue()
+    container = make_worker_container(
+        tmp_path, deepgram=RaisingDeepgram(ProviderKeyInvalidError()), queue=queue,
+    )
+    _seed(container.repositories)
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value
+    assert done.last_error_code == "KEY_INVALID"
+    assert queue.dead_job_ids() == {job.id}  # routed to the dead-letter set
+
+
+def test_retryable_error_dead_letters_once_attempts_are_exhausted(tmp_path):
+    queue = InMemoryTranscriptionQueue()
+    container = make_worker_container(
+        tmp_path,
+        deepgram=RaisingDeepgram(DeepgramRateLimitError(retry_after_seconds=1)),
+        queue=queue,
+    )
+    container = _with_max_attempts(container, 3)
+    _seed(container.repositories)
+    job_row = container.repositories.jobs.create_job(7, "src-1", "a.mp4", _now())
+    # Simulate having already used the attempt budget: attempts==3 at claim time.
+    container.repositories.jobs._jobs[job_row.id].attempts = 2
+    job = container.repositories.jobs.claim_job(job_row.id, "w", _now())  # attempts -> 3
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.FAILED.value          # cap reached -> terminal
+    assert queue.dead_job_ids() == {job.id}
+
+
+def test_backoff_grows_and_is_floored_by_retry_after():
+    assert _backoff(1, 60, 3600, None) == 60
+    assert _backoff(2, 60, 3600, None) == 120
+    assert _backoff(3, 60, 3600, None) == 240
+    assert _backoff(10, 60, 3600, None) == 3600           # capped at max
+    assert _backoff(1, 60, 3600, 200) == 200              # floored by Retry-After
+
+
+def _with_max_attempts(container, n):
+    import dataclasses
+    return dataclasses.replace(container, settings=dataclasses.replace(container.settings, job_max_attempts=n))
 
 
 def test_process_cleans_only_its_own_job_dir(tmp_path):
