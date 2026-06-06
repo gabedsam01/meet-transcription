@@ -489,6 +489,50 @@ Follow-up commit range on top of the four merges above that turns the
 - alembic heads: single head `0002_extension_tokens`
 - `docker compose config`: OK (Google envs empty; build still validates)
 
+## 21. Simplify navigation and onboarding journey (PR #7)
+
+### Navigation collapsed
+
+- **Top nav reduced from 9 to 5 items** for common users:
+  `Transcrições | Modelos | Extensão | Configurações | Sair`.
+- Removed from main nav: `Onboarding`, `Buscar`, `Drive`, `Automação`.
+- **Admin-only links** behind `Usuários | Sistema` (only visible when `user.role == "admin"`).
+- `Sistema` is a landing page (`/admin/system`) with cards linking to `Fila`, `Usuários`, and `Saúde`.
+- Mobile hamburger toggle (`#navToggle`) with `aria-expanded`; nav becomes a dropdown on ≤768px.
+
+### Onboarding embedded
+
+- `/onboarding` route still exists but is **no longer a top-level nav item**.
+- Dashboard (`/`) shows a **"Falta pouco para começar"** card when `provider_ready == False` or `extension_ready == False`.
+- Checklist card has 4 steps: Instale a extensão → Gere token → Configure provider → Grave uma reunião.
+- When ready, dashboard focuses on **stats + recent jobs** and shows a compact "Status do sistema" card.
+
+### Settings grouped
+
+- `/configuracoes` (alias to `/settings`) is the single settings entry point.
+- Cards grid links to: `Extensão`, `Google Drive`, `Modelos`, `Automação`, and `Admin/Sistema` (admin only).
+
+### Search integrated
+
+- Search bar added to the top of `/jobs` page; submits to `/search?q=...`.
+- `/search` still works as a standalone page but is no longer a top nav item.
+
+### Files changed
+
+- `app/web/templates/base.html` — simplified nav + mobile toggle.
+- `app/web/templates/dashboard.html` — onboarding card + simplified stats.
+- `app/web/templates/settings.html` — grouped settings cards.
+- `app/web/templates/admin_system.html` — new admin landing page.
+- `app/web/templates/jobs.html` — integrated search bar.
+- `app/web/static/styles.css` — mobile hamburger styles.
+- `app/web/main.py` — `/configuracoes`, `/admin/system`, onboarding context in dashboard.
+- `tests/test_web_ui.py`, `tests/test_web_routes.py` — nav, onboarding, mobile, legacy route tests.
+
+### Validation
+
+- pytest: updated tests for new nav structure and onboarding behavior.
+- All legacy routes (`/onboarding`, `/jobs`, `/search`) continue to return 200.
+
 ## 20. Chrome recorder dynamic permissions (PR #7)
 
 - **Manifest:** removed the hardcoded backend host from `host_permissions`; kept

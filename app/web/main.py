@@ -412,19 +412,54 @@ def create_app(settings: WebSettings | None = None,
             has_key=lambda pid: provider_key_store.has(user.id, pid) if provider_key_store else None,
         )
         qs = _queue_status()
+        # Onboarding readiness (same logic as /onboarding, simplified for dashboard)
+        google_connected = repos.google_tokens.get_for_user(user.id) is not None
+        google_available = web_settings.google_enabled
+        drive = repos.drive_settings.get_for_user(user.id)
+        folder_valid = bool(drive and drive.source_drive_folder_id)
+        extension_store = repos.extension_tokens
+        extension_tokens = sum(
+            1 for t in (list(extension_store.list_for_user(user.id)) if extension_store else [])
+            if t.revoked_at is None
+        ) if extension_store else 0
+        extension_ready = extension_tokens > 0
+        provider_ready = readiness.ok
+        audio_input_ready = (
+            (google_available and google_connected and folder_valid)
+            or extension_ready
+        )
+        needs_onboarding = not provider_ready or not audio_input_ready
+        onboarding_steps = []
+        if needs_onboarding:
+            onboarding_steps = [
+                {"title": "Instale a extensão", "done": extension_ready,
+                 "desc": "Instale a extensão Chrome para gravar o áudio do Meet.",
+                 "cta": None if extension_ready else ("Configurar extensão", "/extensao")},
+                {"title": "Gere um token", "done": extension_ready,
+                 "desc": "Gere um token de upload para a extensão Chrome.",
+                 "cta": None if extension_ready else ("Gerar token", "/extensao")},
+                {"title": "Configure o provider", "done": provider_ready,
+                 "desc": readiness.reason or f"Provedor {readiness.status_label.lower()}.",
+                 "cta": None if provider_ready else (readiness.action_label or "Configurar modelos", readiness.action_href or "/models")},
+                {"title": "Grave uma reunião", "done": False,
+                 "desc": "Use a extensão para gravar e enviar uma reunião do Meet.",
+                 "cta": ("Ir para extensão", "/extensao")},
+            ]
         return templates.TemplateResponse(request, "dashboard.html", _ctx(request, user,
             active_nav="dashboard",
             settings=repos.drive_settings.get_for_user(user.id),
-            google_connected=repos.google_tokens.get_for_user(user.id) is not None,
+            google_connected=google_connected,
             model_settings=model_settings,
             provider_label=primary_spec.label if primary_spec else model_settings.primary_provider,
-            provider_ready=_primary_ready(user.id, model_settings),
+            provider_ready=provider_ready,
             provider_readiness=readiness,
             transcription_status=app.state.transcription_status,
             queue_status={**qs, "pending": len([j for j in jobs if j.status == "pending"]), "processing": len([j for j in jobs if j.status == "processing"])},
             total_jobs=len(jobs),
             last_job=jobs[0] if jobs else None,
             jobs=jobs[:5],
+            needs_onboarding=needs_onboarding,
+            onboarding_steps=onboarding_steps,
         ))
 
     @app.get("/onboarding", response_class=HTMLResponse)
@@ -574,6 +609,11 @@ def create_app(settings: WebSettings | None = None,
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, user=Depends(require_user)):
         # Landing page that links out to the focused settings sections.
+        return templates.TemplateResponse(request, "settings.html", _ctx(request, user, active_nav="settings"))
+
+    @app.get("/configuracoes", response_class=HTMLResponse)
+    def configuracoes_page(request: Request, user=Depends(require_user)):
+        # Friendly alias for /settings used in the top nav.
         return templates.TemplateResponse(request, "settings.html", _ctx(request, user, active_nav="settings"))
 
     @app.get("/settings/drive", response_class=HTMLResponse)
@@ -982,12 +1022,20 @@ def create_app(settings: WebSettings | None = None,
             worker_repos.jobs.count_jobs_by_status() if worker_repos else {}
         )
         return templates.TemplateResponse(request, "queue_status.html", _ctx(request, admin,
-            active_nav="queue",
+            active_nav="admin_system",
             queue_status=_queue_status(),
             stats=stats,
             dead_ids=dead_ids,
             status_counts=status_counts,
             message=_pop_flash(request),
+        ))
+
+    @app.get("/admin/system", response_class=HTMLResponse)
+    def admin_system(request: Request, admin=Depends(require_admin)):
+        return templates.TemplateResponse(request, "admin_system.html", _ctx(request, admin,
+            active_nav="admin_system",
+            queue_status=_queue_status(),
+            version_info=get_version_info(),
         ))
 
     @app.get("/jobs", response_class=HTMLResponse)

@@ -4,89 +4,53 @@
   <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
     <div>
       <p class="page-eyebrow">Painel</p>
-      <h1 class="page-title">Painel de controle</h1>
-      <p class="page-subtitle">Conecte o Google Drive, configure pastas, seu provedor de transcrição e enfileire execuções.</p>
+      <h1 class="page-title">Bem-vindo</h1>
+      <p class="page-subtitle">
+        {% if needs_onboarding %}
+        Falta pouco para começar a transcrever suas reuniões.
+        {% else %}
+        Acompanhe suas transcrições e configure o produto.
+        {% endif %}
+      </p>
     </div>
-    {% if not google_connected %}
-    <a class="btn btn-primary" href="/connect-google">Conectar Google</a>
+    {% if not needs_onboarding %}
+    <div class="page-actions">
+      <a class="btn btn-primary" href="/jobs">Ver transcrições</a>
+      <a class="btn btn-secondary" href="/extensao">Gravar reunião</a>
+    </div>
     {% endif %}
   </div>
 </div>
 
-<section class="card-grid">
-  <article class="card stat-card">
-    <div class="flex-between" style="margin-bottom:.5rem">
-      <span class="stat-label">Google</span>
-      <span class="badge {% if google_connected %}badge-success{% else %}badge-danger{% endif %}">{{ "Conectado" if google_connected else "Não conectado" }}</span>
+{% if needs_onboarding %}
+<section class="card" style="border-color: var(--primary);">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Falta pouco para começar</h2>
+      <p class="card-subtitle">Complete os passos abaixo para ativar a transcrição.</p>
     </div>
-    {% if not google_connected %}<a class="btn btn-ghost btn-sm mt-1" href="/connect-google">Conectar agora</a>{% endif %}
-  </article>
-  <article class="card stat-card">
-    <div class="flex-between" style="margin-bottom:.5rem">
-      <span class="stat-label">Drive origem</span>
-      <span class="badge {% if settings and settings.source_drive_folder_id %}badge-success{% else %}badge-danger{% endif %}">{{ "Configurado" if settings and settings.source_drive_folder_id else "Não configurado" }}</span>
-    </div>
-    {% if settings and settings.source_drive_folder_id %}
-    <p class="mono hint" title="{{ settings.source_drive_folder_id }}">{{ settings.source_drive_folder_id | mid }}</p>
-    {% else %}
-    <a class="btn btn-ghost btn-sm mt-1" href="/settings/drive">Configurar pasta</a>
-    {% endif %}
-  </article>
-  <article class="card stat-card">
-    <div class="flex-between" style="margin-bottom:.5rem">
-      <span class="stat-label">Modelos</span>
-      <span class="badge {% if provider_ready %}badge-success{% else %}badge-danger{% endif %}">{{ "Configurado" if provider_ready else "Não configurado" }}</span>
-    </div>
-    <p class="hint">{{ provider_label }} · <span class="mono">{{ model_settings.primary_model }}</span></p>
-    <a class="btn btn-ghost btn-sm mt-1" href="/models">Gerenciar modelos</a>
-  </article>
-  <article class="card stat-card">
-    <div class="flex-between" style="margin-bottom:.5rem">
-      <span class="stat-label">Transcrição</span>
-      {% if provider_readiness and provider_readiness.ok %}
-      <span class="badge badge-success">Pronto</span>
-      {% elif provider_readiness %}
-      <span class="badge badge-warning">{{ provider_readiness.status_label }}</span>
-      {% elif transcription_status and transcription_status.local_valid %}
-      <span class="badge badge-success">{{ transcription_status.message }}</span>
-      {% elif transcription_status and transcription_status.enabled %}
-      <span class="badge badge-danger">{{ transcription_status.message }}</span>
-      {% else %}
-      <span class="badge badge-neutral">Não configurado</span>
-      {% endif %}
-    </div>
-    {% if provider_readiness and provider_readiness.ok %}
-    <p class="hint">{{ provider_readiness.provider_label }}: {{ provider_readiness.model }}</p>
-    {% elif provider_readiness %}
-    {% if provider_readiness.action_href %}<a class="btn btn-ghost btn-sm mt-1" href="{{ provider_readiness.action_href }}">{{ provider_readiness.action_label }}</a>{% endif %}
-    {% elif transcription_status and transcription_status.local_valid %}
-    <p class="hint">Local ativo — nuvem opcional</p>
-    {% elif transcription_status and transcription_status.enabled %}
-    {% if transcription_status.doc_url %}<a class="btn btn-ghost btn-sm mt-1" href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Documentação</a>{% endif %}
-    {% else %}
-    <p class="hint">Provedor de nuvem: configure na aba Modelos.</p>
-    {% endif %}
-  </article>
-  <article class="card stat-card">
-    <div class="flex-between" style="margin-bottom:.5rem">
-      <span class="stat-label">Fila</span>
-      {% if not queue_status or queue_status.mode == 'poll' %}
-      <span class="badge badge-neutral">Polling</span>
-      {% elif queue_status.available %}
-      <span class="badge badge-success">Online</span>
-      {% else %}
-      <span class="badge badge-danger">Indisponível</span>
-      {% endif %}
-    </div>
-    {% if not queue_status or queue_status.mode == 'poll' %}
-    <p class="hint">Processamento sequencial sem Redis</p>
-    {% elif queue_status.available %}
-    <p class="hint">Redis ativo</p>
-    {% else %}
-    <p class="hint">Jobs pendentes até o Redis voltar</p>
-    {% endif %}
-  </article>
+  </div>
+  <ol class="steps" style="margin:0">
+    {% for step in onboarding_steps %}
+    <li class="step {% if step.done %}step-done{% elif loop.index == 1 or not onboarding_steps[loop.index0 - 1].done %}is-current{% endif %}">
+      <div class="step-row">
+        <span class="step-num {{ 'ok' if step.done else 'off' }}">{{ loop.index }}</span>
+        <div class="step-body">
+          <h3>{{ step.title }} {% if step.done %}<span class="ok">✓</span>{% endif %}</h3>
+          <p class="hint">{{ step.desc }}</p>
+          {% if step.cta and not step.done %}
+          <a class="btn btn-primary btn-sm" href="{{ step.cta[1] }}">{{ step.cta[0] }}</a>
+          {% endif %}
+        </div>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  <div class="actions-row mt-1">
+    <a class="btn btn-secondary" href="/onboarding">Configuração guiada detalhada</a>
+  </div>
 </section>
+{% endif %}
 
 <section class="card-grid">
   <article class="card stat-card">
@@ -145,12 +109,37 @@
   {% else %}
   <div class="empty-state">
     <p class="empty-title">Nenhuma transcrição ainda</p>
-    <p class="empty-desc">Inicie uma transcrição manual ou configure a automação.</p>
+    <p class="empty-desc">Inicie uma transcrição manual ou configure a extensão.</p>
     <div class="actions-row">
-      <a class="btn btn-primary" href="/jobs">Ir para transcrições</a>
-      <a class="btn btn-secondary" href="/settings/automation">Configurar automação</a>
+      <a class="btn btn-primary" href="/extensao">Configurar extensão</a>
+      <a class="btn btn-secondary" href="/models">Configurar modelos</a>
     </div>
   </div>
   {% endif %}
 </section>
+
+{% if not needs_onboarding %}
+<section class="card" style="margin-top:1.5rem">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Status do sistema</h2>
+      <p class="card-subtitle">Visão rápida da infraestrutura</p>
+    </div>
+  </div>
+  <ul class="readiness-list">
+    <li>
+      <span class="r-icon {{ 'r-ok' if google_connected else 'r-off' }}">{{ "✓" if google_connected else "•" }}</span>
+      <span class="{{ 'ok' if google_connected else 'muted' }}">Google Drive: {{ "Conectado" if google_connected else "Não conectado" }}</span>
+    </li>
+    <li>
+      <span class="r-icon {{ 'r-ok' if provider_ready else 'r-off' }}">{{ "✓" if provider_ready else "•" }}</span>
+      <span class="{{ 'ok' if provider_ready else 'muted' }}">Provider: {{ provider_label }} · {{ "Pronto" if provider_ready else "Não configurado" }}</span>
+    </li>
+    <li>
+      <span class="r-icon {{ 'r-ok' if queue_status.available else 'r-warn' if queue_status.mode == 'queue' else 'r-ok' }}">{{ "✓" if queue_status.available or queue_status.mode == 'poll' else "•" }}</span>
+      <span>Fila: {{ "Online" if queue_status.available else "Polling (sem Redis)" if queue_status.mode == 'poll' else "Indisponível" }}</span>
+    </li>
+  </ul>
+</section>
+{% endif %}
 {% endblock %}

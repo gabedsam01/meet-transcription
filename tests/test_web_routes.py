@@ -296,6 +296,33 @@ def test_oauth_callback_saves_token_and_identity(tmp_path, monkeypatch):
         assert repos.users.get_by_id(admin.id).google_email == "me@gmail.com"
 
 
+def test_onboarding_route_still_works(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/onboarding")
+        assert r.status_code == 200
+        assert "Configuração guiada" in r.text
+
+
+def test_search_route_still_works(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        r = client.get("/search")
+        assert r.status_code == 200
+        assert "Buscar" in r.text
+
+
+def test_mobile_nav_toggle_exists(tmp_path):
+    client, _ = _client(tmp_path)
+    with client:
+        _login(client)
+        text = client.get("/").text
+        assert 'id="navToggle"' in text
+        assert 'aria-expanded' in text
+
+
 def test_oauth_callback_rejects_bad_state(tmp_path):
     client, _ = _client(tmp_path)
     with client:

@@ -4,8 +4,8 @@
   <div class="flex-between" style="flex-wrap:wrap; gap:1rem">
     <div>
       <p class="page-eyebrow">Transcrições</p>
-      <h1 class="page-title">Jobs de transcrição</h1>
-      <p class="page-subtitle">Manuais e automáticos</p>
+      <h1 class="page-title">Transcrições</h1>
+      <p class="page-subtitle">Manuais e automáticas</p>
     </div>
     <div class="page-actions">
       <form method="post" action="/automation/check-now" style="margin:0">
@@ -19,6 +19,13 @@
     </div>
   </div>
 </div>
+
+<section class="card">
+  <form method="get" action="/search" class="search-form" style="margin:0">
+    <input class="input" type="search" name="q" value="" placeholder="Buscar transcrições concluídas…" aria-label="Buscar transcrições">
+    <button type="submit" class="btn btn-primary">Buscar</button>
+  </form>
+</section>
 
 {% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
 <div class="alert alert-warning mb-1">

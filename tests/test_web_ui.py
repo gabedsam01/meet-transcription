@@ -14,6 +14,7 @@ from app.web.helpers import (
     short_datetime,
 )
 from app.web.main import create_app
+from app.web.passwords import hash_password
 from app.web.repositories import DriveSettings as AuthDriveSettings, GoogleToken as AuthGoogleToken
 from tests.fakes import build_fake_repositories
 
@@ -188,13 +189,85 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
         _login(client)
         text = client.get("/").text
 
-    assert "Conectado" in text  # Google
-    assert "Configurado" in text  # Drive source + Models provider
     assert "Total de transcrições" in text
     assert "Transcrições recentes" in text
     assert "badge-completed" in text  # last job status badge
-    assert "/models" in text  # Models CTA (replaces the old Deepgram tab)
+    assert "/models" in text  # Models CTA
     assert "/jobs" in text  # Jobs CTA
+
+
+def test_dashboard_shows_onboarding_when_not_ready(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Falta pouco para começar" in text
+    assert "Instale a extensão" in text
+    assert "Configure o provider" in text
+    assert "Grave uma reunião" in text
+
+
+def test_dashboard_hides_onboarding_when_ready(tmp_path):
+    auth = build_fake_repositories()
+    auth.provider_credentials.save(1, "deepgram", "encrypted-key")
+    auth.extension_tokens.create_for_user(1, name="t", token_hash="h1", token_prefix="p1")
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Falta pouco para começar" not in text
+    assert "Status do sistema" in text
+
+
+def test_navbar_simplified_for_user(tmp_path):
+    auth = build_fake_repositories()
+    pw = hash_password("secret")
+    auth.users.create(email="user@example.com", password_hash=pw, role="user")
+    app = _app(tmp_path, build_memory_repositories(), auth=auth)
+    with TestClient(app) as client:
+        r = client.post("/login", data={"username": "user@example.com", "password": "secret"}, follow_redirects=False)
+        assert r.status_code in {302, 303}
+        text = client.get("/").text
+    assert "Transcrições" in text
+    assert "Modelos" in text
+    assert "Extensão" in text
+    assert "Configurações" in text
+    assert "Onboarding" not in text
+    assert "Buscar" not in text
+    assert "Fila" not in text
+    assert "Sistema" not in text
+
+
+def test_admin_sees_system_link(tmp_path):
+    auth = build_fake_repositories()
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/").text
+    assert "Usuários" in text
+    assert "Sistema" in text
+
+
+def test_configuracoes_renders_grouped_settings(tmp_path):
+    with TestClient(_app(tmp_path, build_memory_repositories())) as client:
+        _login(client)
+        text = client.get("/configuracoes").text
+    assert "Extensão" in text
+    assert "Google Drive" in text
+    assert "Modelos" in text
+    assert "Automação" in text
+    assert "/extensao" in text
+    assert "/settings/drive" in text
+    assert "/models" in text
+
+
+def test_admin_system_renders_cards(tmp_path):
+    auth = build_fake_repositories()
+    with TestClient(_app(tmp_path, build_memory_repositories(), auth=auth)) as client:
+        _login(client)
+        text = client.get("/admin/system").text
+    assert "Fila" in text
+    assert "Usuários" in text
+    assert "Saúde" in text
+    assert "/admin/queue" in text
+    assert "/admin/users" in text
 
 
 # --- settings ---------------------------------------------------------------

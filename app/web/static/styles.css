@@ -75,6 +75,7 @@ a { color: var(--primary); text-decoration: none; }
 .nav { display: flex; align-items: center; gap: .25rem; }
 .nav-group { display: flex; align-items: center; gap: .25rem; }
 .nav-group + .nav-group { margin-left: 1rem; padding-left: 1rem; border-left: 1px solid var(--border); }
+.nav-group-admin .nav-link { color: var(--muted); font-size: .82rem; }
 .nav-link {
   display: inline-flex;
   align-items: center;
@@ -89,6 +90,18 @@ a { color: var(--primary); text-decoration: none; }
 .nav-link:hover { background: var(--surface-2); color: var(--text); }
 .nav-link.is-active { background: rgba(25, 115, 94, .08); color: var(--primary); }
 .nav-link.is-active::after { display: none; }
+
+/* Mobile nav toggle */
+.nav-toggle {
+  display: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: .4rem;
+  color: var(--text);
+  cursor: pointer;
+  min-height: 36px;
+}
 
 /* Page */
 .page { flex: 1; padding: 1.5rem 2rem 3rem; max-width: 1280px; margin: 0 auto; width: 100%; }
@@ -388,9 +401,11 @@ button:not(.btn):hover, .button:not(.btn):hover { background: var(--primary-dark
 @media (max-width: 768px) {
   .topbar { padding: 0 1rem; height: 56px; }
   .brand-text { display: none; }
-  .nav-group { display: none; }
-  .nav-group.is-visible { display: flex; flex-direction: column; position: absolute; top: 56px; left: 0; right: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: .5rem 1rem; gap: .15rem; }
-  .nav-group + .nav-group { margin-left: 0; padding-left: 0; border-left: none; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
+  .nav { display: none; position: absolute; top: 56px; left: 0; right: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: .5rem 1rem; flex-direction: column; align-items: stretch; gap: .15rem; z-index: 50; }
+  .nav.is-visible { display: flex; }
+  .nav-group { display: flex; flex-direction: column; gap: .15rem; }
+  .nav-group + .nav-group { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid var(--border); margin-top: .35rem; padding-top: .35rem; }
   .nav-link { padding: .5rem .6rem; }
   .page { padding: 1rem; }
   .card-grid { grid-template-columns: 1fr; }
