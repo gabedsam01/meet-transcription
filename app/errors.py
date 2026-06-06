@@ -210,6 +210,17 @@ class JobAlreadyProcessingError(AppError):
     default_user_message = "Esta transcrição já está em processamento."
 
 
+# --- chrome-extension recording uploads -------------------------------------
+
+
+class RecordingNotFoundError(AppError):
+    """An upload job's recording file is missing from the shared recordings dir."""
+
+    default_user_message = (
+        "Gravação enviada não encontrada. Reenvie a gravação pela extensão."
+    )
+
+
 __all__ = [
     "AppError",
     "TranscriptionProviderError",
@@ -234,4 +245,5 @@ __all__ = [
     "DriveFolderMissingError",
     "JobAlreadyQueuedError",
     "JobAlreadyProcessingError",
+    "RecordingNotFoundError",
 ]

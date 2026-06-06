@@ -44,6 +44,28 @@ x-transcription-env: &transcription-env
   WHISPER_CPP_BINARY: ${WHISPER_CPP_BINARY:-}
   LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD: ${LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD:-false}
   LOCAL_TRANSCRIPTION_DOC_URL: ${LOCAL_TRANSCRIPTION_DOC_URL:-https://github.com/gabedsam01/meet-transcription/blob/main/docs/architecture/local-transcription.md}
+  # Optional audio preprocessing (OFF by default; no-audio fast-fail + chunk/stitch
+  # library). See documentation/24-audio-preprocessing.md.
+  AUDIO_PREPROCESSING_ENABLED: ${AUDIO_PREPROCESSING_ENABLED:-false}
+  AUDIO_TARGET_SAMPLE_RATE: ${AUDIO_TARGET_SAMPLE_RATE:-16000}
+  AUDIO_TARGET_CHANNELS: ${AUDIO_TARGET_CHANNELS:-1}
+  AUDIO_TARGET_BITRATE: ${AUDIO_TARGET_BITRATE:-24000}
+  AUDIO_CHUNK_MAX_DURATION_SECONDS: ${AUDIO_CHUNK_MAX_DURATION_SECONDS:-900}
+  AUDIO_CHUNK_OVERLAP_SECONDS: ${AUDIO_CHUNK_OVERLAP_SECONDS:-2}
+  AUDIO_MAX_INLINE_MB: ${AUDIO_MAX_INLINE_MB:-70}
+  AUDIO_MAX_FILE_API_MB: ${AUDIO_MAX_FILE_API_MB:-99}
+  # Optional local diarization (OFF by default; pyannote is a build-arg engine and
+  # DIARIZATION_AUTH_TOKEN is a secret — see documentation/26-diarization.md).
+  DIARIZATION_ENABLED: ${DIARIZATION_ENABLED:-false}
+  DIARIZATION_ENGINE: ${DIARIZATION_ENGINE:-none}
+  DIARIZATION_MODEL: ${DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
+  DIARIZATION_AUTH_TOKEN: ${DIARIZATION_AUTH_TOKEN:-}
+  DIARIZATION_REQUIRED: ${DIARIZATION_REQUIRED:-false}
+  DIARIZATION_MIN_SPEAKERS: ${DIARIZATION_MIN_SPEAKERS:-}
+  DIARIZATION_MAX_SPEAKERS: ${DIARIZATION_MAX_SPEAKERS:-}
+  # Shared recordings dir for Chrome-extension uploads (under the ./data volume so
+  # web writes and worker reads the same files).
+  EXTENSION_RECORDINGS_DIR: ${EXTENSION_RECORDINGS_DIR:-/app/data/recordings}
 
 services:
   postgres:
@@ -89,6 +111,23 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://meet_user:change_me@postgres:5432/meet_transcription}
 
+  # OPTIONAL one-shot model preparation. Validates the configured local model and,
+  # when LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=true, downloads it into the (writable)
+  # /models volume, then exits. OPT-IN via a profile so a plain `docker compose up`
+  # never runs it: `docker compose --profile model-init run --rm model-init`, or
+  # `docker compose --profile model-init up model-init`. The web service does NOT
+  # depend on it; the worker validates its model at runtime regardless.
+  model-init:
+    <<: *app
+    command: ["python", "-m", "app.model_init"]
+    restart: "no"   # one-shot job.
+    profiles: ["model-init"]
+    depends_on: []   # needs no Postgres/Redis — it only prepares model files.
+    environment:
+      <<: *transcription-env
+    volumes:
+      - ./models:/models   # WRITABLE here so auto-download can populate it.
+
   # Serves the UI and OAuth flow. Creates pending jobs only — it never downloads,
   # transcribes, or uploads. The Web UI uses per-user encrypted Deepgram keys, so
   # it needs no global DEEPGRAM_API_KEY.
@@ -116,6 +155,11 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/oauth/google/callback}
       WORKER_REPOSITORY_BACKEND: ${WORKER_REPOSITORY_BACKEND:-postgres}
       TMP_DIR: ${TMP_DIR:-/app/tmp}
+      # Chrome-extension upload (POST /api/recordings/upload). DISABLED unless a
+      # token is set; the worker transcribes the upload out of band.
+      EXTENSION_UPLOAD_TOKEN: ${EXTENSION_UPLOAD_TOKEN:-}
+      EXTENSION_UPLOAD_MAX_MB: ${EXTENSION_UPLOAD_MAX_MB:-500}
+      EXTENSION_UPLOAD_USER_EMAIL: ${EXTENSION_UPLOAD_USER_EMAIL:-}
     ports:
       - "8000:8000"
     volumes:

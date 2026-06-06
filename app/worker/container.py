@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
+from app.audio.config import AudioConfig
 from app.core.ports import Repositories
 from app.deepgram_client import DeepgramClient
+from app.diarization.config import DiarizationConfig
+from app.diarization.provider import build_diarization_provider as _build_diarization_provider
 from app.errors import ProviderUnavailableError
 from app.drive_client import DriveClient
 from app.google_auth import credentials_from_token
 from app.queue import QueueSettings, build_queue
+from app.recordings import recordings_dir_from_env
 from app.repositories import build_repositories
 from app.transcription.config import TranscriptionConfig
 from app.transcription.factory import build_local_provider as _build_local_provider
@@ -32,12 +37,23 @@ class WorkerContainer:
     build_cloud_provider: Callable | None = None
     queue: object | None = None
     queue_lock_ttl: int = 14400
+    # Optional audio preprocessing + diarization + chrome-extension uploads. All
+    # OFF/None by default so the existing Drive+Deepgram path is byte-for-byte
+    # unchanged; each is gated on its own config flag.
+    audio_config: AudioConfig | None = None
+    audio_runner: Callable | None = None
+    diarization_config: DiarizationConfig | None = None
+    diarization_probes: object | None = None
+    build_diarization_provider: Callable | None = None
+    recordings_dir: Path | None = None
 
 
 def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
     worker_settings = settings or WorkerSettings.from_env()
     repositories = build_repositories(worker_settings.repository_backend)
     transcription_config = TranscriptionConfig.from_env()
+    audio_config = AudioConfig.from_env()
+    diarization_config = DiarizationConfig.from_env()
     queue_settings = QueueSettings.from_env()
     queue = build_queue(queue_settings)
 
@@ -86,4 +102,8 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         build_cloud_provider=build_cloud_provider,
         queue=queue,
         queue_lock_ttl=queue_settings.global_lock_ttl_seconds,
+        audio_config=audio_config,
+        diarization_config=diarization_config,
+        build_diarization_provider=_build_diarization_provider,
+        recordings_dir=recordings_dir_from_env(),
     )

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Meet Audio Recorder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <h1 class="title">Meet Audio Recorder</h1>
+        <!-- Visual recording indicator: red pulsing dot when active. -->
+        <span id="indicator" class="indicator idle" aria-live="polite">
+          <span class="dot"></span>
+          <span id="indicator-label" class="indicator-label">Parado</span>
+        </span>
+      </header>
+
+      <section class="controls">
+        <button id="start-btn" class="btn btn-primary" type="button">
+          Iniciar gravação
+        </button>
+        <button id="stop-btn" class="btn btn-danger" type="button" disabled>
+          Parar gravação
+        </button>
+      </section>
+
+      <label class="check-row">
+        <input id="capture-mic" type="checkbox" />
+        <span>Também gravar meu microfone</span>
+      </label>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <details class="settings">
+        <summary>Configurações</summary>
+        <form id="settings-form" class="settings-form">
+          <label class="field">
+            <span class="field-label">URL do backend</span>
+            <input
+              id="backend-url"
+              type="url"
+              inputmode="url"
+              placeholder="http://localhost:8000"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field-label">Token de upload</span>
+            <!-- type=password so the token is masked and never shoulder-surfed. -->
+            <input
+              id="upload-token"
+              type="password"
+              placeholder="EXTENSION_UPLOAD_TOKEN"
+              autocomplete="off"
+            />
+          </label>
+
+          <div class="settings-actions">
+            <button id="save-settings" class="btn btn-secondary" type="submit">
+              Salvar configurações
+            </button>
+          </div>
+          <p id="settings-status" class="settings-status" aria-live="polite"></p>
+        </form>
+      </details>
+
+      <p class="hint">
+        A captura de áudio exige um clique seu em "Iniciar gravação" em uma aba
+        do Google Meet. Gravamos em WebM/Opus.
+      </p>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
