@@ -10,6 +10,11 @@ def _copy(obj):
     return dataclasses.replace(obj) if obj is not None else None
 
 
+def _is_due(job, now) -> bool:
+    """A pending job is claimable when it has no retry gate or the gate has passed."""
+    return job.next_retry_at is None or job.next_retry_at <= now
+
+
 class InMemoryJobRepository:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -30,7 +35,10 @@ class InMemoryJobRepository:
     def claim_next_pending_job(self, worker_id, now) -> Job | None:
         with self._lock:
             pending = sorted(
-                (j for j in self._jobs.values() if j.status == JobStatus.PENDING.value),
+                (
+                    j for j in self._jobs.values()
+                    if j.status == JobStatus.PENDING.value and _is_due(j, now)
+                ),
                 key=lambda j: j.id,
             )
             if not pending:
@@ -45,13 +53,16 @@ class InMemoryJobRepository:
     def claim_job(self, job_id, worker_id, now) -> Job | None:
         """Atomically claim a *specific* pending job by id (Redis-queue path).
 
-        Returns the now-processing job, or None when it is missing or no longer
-        pending. The None case is the dedupe defense: even if the queue hands the
-        same id to two workers, only the first claim transitions it.
+        Returns the now-processing job, or None when it is missing, no longer
+        pending, or still in retry backoff. The None case is the dedupe defense:
+        even if the queue hands the same id to two workers, only the first claim
+        transitions it.
         """
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job.status != JobStatus.PENDING.value:
+                return None
+            if not _is_due(job, now):
                 return None
             job.status = JobStatus.PROCESSING.value
             job.attempts += 1
@@ -59,10 +70,14 @@ class InMemoryJobRepository:
             job.updated_at = now
             return _copy(job)
 
-    def list_pending_jobs(self) -> list[Job]:
+    def list_pending_jobs(self, now=None) -> list[Job]:
         with self._lock:
             pending = sorted(
-                (j for j in self._jobs.values() if j.status == JobStatus.PENDING.value),
+                (
+                    j for j in self._jobs.values()
+                    if j.status == JobStatus.PENDING.value
+                    and (now is None or _is_due(j, now))
+                ),
                 key=lambda j: j.id,
             )
             return [_copy(j) for j in pending]
@@ -80,12 +95,48 @@ class InMemoryJobRepository:
             if transcript_drive_file_id is not None:
                 job.transcript_drive_file_id = transcript_drive_file_id
 
-    def mark_failed(self, job_id, error_message, now) -> None:
+    def mark_failed(self, job_id, error_message, now, error_code=None) -> None:
         with self._lock:
             job = self._jobs[job_id]
             job.status = JobStatus.FAILED.value
             job.error_message = error_message
+            job.last_error_code = error_code
             job.updated_at = now
+
+    def schedule_retry(self, job_id, now, *, next_retry_at, error_code, error_message) -> None:
+        with self._lock:
+            job = self._jobs[job_id]
+            job.status = JobStatus.PENDING.value
+            job.next_retry_at = next_retry_at
+            job.last_error_code = error_code
+            job.error_message = error_message
+            job.updated_at = now  # attempts and source_file_id are preserved
+
+    def reset_job_for_retry(self, job_id, now) -> None:
+        with self._lock:
+            job = self._jobs[job_id]
+            job.status = JobStatus.PENDING.value
+            job.attempts = 0
+            job.next_retry_at = None
+            job.error_message = None
+            job.last_error_code = None
+            job.started_at = None
+            job.processed_at = None
+            job.updated_at = now
+
+    def count_jobs_created_since(self, user_id, since) -> int:
+        with self._lock:
+            return sum(
+                1 for j in self._jobs.values()
+                if j.user_id == user_id and j.created_at is not None and j.created_at >= since
+            )
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        with self._lock:
+            counts: dict[str, int] = {}
+            for j in self._jobs.values():
+                counts[j.status] = counts.get(j.status, 0) + 1
+            return counts
 
     def find_existing_job(self, user_id, source_file_id, statuses) -> Job | None:
         with self._lock:

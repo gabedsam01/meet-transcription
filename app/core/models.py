@@ -23,6 +23,8 @@ class Job:
     source_file_name: str | None = None
     transcript_drive_file_id: str | None = None
     error_message: str | None = None
+    last_error_code: str | None = None
+    next_retry_at: datetime | None = None
     attempts: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None

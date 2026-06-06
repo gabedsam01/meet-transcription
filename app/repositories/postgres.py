@@ -18,7 +18,7 @@ import os
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import sessionmaker
 
 from app.database import models
@@ -107,11 +107,21 @@ def _to_job(j: models.TranscriptionJob | None) -> Job | None:
         source_file_name=j.source_file_name,
         transcript_drive_file_id=j.transcript_drive_file_id,
         error_message=j.error_message,
+        last_error_code=j.last_error_code,
+        next_retry_at=j.next_retry_at,
         attempts=j.attempts,
         created_at=j.created_at,
         updated_at=j.updated_at,
         started_at=j.started_at,
         processed_at=j.processed_at,
+    )
+
+
+def _due_predicate(now: datetime):
+    """A pending job is claimable when its retry gate is unset or has passed."""
+    return or_(
+        models.TranscriptionJob.next_retry_at.is_(None),
+        models.TranscriptionJob.next_retry_at <= now,
     )
 
 
@@ -139,7 +149,10 @@ class PgJobRepository(_Bound):
         with self._sf.begin() as s:
             stmt = (
                 select(models.TranscriptionJob)
-                .where(models.TranscriptionJob.status == "pending")
+                .where(
+                    models.TranscriptionJob.status == "pending",
+                    _due_predicate(now),
+                )
                 .order_by(models.TranscriptionJob.created_at, models.TranscriptionJob.id)
                 .limit(1)
                 .with_for_update(skip_locked=True)
@@ -161,6 +174,7 @@ class PgJobRepository(_Bound):
                 .where(
                     models.TranscriptionJob.id == job_id,
                     models.TranscriptionJob.status == "pending",
+                    _due_predicate(now),
                 )
                 .limit(1)
                 .with_for_update(skip_locked=True)
@@ -175,11 +189,14 @@ class PgJobRepository(_Bound):
             s.flush()
             return _to_job(job)
 
-    def list_pending_jobs(self) -> list[Job]:
+    def list_pending_jobs(self, now: datetime | None = None) -> list[Job]:
         with self._sf.begin() as s:
+            conditions = [models.TranscriptionJob.status == "pending"]
+            if now is not None:
+                conditions.append(_due_predicate(now))
             stmt = (
                 select(models.TranscriptionJob)
-                .where(models.TranscriptionJob.status == "pending")
+                .where(*conditions)
                 .order_by(
                     models.TranscriptionJob.created_at, models.TranscriptionJob.id
                 )
@@ -224,14 +241,66 @@ class PgJobRepository(_Bound):
             if transcript_drive_file_id is not None:
                 job.transcript_drive_file_id = transcript_drive_file_id
 
-    def mark_failed(self, job_id: int, error_message: str, now: datetime) -> None:
+    def mark_failed(
+        self, job_id: int, error_message: str, now: datetime,
+        error_code: str | None = None,
+    ) -> None:
         with self._sf.begin() as s:
             job = s.get(models.TranscriptionJob, job_id)
             if job is None:
                 return
             job.status = "failed"
             job.error_message = error_message
+            job.last_error_code = error_code
             job.updated_at = now
+
+    def schedule_retry(
+        self, job_id: int, now: datetime, *, next_retry_at: datetime,
+        error_code: str | None, error_message: str | None,
+    ) -> None:
+        with self._sf.begin() as s:
+            job = s.get(models.TranscriptionJob, job_id)
+            if job is None:
+                return
+            # Back to pending for a later attempt; attempts/source_file_id untouched.
+            job.status = "pending"
+            job.next_retry_at = next_retry_at
+            job.last_error_code = error_code
+            job.error_message = error_message
+            job.updated_at = now
+
+    def reset_job_for_retry(self, job_id: int, now: datetime) -> None:
+        with self._sf.begin() as s:
+            job = s.get(models.TranscriptionJob, job_id)
+            if job is None:
+                return
+            job.status = "pending"
+            job.attempts = 0
+            job.next_retry_at = None
+            job.error_message = None
+            job.last_error_code = None
+            job.started_at = None
+            job.processed_at = None
+            job.updated_at = now
+
+    def count_jobs_created_since(self, user_id: int, since: datetime) -> int:
+        with self._sf.begin() as s:
+            stmt = (
+                select(func.count())
+                .select_from(models.TranscriptionJob)
+                .where(
+                    models.TranscriptionJob.user_id == user_id,
+                    models.TranscriptionJob.created_at >= since,
+                )
+            )
+            return int(s.scalar(stmt) or 0)
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        with self._sf.begin() as s:
+            stmt = select(
+                models.TranscriptionJob.status, func.count()
+            ).group_by(models.TranscriptionJob.status)
+            return {status: int(count) for status, count in s.execute(stmt)}
 
     def find_existing_job(
         self, user_id: int, source_file_id: str, statuses: tuple[str, ...]

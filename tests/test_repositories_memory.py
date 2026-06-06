@@ -149,6 +149,101 @@ def test_list_pending_jobs_is_fifo_and_only_pending():
     assert all(j.status == JobStatus.PENDING.value for j in pending)
 
 
+def test_schedule_retry_returns_job_to_pending_keeping_attempts_and_source():
+    repos = build_memory_repositories()
+    job = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    repos.jobs.claim_job(job.id, "w", _now())  # attempts -> 1, processing
+    retry_at = _now() + timedelta(seconds=60)
+    repos.jobs.schedule_retry(
+        job.id, _now(), next_retry_at=retry_at,
+        error_code="RATE_LIMIT", error_message="rate limited",
+    )
+    got = repos.jobs.get_job(job.id)
+    assert got.status == JobStatus.PENDING.value
+    assert got.attempts == 1  # preserved, not reset
+    assert got.source_file_id == "src-1"  # never lost across a retry
+    assert got.last_error_code == "RATE_LIMIT"
+    assert got.error_message == "rate limited"
+    assert got.next_retry_at == retry_at
+
+
+def test_claim_skips_jobs_still_in_backoff_then_claims_when_due():
+    repos = build_memory_repositories()
+    job = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    future = _now() + timedelta(minutes=10)
+    repos.jobs.schedule_retry(job.id, _now(), next_retry_at=future,
+                              error_code="RATE_LIMIT", error_message="x")
+    # Not yet due -> neither claim path hands it out.
+    assert repos.jobs.claim_next_pending_job("w", _now()) is None
+    assert repos.jobs.claim_job(job.id, "w", _now()) is None
+    # Once now >= next_retry_at it is claimable again.
+    later = future + timedelta(seconds=1)
+    claimed = repos.jobs.claim_job(job.id, "w", later)
+    assert claimed is not None and claimed.id == job.id
+
+
+def test_list_pending_jobs_now_excludes_backoff_but_no_arg_returns_all():
+    repos = build_memory_repositories()
+    due = repos.jobs.create_job(7, "src-due", "d.mp4", _now())
+    waiting = repos.jobs.create_job(7, "src-wait", "w.mp4", _now())
+    repos.jobs.schedule_retry(waiting.id, _now(),
+                              next_retry_at=_now() + timedelta(minutes=5),
+                              error_code="RATE_LIMIT", error_message="x")
+    gated = repos.jobs.list_pending_jobs(_now())
+    assert [j.id for j in gated] == [due.id]
+    # Back-compat: no `now` returns every pending job regardless of backoff.
+    assert {j.id for j in repos.jobs.list_pending_jobs()} == {due.id, waiting.id}
+
+
+def test_count_jobs_created_since_is_user_scoped():
+    repos = build_memory_repositories()
+    cutoff = _now()
+    repos.jobs.create_job(7, "a", "a.mp4", cutoff + timedelta(seconds=1))
+    repos.jobs.create_job(7, "b", "b.mp4", cutoff + timedelta(seconds=2))
+    repos.jobs.create_job(8, "c", "c.mp4", cutoff + timedelta(seconds=3))
+    repos.jobs.create_job(7, "old", "o.mp4", cutoff - timedelta(hours=1))
+    assert repos.jobs.count_jobs_created_since(7, cutoff) == 2
+    assert repos.jobs.count_jobs_created_since(8, cutoff) == 1
+
+
+def test_mark_failed_stores_error_code():
+    repos = build_memory_repositories()
+    job = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    repos.jobs.mark_failed(job.id, "bad key", _now(), error_code="KEY_INVALID")
+    got = repos.jobs.get_job(job.id)
+    assert got.status == JobStatus.FAILED.value
+    assert got.last_error_code == "KEY_INVALID"
+    assert got.error_message == "bad key"
+
+
+def test_reset_job_for_retry_clears_state_back_to_pending():
+    repos = build_memory_repositories()
+    job = repos.jobs.create_job(7, "src-1", "a.mp4", _now())
+    repos.jobs.claim_job(job.id, "w", _now())
+    repos.jobs.mark_failed(job.id, "boom", _now(), error_code="UNEXPECTED")
+    repos.jobs.reset_job_for_retry(job.id, _now())
+    got = repos.jobs.get_job(job.id)
+    assert got.status == JobStatus.PENDING.value
+    assert got.attempts == 0
+    assert got.next_retry_at is None
+    assert got.error_message is None
+    assert got.last_error_code is None
+    assert got.source_file_id == "src-1"
+
+
+def test_count_jobs_by_status():
+    repos = build_memory_repositories()
+    a = repos.jobs.create_job(7, "a", "a.mp4", _now())
+    repos.jobs.create_job(7, "b", "b.mp4", _now())
+    c = repos.jobs.create_job(7, "c", "c.mp4", _now())
+    repos.jobs.mark_failed(a.id, "x", _now())
+    repos.jobs.claim_job(c.id, "w", _now())
+    counts = repos.jobs.count_jobs_by_status()
+    assert counts.get("pending") == 1
+    assert counts.get("failed") == 1
+    assert counts.get("processing") == 1
+
+
 def test_transcript_create_and_get_by_job():
     repos = build_memory_repositories()
     repos.transcripts.create(5, 7, "hello", {"k": "v"}, "drive-1", _now())

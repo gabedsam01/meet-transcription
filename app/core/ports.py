@@ -39,11 +39,13 @@ class JobRepository(Protocol):
 
     def get_job(self, job_id: int) -> Job | None: ...
 
-    def list_pending_jobs(self) -> list[Job]:
+    def list_pending_jobs(self, now: datetime | None = None) -> list[Job]:
         """Return every 'pending' job, oldest first (created_at, id).
 
         Used by the Redis-queue reconciler to re-enqueue jobs that Postgres knows
         are pending but the queue may have lost. Postgres stays the source of truth.
+        When ``now`` is given, jobs whose ``next_retry_at`` is still in the future
+        (in retry backoff) are excluded, so the reconciler never wakes a job early.
         """
 
     def mark_completed(
@@ -60,7 +62,35 @@ class JobRepository(Protocol):
         completion is preferred.
         """
 
-    def mark_failed(self, job_id: int, error_message: str, now: datetime) -> None: ...
+    def mark_failed(
+        self, job_id: int, error_message: str, now: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        """Terminal failure: status -> 'failed', store message + optional code."""
+
+    def schedule_retry(
+        self, job_id: int, now: datetime, *, next_retry_at: datetime,
+        error_code: str | None, error_message: str | None,
+    ) -> None:
+        """Transient failure: return the job to 'pending' for a later retry.
+
+        Sets ``next_retry_at`` (backoff gate), ``last_error_code`` and
+        ``error_message``; **keeps** ``attempts`` and ``source_file_id`` so the
+        retry resumes the same work without losing its place in the attempt budget.
+        """
+
+    def reset_job_for_retry(self, job_id: int, now: datetime) -> None:
+        """User-triggered dead-letter retry: a 'failed' job -> fresh 'pending'.
+
+        Resets ``attempts`` to 0 and clears ``next_retry_at``/``error_message``/
+        ``last_error_code`` so the job starts over from scratch.
+        """
+
+    def count_jobs_created_since(self, user_id: int, since: datetime) -> int:
+        """Count this user's jobs created at/after ``since`` (daily-limit guardrail)."""
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        """Return ``{status: count}`` across all jobs (queue observability)."""
 
     def find_existing_job(
         self, user_id: int, source_file_id: str, statuses: tuple[str, ...],
