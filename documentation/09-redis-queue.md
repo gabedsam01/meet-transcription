@@ -1,8 +1,16 @@
 # Redis Queue and Lock
 
-meet-transcription runs on a CPU-bound VPS where exactly **one** transcription
-must run at a time. The queue layer (`app/queue/`) provides two things and only
-two things:
+> **Advanced queue, locks and semaphore.** This page describes the original
+> single-global-lock model. In redis-queue mode that lock is superseded by
+> **provider-aware concurrency** (cloud runs several in parallel, local CPU runs
+> one) plus extra keys (`:processing`, `:dead`, `lock:local`, `lock:auto_poll`,
+> `semaphore:cloud`). See [Advanced Redis queue](29-redis-queue-advanced.md),
+> [Provider concurrency](30-provider-concurrency.md), and
+> [Retries & dead-letter](31-retries-dead-letter.md).
+
+meet-transcription runs on a CPU-bound VPS where local CPU transcription must run
+**one at a time** (cloud providers may run several in parallel). The queue layer
+(`app/queue/`) provides two things and only two things:
 
 1. a **wake-up signal** — which job the worker should look at next, FIFO; and
 2. a **single global execution lock** — at most one transcription runs across

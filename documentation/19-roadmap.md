@@ -40,8 +40,23 @@ Every item below is tagged with one of these statuses:
 | 6 | Notifications | **Planned** |
 | 7 | Chrome extension to auto-start recording | **Planned** |
 | 8 | Advanced multi-worker scaling | **Partial** (lock + concurrency exist) |
+| 9 | Auto-poll per user + Drive watcher | **Done** (polling MVP — see [28](28-auto-polling.md)) |
+| 10 | Provider-aware concurrency (cloud N / local 1) | **Done** (see [30](30-provider-concurrency.md)) |
+| 11 | Retries, backoff & dead-letter | **Done** (see [31](31-retries-dead-letter.md)) |
+| 12 | Cost/quota guardrails | **Partial** (file-size + daily count enforced; minutes/duration scaffolded — see [32](32-cost-guardrails.md)) |
+| 13 | Drive Changes API (incremental sync + `drive_watch_state`) | **Planned** (polling today; pageToken state deferred) |
 
 ---
+
+## Next steps for the automation layer
+
+- **Drive Changes API.** Replace folder polling with `changes().list(pageToken=…)`
+  per user/folder, persisting a `drive_watch_state(user_id, source_drive_folder_id,
+  start_page_token, last_page_token, last_checked_at)` table. Cuts API calls and
+  latency. The watcher (`app/services/drive_watcher.py`) is the integration point.
+- **Full cost metering.** Enforce `monthly_cloud_minutes_limit` and
+  `max_file_duration_minutes` once minute metering / `videoMediaMetadata.durationMillis`
+  is wired (columns + env already exist; see [32](32-cost-guardrails.md)).
 
 ## 1. Compile whisper.cpp multiarch into the image
 
