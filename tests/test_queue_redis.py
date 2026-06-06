@@ -8,11 +8,28 @@ Redis key layout and command choices without a server.
 from app.queue.redis_queue import RedisTranscriptionQueue
 
 
+class _FakeScript:
+    """Mirrors redis-py's Script callable for the two Lua scripts the queue uses.
+
+    The fake exists to pin the queue's exact Redis usage without a server, so it
+    is allowed to know these scripts; it runs the Python equivalent atomically
+    (single-threaded test) against the fake's own zset/kv storage.
+    """
+
+    def __init__(self, fake, src):
+        self._fake = fake
+        self._src = src
+
+    def __call__(self, keys=None, args=None, client=None):
+        return self._fake._run_script(self._src, keys or [], args or [])
+
+
 class FakeRedis:
     def __init__(self):
         self.sets: dict[str, set] = {}
         self.lists: dict[str, list] = {}
         self.kv: dict[str, str] = {}
+        self.zsets: dict[str, dict[str, float]] = {}
 
     def sadd(self, key, member):
         bucket = self.sets.setdefault(key, set())
@@ -25,6 +42,42 @@ class FakeRedis:
     def srem(self, key, member):
         self.sets.get(key, set()).discard(str(member))
         return 1
+
+    def scard(self, key):
+        return len(self.sets.get(key, set()))
+
+    def smembers(self, key):
+        return set(self.sets.get(key, set()))
+
+    def llen(self, key):
+        return len(self.lists.get(key, []))
+
+    def zrem(self, key, member):
+        self.zsets.get(key, {}).pop(str(member), None)
+        return 1
+
+    def register_script(self, src):
+        return _FakeScript(self, src)
+
+    def _run_script(self, src, keys, args):
+        if "ACQUIRE_CLOUD_SLOT" in src:
+            sem_key = keys[0]
+            now, expiry, cap, token = float(args[0]), float(args[1]), int(args[2]), str(args[3])
+            z = self.zsets.setdefault(sem_key, {})
+            for member in [m for m, score in z.items() if score <= now]:
+                del z[member]
+            if len(z) < cap:
+                z[token] = expiry
+                return token
+            return None
+        if "RELEASE_IF_OWNER" in src:
+            lock_key = keys[0]
+            token = str(args[0])
+            if self.kv.get(lock_key) == token:
+                self.kv.pop(lock_key, None)
+                return 1
+            return 0
+        raise AssertionError(f"unknown script: {src!r}")
 
     def lpush(self, key, value):
         self.lists.setdefault(key, []).insert(0, str(value))
@@ -119,3 +172,61 @@ def test_health_pings_and_degrades_gracefully():
             raise RuntimeError("connection refused")
 
     assert RedisTranscriptionQueue(DownRedis(), queue_name="t").health() is False
+
+
+# --- provider concurrency slots ---------------------------------------------
+
+
+def _clocked_queue(cloud_concurrency=5):
+    clock = {"t": 0.0}
+    r = FakeRedis()
+    q = RedisTranscriptionQueue(
+        r, queue_name="t", cloud_concurrency=cloud_concurrency,
+        time_fn=lambda: clock["t"],
+    )
+    return q, r, clock
+
+
+def test_cloud_semaphore_allows_five_blocks_sixth():
+    q, _r, _clock = _clocked_queue(cloud_concurrency=5)
+    tokens = [q.acquire_provider_slot("cloud", 3600) for _ in range(5)]
+    assert all(tokens) and len(set(tokens)) == 5
+    assert q.acquire_provider_slot("cloud", 3600) is None  # 6th over capacity
+    q.release_provider_slot("cloud", tokens[0])
+    assert q.acquire_provider_slot("cloud", 3600) is not None  # a slot freed
+
+
+def test_cloud_semaphore_reclaims_expired_slots():
+    q, _r, clock = _clocked_queue(cloud_concurrency=5)
+    for _ in range(5):
+        q.acquire_provider_slot("cloud", 10)  # expire at t=10
+    clock["t"] = 5.0
+    assert q.acquire_provider_slot("cloud", 10) is None  # none expired yet
+    clock["t"] = 20.0
+    # All five slots have expired (score 10 <= now 20) -> a new acquire reclaims one.
+    assert q.acquire_provider_slot("cloud", 10) is not None
+
+
+def test_local_lock_serializes_and_is_token_safe():
+    q, r, _clock = _clocked_queue()
+    t1 = q.acquire_provider_slot("local", 3600)
+    assert t1 is not None
+    assert r.kv["lock:local"] == t1
+    assert q.acquire_provider_slot("local", 3600) is None  # 2nd local waits
+    q.release_provider_slot("local", "wrong-token")
+    assert r.kv.get("lock:local") == t1  # foreign release is a no-op
+    q.release_provider_slot("local", t1)
+    assert q.acquire_provider_slot("local", 3600) is not None
+
+
+def test_processing_dead_sets_and_stats():
+    q, _r, _clock = _clocked_queue()
+    q.enqueue(1)
+    q.enqueue(2)
+    q.mark_processing(10)
+    q.mark_dead(20)
+    q.mark_dead(21)
+    q.remove_dead(21)
+    stats = q.queue_stats()
+    assert stats == {"queued": 2, "processing": 1, "dead": 1}
+    assert q.dead_job_ids() == {20}

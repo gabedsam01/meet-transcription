@@ -34,6 +34,8 @@ from app.recordings import (
 from app.repositories import RepositoryBackendError
 from app.repositories import build_repositories as build_worker_repositories
 from app.services.download_service import DownloadError, get_downloadable_transcript
+from app.services.drive_watcher import poll_user
+from app.services.guardrails import resolve_guardrails
 from app.services.job_service import create_next_pending_job
 from app.transcription.config import TranscriptionConfig
 from app.transcription.provider import get_transcription_provider_status
@@ -384,6 +386,148 @@ def create_app(settings: WebSettings | None = None,
             _set_flash(request, PROVIDER_TEST_MESSAGES.get(result, "Não foi possível verificar agora."))
         return RedirectResponse("/models?provider=deepgram", status_code=303)
 
+    @app.get("/settings/automation", response_class=HTMLResponse)
+    def automation_page(request: Request, user=Depends(require_user)):
+        worker_repos, error = _resolve_worker_repositories()
+        automation = (
+            worker_repos.automation.get_for_user(user.id)
+            if worker_repos and worker_repos.automation else None
+        )
+        return templates.TemplateResponse(request, "automation_settings.html", {
+            "user": user,
+            "automation": automation,
+            "message": _pop_flash(request),
+            "backend_error": error,
+        })
+
+    @app.post("/settings/automation")
+    def save_automation(
+        request: Request,
+        user=Depends(require_user),
+        auto_poll_enabled: bool = Form(False),
+        poll_interval_seconds: int = Form(300),
+        max_files_per_poll: int = Form(5),
+    ):
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None or worker_repos.automation is None:
+            _set_flash(request, error or "Automação indisponível no momento.")
+            return RedirectResponse("/settings/automation", status_code=303)
+        # Clamp to sane bounds so a typo can't hammer Drive or starve the loop.
+        interval = max(60, min(86400, int(poll_interval_seconds)))
+        max_files = max(1, min(100, int(max_files_per_poll)))
+        worker_repos.automation.upsert_for_user(
+            user.id,
+            auto_poll_enabled=bool(auto_poll_enabled),
+            poll_interval_seconds=interval,
+            max_files_per_poll=max_files,
+        )
+        _set_flash(request, "Configurações de automação salvas.")
+        return RedirectResponse("/settings/automation", status_code=303)
+
+    @app.post("/automation/check-now")
+    def check_now(request: Request, user=Depends(require_user)):
+        # Lightweight, in-request Drive *listing* + pending-job creation — the same
+        # class of work as Run once. It never downloads or transcribes.
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None:
+            _set_flash(request, error)
+            return RedirectResponse("/jobs", status_code=303)
+        automation = (
+            worker_repos.automation.get_for_user(user.id)
+            if worker_repos.automation else None
+        )
+        guardrails = resolve_guardrails(
+            automation, default_max_file_size_mb=None, default_daily_jobs_limit=None
+        )
+        max_files = (automation.max_files_per_poll if automation else None) or 5
+        try:
+            result = poll_user(
+                worker_repos,
+                build_drive_client=app.state.build_drive_client,
+                credentials_from_token=app.state.credentials_from_token,
+                user_id=user.id,
+                now=_utc_now(),
+                max_files=max_files,
+                deepgram_required=app.state.transcription_status.deepgram_required,
+                guardrails=guardrails,
+            )
+        except Exception:  # noqa: BLE001 - surface as a flash, never a 500.
+            logging.exception("check-now failed for user_id=%s", user.id)
+            _set_flash(request, "Não foi possível verificar agora. Tente novamente.")
+            return RedirectResponse("/jobs", status_code=303)
+
+        for job_id in result.job_ids:
+            if app.state.queue is not None:
+                try:
+                    app.state.queue.enqueue(job_id)
+                except Exception:  # noqa: BLE001 - Postgres has it pending; reconciler heals.
+                    logging.exception("Could not enqueue job_id=%s after check-now", job_id)
+        if worker_repos.automation is not None:
+            try:
+                worker_repos.automation.mark_poll_result(
+                    user.id, _utc_now(), success=not result.error_code,
+                    error_code=result.error_code, error_message=result.error_message,
+                )
+            except Exception:  # noqa: BLE001 - bookkeeping must never 500 the page.
+                logging.exception("Could not record poll result for user_id=%s", user.id)
+        if result.error_code:
+            _set_flash(request, result.error_message or "Verificação falhou.")
+        elif result.created:
+            _set_flash(request, f"{result.created} novo(s) job(s) enfileirado(s).")
+        else:
+            _set_flash(request, result.error_message or "Nenhum vídeo novo para transcrever.")
+        return RedirectResponse("/jobs", status_code=303)
+
+    @app.post("/jobs/{job_id}/retry")
+    def retry_job(request: Request, job_id: int, user=Depends(require_user)):
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None:
+            _set_flash(request, error)
+            return RedirectResponse("/jobs", status_code=303)
+        job = worker_repos.jobs.get_job(job_id)
+        # Owner-scoped: another user's (or unknown) job 404s so it never leaks.
+        if job is None or job.user_id != user.id:
+            return templates.TemplateResponse(
+                request, "error.html", {"user": user, "message": "Job not found."},
+                status_code=404,
+            )
+        if job.status != "failed":
+            _set_flash(request, "Só é possível repetir jobs com falha.")
+            return RedirectResponse("/jobs", status_code=303)
+        worker_repos.jobs.reset_job_for_retry(job_id, _utc_now())
+        if app.state.queue is not None:
+            try:
+                app.state.queue.remove_dead(job_id)
+                app.state.queue.enqueue(job_id)
+            except Exception:  # noqa: BLE001 - reconciler re-enqueues if Redis is down.
+                logging.exception("Could not re-enqueue retried job_id=%s", job_id)
+        _set_flash(request, "Job re-enfileirado para nova tentativa.")
+        return RedirectResponse("/jobs", status_code=303)
+
+    @app.get("/admin/queue", response_class=HTMLResponse)
+    def admin_queue(request: Request, admin=Depends(require_admin)):
+        queue = app.state.queue
+        stats = None
+        dead_ids: list[int] = []
+        if queue is not None:
+            try:
+                stats = queue.queue_stats()
+                dead_ids = sorted(queue.dead_job_ids())
+            except Exception:  # noqa: BLE001 - a status page must never 500.
+                logging.exception("Could not read queue stats")
+        worker_repos, _ = _resolve_worker_repositories()
+        status_counts = (
+            worker_repos.jobs.count_jobs_by_status() if worker_repos else {}
+        )
+        return templates.TemplateResponse(request, "queue_status.html", {
+            "user": admin,
+            "queue_status": _queue_status(),
+            "stats": stats,
+            "dead_ids": dead_ids,
+            "status_counts": status_counts,
+            "message": _pop_flash(request),
+        })
+
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
         worker_repos, error = _resolve_worker_repositories()
@@ -695,6 +839,10 @@ def _header_value(scope, name: bytes) -> str | None:
         if key.lower() == name:
             return value.decode("latin-1")
     return None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _set_flash(request: Request, message: str) -> None:

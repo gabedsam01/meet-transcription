@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.logger import setup_logging
 from app.queue import requeue_pending_jobs
+from app.worker.auto_poll import run_auto_poll_loop
 from app.worker.container import WorkerContainer, build_container
 from app.worker.loop import run_worker_loop
 from app.worker.queue_loop import run_queue_loop
@@ -25,16 +26,29 @@ def recover_stale_jobs(container: WorkerContainer, now: datetime) -> int:
 def run(container: WorkerContainer, stop_event: threading.Event) -> None:
     recover_stale_jobs(container, datetime.now(timezone.utc))
     # Queue mode (QUEUE_BACKEND=redis|memory): re-enqueue any pending Postgres jobs
-    # the queue may have lost, then consume the queue. Otherwise keep the legacy
-    # poll loop that claims the next pending job directly from Postgres.
+    # the queue may have lost, then consume the queue with provider-aware
+    # concurrency. Otherwise keep the legacy poll loop that claims the next pending
+    # job directly from Postgres (strictly one-at-a-time per worker thread).
+    threads: list[threading.Thread] = []
     if container.queue is not None:
         enqueued = requeue_pending_jobs(container.repositories, container.queue)
         LOGGER.info("Queue mode: reconciled %s pending job(s) at startup", enqueued)
         loop = run_queue_loop
+        thread_count = container.settings.queue_concurrency
+        if container.settings.auto_poll_enabled:
+            poller = threading.Thread(
+                target=run_auto_poll_loop,
+                args=(container, stop_event),
+                name="auto-poll",
+                daemon=True,
+            )
+            poller.start()
+            threads.append(poller)
     else:
         loop = run_worker_loop
-    threads: list[threading.Thread] = []
-    for i in range(container.settings.concurrency):
+        thread_count = container.settings.concurrency
+
+    for i in range(thread_count):
         worker_id = f"worker-{i + 1}"
         thread = threading.Thread(
             target=loop,

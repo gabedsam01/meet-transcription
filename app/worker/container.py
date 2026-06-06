@@ -37,6 +37,9 @@ class WorkerContainer:
     build_cloud_provider: Callable | None = None
     queue: object | None = None
     queue_lock_ttl: int = 14400
+    # Provider-aware concurrency: TTL for a held cloud-semaphore/local-lock slot,
+    # reclaimed if its holder dies (see app/queue).
+    provider_lock_ttl: int = 14400
     # Optional audio preprocessing + diarization + chrome-extension uploads. All
     # OFF/None by default so the existing Drive+Deepgram path is byte-for-byte
     # unchanged; each is gated on its own config flag.
@@ -102,6 +105,7 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         build_cloud_provider=build_cloud_provider,
         queue=queue,
         queue_lock_ttl=queue_settings.global_lock_ttl_seconds,
+        provider_lock_ttl=queue_settings.provider_lock_ttl_seconds,
         audio_config=audio_config,
         diarization_config=diarization_config,
         build_diarization_provider=_build_diarization_provider,

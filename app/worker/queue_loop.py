@@ -26,29 +26,29 @@ def run_queue_loop(
     on_contention=None,
     on_error=None,
 ) -> None:
-    """Redis-queue worker loop: one transcription at a time, globally locked.
+    """Redis-queue worker loop with provider-aware concurrency.
 
-    Each iteration pops a job id, takes the single global execution lock, then
-    atomically claims *that* job in Postgres (``claim_job``). The Postgres claim is
-    the final dedupe defense; the lock serializes transcription across worker
-    processes/threads on a CPU-bound VPS. When idle, pending Postgres jobs are
-    re-enqueued (self-heal for a lost queue).
+    Each iteration pops a job id, resolves its provider to decide the concurrency
+    *kind* (cloud or local), acquires the matching slot (cloud = a semaphore capped
+    at ``CLOUD_TRANSCRIPTION_CONCURRENCY``; local = a single lock), then atomically
+    claims *that* job in Postgres and processes it. When no slot is free the job is
+    requeued with a short backoff — never failed. Multiple consumer threads run this
+    loop; the slots (not a single global lock) bound parallelism per provider kind.
     """
     queue = container.queue
     proc = processor or JobProcessor(container)
+    ttl = container.provider_lock_ttl
     timeout = (
         dequeue_timeout
         if dequeue_timeout is not None
         else container.settings.poll_interval_seconds
     )
     idle = on_idle if on_idle is not None else (
-        lambda: requeue_pending_jobs(container.repositories, queue)
+        lambda: requeue_pending_jobs(container.repositories, queue, now())
     )
     contention = on_contention if on_contention is not None else (
         lambda: stop_event.wait(1)
     )
-    # A transient Redis/Postgres failure (dequeue, reconcile, lock, claim) must
-    # never kill this daemon thread; log, back off, and recover next iteration.
     error_backoff = on_error if on_error is not None else (
         lambda: stop_event.wait(min(timeout or 1, 5))
     )
@@ -59,25 +59,55 @@ def run_queue_loop(
             if job_id is None:
                 idle()
                 continue
-            LOGGER.info("Queue job received: job_id=%s worker=%s", job_id, worker_id)
-            token = queue.acquire_global_lock(container.queue_lock_ttl)
+            job = container.repositories.jobs.get_job(job_id)
+            if job is None or job.status != "pending":
+                # Stale/duplicate delivery: claim would no-op. Drop it; the
+                # reconciler re-enqueues a genuinely-pending job when it is due.
+                continue
+
+            resolved = _safe_resolve(proc, job)
+            if resolved is None:
+                # Terminal provider/config error: own the job, then dead-letter it.
+                claimed = container.repositories.jobs.claim_job(job_id, worker_id, now())
+                if claimed is not None:
+                    proc.process(claimed)  # re-resolves, fails, dead-letters (no retry)
+                continue
+
+            token = queue.acquire_provider_slot(resolved.kind, ttl)
             if token is None:
-                # Another worker holds the single execution lock; put the job back.
+                # No slot for this provider kind right now — try later, never fail.
                 queue.requeue(job_id)
                 contention()
                 continue
             try:
-                job = container.repositories.jobs.claim_job(job_id, worker_id, now())
-                if job is None:
-                    LOGGER.info("Queued job_id=%s is no longer pending; skipping", job_id)
+                claimed = container.repositories.jobs.claim_job(job_id, worker_id, now())
+                if claimed is None:
+                    LOGGER.info("Queued job_id=%s is no longer claimable; skipping", job_id)
                     continue
-                LOGGER.info("Claimed job_id=%s worker=%s", job.id, worker_id)
+                LOGGER.info(
+                    "Claimed job_id=%s worker=%s kind=%s", claimed.id, worker_id, resolved.kind
+                )
+                queue.mark_processing(claimed.id)
                 try:
-                    proc.process(job)
+                    proc.process(claimed, resolved)
                 except Exception:  # noqa: BLE001 - a single job must never kill the loop.
                     LOGGER.exception("Unhandled error processing job_id=%s", job_id)
+                finally:
+                    queue.clear_processing(claimed.id)
             finally:
-                queue.release_global_lock(token)
+                queue.release_provider_slot(resolved.kind, token)
         except Exception:  # noqa: BLE001 - survive transient queue/database errors.
             LOGGER.exception("Queue worker iteration failed worker=%s", worker_id)
             error_backoff()
+
+
+def _safe_resolve(proc: JobProcessor, job):
+    """Resolve the provider for slot selection; None on a terminal resolve error.
+
+    A None result tells the loop to claim-and-dead-letter the job (process()
+    re-resolves and routes the same terminal error through the failure handler)."""
+    try:
+        return proc.resolve(job)
+    except Exception as exc:  # noqa: BLE001 - terminal; handled by claim + process().
+        LOGGER.info("Provider resolution failed for job_id=%s: %s", job.id, exc)
+        return None

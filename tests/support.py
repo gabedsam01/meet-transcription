@@ -17,15 +17,18 @@ def drive_file(file_id: str, name: str = "meeting.mp4") -> DriveFile:
 
 class FakeDriveClient:
     def __init__(self, files=None, upload_result="drive-txt-1",
-                 fail_download=False, fail_upload=False):
+                 fail_download=False, fail_upload=False, fail_list=False):
         self.files = list(files or [])
         self.upload_result = upload_result
         self.fail_download = fail_download
         self.fail_upload = fail_upload
+        self.fail_list = fail_list
         self.downloaded: list[str] = []
         self.uploaded: list[str] = []
 
     def list_video_files(self):
+        if self.fail_list:
+            raise RuntimeError("drive list failed")
         return list(self.files)
 
     def download_by_id(self, file_id, destination):
@@ -91,6 +94,11 @@ def make_worker_settings(tmp_dir, **overrides) -> WorkerSettings:
         deepgram_model="nova-3", deepgram_language="pt-BR",
         deepgram_smart_format=True, deepgram_punctuate=True,
         deepgram_diarize=True, deepgram_utterances=True,
+        queue_concurrency=5, job_max_attempts=3, job_retry_base_seconds=60,
+        job_retry_max_seconds=3600, auto_poll_enabled=False,
+        auto_poll_interval_seconds=300, auto_poll_max_users_per_tick=50,
+        auto_poll_max_files_per_user=5, auto_poll_lock_ttl_seconds=240,
+        max_file_size_mb=0, daily_jobs_limit=0,
     )
     base.update(overrides)
     return WorkerSettings(**base)

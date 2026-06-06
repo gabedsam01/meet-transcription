@@ -183,6 +183,10 @@ class TranscriptionJob(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_transcription_jobs_user_status", "user_id", "status"),
         Index("ix_transcription_jobs_user_source", "user_id", "source_file_id"),
+        # Retry sweep: claim/list filter pending rows by next_retry_at.
+        Index("ix_transcription_jobs_status_next_retry", "status", "next_retry_at"),
+        # Per-user daily-job counting (guardrails) and user job listings.
+        Index("ix_transcription_jobs_user_created", "user_id", "created_at"),
         # Dedupe: a user cannot have two completed jobs for the same source file.
         Index(
             "uq_transcription_jobs_completed_source",
@@ -206,6 +210,12 @@ class TranscriptionJob(TimestampMixin, Base):
         Integer, nullable=False, server_default=text("0")
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Machine error code (RATE_LIMIT/KEY_INVALID/...) set by the retry policy.
+    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When a retryable failure may be re-claimed; NULL means immediately eligible.
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     transcript_drive_file_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # started_at is stamped when the worker claims a pending job (worker contract).
     started_at: Mapped[datetime | None] = mapped_column(
@@ -214,6 +224,49 @@ class TranscriptionJob(TimestampMixin, Base):
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class UserAutomationSettings(TimestampMixin, Base):
+    """Per-user auto-poll configuration, status, and cost guardrails.
+
+    NULL guardrail columns fall back to the global env defaults. ``last_*`` track
+    the most recent poll for the UI ("última verificação"/"último erro").
+    """
+
+    __tablename__ = "user_automation_settings"
+    __table_args__ = (
+        Index("ix_user_automation_enabled_polled", "auto_poll_enabled", "last_poll_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    auto_poll_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    poll_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("300")
+    )
+    max_files_per_poll: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("5")
+    )
+    last_poll_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Cost/quota guardrails (NULL = use the global env default / unlimited).
+    daily_jobs_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_file_size_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_cloud_minutes_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_file_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Transcript(Base):

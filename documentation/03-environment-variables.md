@@ -1,5 +1,13 @@
 # Environment Variables
 
+> **Automation/queue/concurrency vars** (`AUTO_POLL_*`, `CLOUD_/LOCAL_TRANSCRIPTION_CONCURRENCY`,
+> `TRANSCRIPTION_QUEUE_CONCURRENCY`, `PROVIDER_LOCK_TTL_SECONDS`, `JOB_MAX_ATTEMPTS`,
+> `JOB_RETRY_BASE_SECONDS`, `JOB_RETRY_MAX_SECONDS`, `MAX_FILE_SIZE_MB`,
+> `DAILY_JOBS_LIMIT`) are documented with their behavior in
+> [28](28-auto-polling.md), [30](30-provider-concurrency.md),
+> [31](31-retries-dead-letter.md) and [32](32-cost-guardrails.md); all have safe
+> defaults in `.env.example`/`docker-compose.yml`.
+
 This document is the complete reference for every environment variable consumed
 by **meet-transcription**. Each variable is documented exactly as the code reads
 it: the config dataclasses in

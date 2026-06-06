@@ -3,6 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.deepgram_client import DeepgramClient, DeepgramError
+from app.errors import (
+    DeepgramRateLimitError,
+    FileTooLargeError,
+    ProviderKeyInvalidError,
+)
 
 
 def test_deepgram_client_posts_video_with_expected_params(tmp_path):
@@ -79,13 +84,62 @@ class FakeSession:
 
 
 class FakeResponse:
-    def __init__(self, status_code, payload, text=""):
+    def __init__(self, status_code, payload, text="", headers=None):
         self.status_code = status_code
         self.payload = payload
         self.text = text
+        self.headers = headers or {}
 
     def json(self):
         return self.payload
+
+
+def _client_with(session):
+    return DeepgramClient.from_api_key("dg-key", session=session)
+
+
+def test_429_maps_to_retryable_rate_limit_error_with_retry_after(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    session = FakeSession(FakeResponse(429, {}, text="slow down", headers={"Retry-After": "12"}))
+    with pytest.raises(DeepgramRateLimitError) as exc:
+        _client_with(session).transcribe(video)
+    assert exc.value.retry_after_seconds == 12
+    assert exc.value.retryable is True
+
+
+def test_401_and_403_map_to_terminal_key_invalid(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    for status in (401, 403):
+        session = FakeSession(FakeResponse(status, {}, text="nope"))
+        with pytest.raises(ProviderKeyInvalidError):
+            _client_with(session).transcribe(video)
+
+
+def test_413_maps_to_terminal_file_too_large(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    session = FakeSession(FakeResponse(413, {}, text="too big"))
+    with pytest.raises(FileTooLargeError):
+        _client_with(session).transcribe(video)
+
+
+def test_other_5xx_still_raises_plain_deepgram_error(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    session = FakeSession(FakeResponse(500, {}, text="server error"))
+    with pytest.raises(DeepgramError, match="status 500"):
+        _client_with(session).transcribe(video)
+
+
+def test_missing_retry_after_header_yields_none(tmp_path):
+    video = tmp_path / "meeting.mp4"
+    video.write_bytes(b"mp4 bytes")
+    session = FakeSession(FakeResponse(429, {}, text="slow down"))
+    with pytest.raises(DeepgramRateLimitError) as exc:
+        _client_with(session).transcribe(video)
+    assert exc.value.retry_after_seconds is None
 
 
 def test_from_api_key_builds_client_with_options():

@@ -382,16 +382,27 @@ explicit cloud selection takes precedence over the env‑driven local engine.
 
 - The web service **enqueues** `job_id` on **Run once** (`transcription:queue`),
   deduped by a Redis set (`transcription:queued`).
-- The worker **dequeues**, takes the **global lock** (`transcription:global_lock`,
-  `SET NX EX`), atomically **claims that job** in Postgres
-  (`pending → processing`), processes it, then **releases the lock** — one at a
-  time, even across replicas.
+- The worker **dequeues**, resolves the job's provider, and acquires the matching
+  **concurrency slot** — a **cloud semaphore** (`semaphore:cloud`, default 5
+  parallel) for Deepgram/other cloud providers, or a **single local lock**
+  (`lock:local`) for CPU engines — then atomically **claims that job** in Postgres
+  (`pending → processing`), processes it, and releases the slot. No slot free →
+  the job is requeued, never failed.
+- **Automation:** the worker also runs an **auto-poll** thread that scans each
+  user's Drive folder and enqueues new media; **transient failures retry with
+  backoff** and exhausted/terminal ones land in a **dead-letter** set with a UI
+  "Tentar novamente".
 - **Postgres stays the source of truth.** If Redis is wiped/unavailable, the worker
   **re‑enqueues** all pending jobs on startup and while idle
-  (`requeue_pending_jobs`), and a self‑heal (`ensure_queued` via `LPOS`) recovers
-  any id orphaned in the dedupe set.
+  (`requeue_pending_jobs`, gated by `next_retry_at`), and a self‑heal
+  (`ensure_queued` via `LPOS`) recovers any id orphaned in the dedupe set.
 
-Details: **[documentation/09-redis-queue.md](documentation/09-redis-queue.md)**.
+Details: **[09-redis-queue](documentation/09-redis-queue.md)** ·
+**[28-auto-polling](documentation/28-auto-polling.md)** ·
+**[29-redis-queue-advanced](documentation/29-redis-queue-advanced.md)** ·
+**[30-provider-concurrency](documentation/30-provider-concurrency.md)** ·
+**[31-retries-dead-letter](documentation/31-retries-dead-letter.md)** ·
+**[32-cost-guardrails](documentation/32-cost-guardrails.md)**.
 
 ---
 

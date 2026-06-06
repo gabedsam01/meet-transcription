@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Fila (Queue status)</h1>
+  <p class="hint">Visão operacional da fila de transcrição. PostgreSQL é a fonte da verdade; o Redis é fila/lock.</p>
+  {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+
+  {% if queue_status and queue_status.mode == 'poll' %}
+  <div class="notice">Modo poll (sem Redis): a fila avançada está desativada.</div>
+  {% elif queue_status and not queue_status.available %}
+  <div class="notice notice-warn">Redis indisponível no momento.</div>
+  {% endif %}
+
+  {% if stats %}
+  <div class="table-wrapper">
+  <table>
+    <thead><tr><th>Na fila</th><th>Processando</th><th>Dead-letter</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="mono">{{ stats.queued }}</td>
+        <td class="mono">{{ stats.processing }}</td>
+        <td class="mono">{{ stats.dead }}</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+  <h2 style="margin-top:1.5rem">Jobs por status (Postgres)</h2>
+  {% if status_counts %}
+  <ul class="muted">
+    {% for status, count in status_counts.items() %}
+    <li><span class="badge badge-{{ status }}">{{ status }}</span> <span class="mono">{{ count }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">Sem jobs ainda.</p>{% endif %}
+
+  {% if dead_ids %}
+  <h2 style="margin-top:1.5rem">Dead-letter</h2>
+  <p class="muted">Jobs que falharam após esgotar as tentativas. Use "Tentar novamente" na página de Jobs.</p>
+  <p class="mono">{{ dead_ids | join(', ') }}</p>
+  {% endif %}
+</section>
+{% endblock %}

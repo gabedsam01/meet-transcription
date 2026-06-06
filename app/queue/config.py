@@ -19,6 +19,10 @@ class QueueSettings:
     redis_url: str
     queue_name: str
     global_lock_ttl_seconds: int
+    # Provider concurrency: cloud is a counting semaphore, local a single lock.
+    cloud_concurrency: int = 5
+    local_concurrency: int = 1
+    provider_lock_ttl_seconds: int = 14400
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "QueueSettings":
@@ -34,6 +38,15 @@ class QueueSettings:
             queue_name=values.get("QUEUE_NAME", "").strip() or "transcription",
             global_lock_ttl_seconds=_positive_int(
                 values, "TRANSCRIPTION_GLOBAL_LOCK_TTL_SECONDS", 14400
+            ),
+            cloud_concurrency=_positive_int(
+                values, "CLOUD_TRANSCRIPTION_CONCURRENCY", 5
+            ),
+            local_concurrency=_positive_int(
+                values, "LOCAL_TRANSCRIPTION_CONCURRENCY", 1
+            ),
+            provider_lock_ttl_seconds=_positive_int(
+                values, "PROVIDER_LOCK_TTL_SECONDS", 14400
             ),
         )
 

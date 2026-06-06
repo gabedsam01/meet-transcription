@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from app.audio.config import AudioConfig
 from app.audio.probe import probe_audio
@@ -18,6 +20,7 @@ from app.errors import (
     GoogleTokenMissingError,
     ProviderUnavailableError,
     RecordingNotFoundError,
+    classify_error,
 )
 from app.processor import sanitize_filename
 from app.recordings import (
@@ -32,7 +35,8 @@ from app.transcription.config import TranscriptionConfig
 from app.transcription.deepgram_provider import DeepgramProvider
 from app.transcription.factory import build_local_provider, resolve_provider
 from app.transcription.normalizer import render_local_text
-from app.transcription.provider_models import OPENROUTER, GEMINI
+from app.transcription.provider_kind import classify_provider_kind
+from app.transcription.provider_models import GEMINI, OPENROUTER
 from app.transcription.registry import resolve_cloud_provider
 from app.worker.container import WorkerContainer
 
@@ -48,12 +52,55 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class ResolvedProvider:
+    """A job's resolved transcription provider plus the context to run it.
+
+    ``kind`` ('cloud'/'local') drives which concurrency slot the queue loop
+    acquires before processing; it is derived from the resolved provider's
+    *identity* (``name``), not merely from whether a local engine is configured —
+    a user with a valid local engine who chose Deepgram is a CLOUD job. ``name`` is
+    the bare provider id (deepgram/gemini/openrouter/faster-whisper/whisper-cpp);
+    ``label`` is the richer display string (e.g. ``deepgram:nova-2``).
+    """
+
+    provider: Any
+    name: str
+    kind: str
+    status: Any
+    settings: Any
+    token: Any
+    label: str = ""
+
+
 class JobProcessor:
     def __init__(self, container: WorkerContainer, now=_utc_now) -> None:
         self.container = container
         self._now = now
 
-    def process(self, job: Job) -> None:
+    def resolve(self, job: Job) -> ResolvedProvider:
+        """Load settings/token and resolve the provider + concurrency kind.
+
+        Raises a terminal :class:`AppError` (missing settings/token, or no
+        provider available) — the caller dead-letters those without retry. A
+        chrome-extension upload carries its media locally and may run without user
+        settings/token, so those preconditions are skipped for uploads.
+        """
+        repos = self.container.repositories
+        is_upload = is_upload_source(job.source_file_id)
+        settings = repos.settings.get(job.user_id)
+        if settings is None and not is_upload:
+            raise DriveFolderMissingError("User settings are required before transcription")
+        token = repos.google_tokens.get(job.user_id)
+        if token is None and not is_upload:
+            raise GoogleTokenMissingError("Google token is required before transcription")
+        provider, label, name = self._resolve_provider(settings)
+        return ResolvedProvider(
+            provider=provider, name=name, kind=classify_provider_kind(name),
+            status=None, settings=settings, token=token, label=label,
+        )
+
+    def process(self, job: Job, resolved: ResolvedProvider | None = None) -> None:
         repos = self.container.repositories
         job_dir = Path(self.container.settings.tmp_dir) / "jobs" / str(job.id)
         started = time.monotonic()
@@ -65,23 +112,18 @@ class JobProcessor:
             recording_id_from_source(job.source_file_id) if is_upload else None
         )
         try:
-            settings = repos.settings.get(job.user_id)
-            if settings is None and not is_upload:
-                raise DriveFolderMissingError("User settings are required before transcription")
-            token = repos.google_tokens.get(job.user_id)
-            if token is None and not is_upload:
-                raise GoogleTokenMissingError("Google token is required before transcription")
+            if resolved is None:
+                resolved = self.resolve(job)
+            settings = resolved.settings
+            token = resolved.token
             if not is_upload and not job.source_file_id:
                 raise DriveFolderMissingError("Job has no source_file_id to download")
 
-            # Pick the transcription provider. A user's explicit cloud selection
-            # (Models tab) wins; otherwise the local/Deepgram product rule applies:
-            # a valid local engine needs no key, else a per-user key is required and
-            # its absence raises a clear, Deepgram-mentioning error.
-            provider, label = self._resolve_provider(settings)
+            provider = resolved.provider
+            label = resolved.label or resolved.name
             LOGGER.info(
-                "Transcription started: job_id=%s user_id=%s provider=%s source=%s",
-                job.id, job.user_id, label, "upload" if is_upload else "drive",
+                "Transcription started: job_id=%s user_id=%s provider=%s kind=%s source=%s",
+                job.id, job.user_id, label, resolved.kind, "upload" if is_upload else "drive",
             )
 
             job_dir.mkdir(parents=True, exist_ok=True)
@@ -152,14 +194,47 @@ class JobProcessor:
                 job.id, label, time.monotonic() - started,
             )
         except Exception as exc:  # noqa: BLE001 - a job must always reach a terminal state.
-            # Friendly message for the UI; full traceback only in the logs.
-            user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
-            LOGGER.exception("Transcription failed: job_id=%s reason=%s", job.id, exc)
-            repos.jobs.mark_failed(job.id, user_message, self._now())
+            self._handle_failure(job, exc)
         finally:
             _cleanup_job_dir(job_dir)
             if recording_id is not None:
                 cleanup_recording(self._recordings_dir(), recording_id)
+
+    def _handle_failure(self, job: Job, exc: Exception) -> None:
+        """Retry transient failures with backoff; dead-letter terminal/exhausted ones.
+
+        ``attempts`` was already incremented when the job was claimed, so the first
+        failure has ``attempts == 1``. Friendly message for the UI; traceback to logs.
+        """
+        repos = self.container.repositories
+        settings = self.container.settings
+        code, retryable, retry_after = classify_error(exc)
+        user_message = exc.user_message if isinstance(exc, AppError) else str(exc)
+        LOGGER.exception("Transcription failed: job_id=%s code=%s", job.id, code)
+
+        if retryable and job.attempts < settings.job_max_attempts:
+            delay = _backoff(
+                job.attempts, settings.job_retry_base_seconds,
+                settings.job_retry_max_seconds, retry_after,
+            )
+            repos.jobs.schedule_retry(
+                job.id, self._now(),
+                next_retry_at=self._now() + timedelta(seconds=delay),
+                error_code=code, error_message=user_message,
+            )
+            LOGGER.info(
+                "Job scheduled for retry: job_id=%s attempt=%s delay_seconds=%s",
+                job.id, job.attempts, delay,
+            )
+            return
+
+        repos.jobs.mark_failed(job.id, user_message, self._now(), error_code=code)
+        queue = self.container.queue
+        if queue is not None:
+            try:
+                queue.mark_dead(job.id)
+            except Exception:  # noqa: BLE001 - DLQ bookkeeping must not crash the loop.
+                LOGGER.warning("Could not add job_id=%s to the dead-letter set", job.id)
 
     # -- helpers ------------------------------------------------------------
 
@@ -231,11 +306,12 @@ class JobProcessor:
         return render_local_text(payload, original_name, file_id or ""), payload
 
     def _resolve_provider(self, settings):
-        """Return ``(provider, label)`` for the job's settings.
+        """Return ``(provider, label, name)`` for the job's settings.
 
         Explicit OpenRouter/Gemini selection goes through the cloud resolver (with
         fallback); everything else (no selection, or Deepgram) keeps the legacy
-        local-vs-Deepgram rule unchanged.
+        local-vs-Deepgram rule unchanged. ``name`` is the bare provider id used to
+        classify the concurrency kind; ``label`` is the richer display string.
         """
         config = self.container.transcription_config or TranscriptionConfig.disabled()
         # An extension-upload job can run without user settings (settings is None);
@@ -246,15 +322,17 @@ class JobProcessor:
             resolved = resolve_cloud_provider(
                 ms, self._cloud_credentials(settings), build=self._build_cloud_provider
             )
-            return resolved.provider, resolved.label
+            return resolved.provider, resolved.label, resolved.provider_id
         # Honour an explicit per-user Deepgram model from the Models tab; the
         # local-vs-Deepgram product rule and its messages stay on the legacy path.
         deepgram_model = self.container.settings.deepgram_model
         if ms is not None and ms.primary_provider == "deepgram" and ms.primary_model:
             deepgram_model = ms.primary_model
         provider, status = self._resolve_legacy(settings, config, deepgram_model)
-        label = status.summary if status.local_valid else f"deepgram:{deepgram_model}"
-        return provider, label
+        if getattr(status, "local_valid", False):
+            # A valid local engine: its config.engine name drives LOCAL concurrency.
+            return provider, status.summary, config.engine
+        return provider, f"deepgram:{deepgram_model}", "deepgram"
 
     def _resolve_legacy(self, settings, config, deepgram_model):
         def build_deepgram_provider():
@@ -296,6 +374,20 @@ class JobProcessor:
                 provider=provider_id,
             )
         return builder(provider_id, api_key=api_key, model=model)
+
+
+def _backoff(attempts: int, base: int, maximum: int, retry_after: int | None) -> int:
+    """Exponential backoff in seconds, floored by a provider's Retry-After.
+
+    ``attempts`` is the post-claim count (1 on first failure), so the first retry
+    waits ``base`` seconds, then doubles, capped at ``maximum``.
+    """
+    delay = min(maximum, base * (2 ** max(0, attempts - 1)))
+    if retry_after:
+        # Honor Retry-After as a floor, but never exceed the configured maximum:
+        # a provider returning an absurd Retry-After must not park a job for days.
+        delay = max(delay, min(int(retry_after), maximum))
+    return delay
 
 
 def _cleanup_job_dir(job_dir: Path) -> None:
