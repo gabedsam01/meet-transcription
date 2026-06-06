@@ -95,6 +95,10 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
             from app.transcription.gemini_provider import GeminiProvider
 
             return GeminiProvider(api_key=api_key, model=model, language=None)
+        if provider_id == "groq":
+            from app.transcription.groq_provider import GroqProvider
+
+            return GroqProvider(api_key=api_key, model=model, language=None)
         raise ProviderUnavailableError(
             f"Unsupported cloud provider {provider_id!r}", provider=provider_id
         )

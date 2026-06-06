@@ -221,3 +221,12 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
   - Other providers size failures show: `"O arquivo é grande demais para este provedor. Ative compressão/chunking ou escolha Deepgram/local."`
   - If preprocessing is disabled, `ProviderFileTooLargeError` is raised immediately with the friendly suggestion message.
 
+## 16. Groq Speech-to-Text Provider Integration
+
+- **Provider Registry**: Integrated Groq as a first-class cloud transcription provider (`groq`) in the Models tab. It supports two main models: `whisper-large-v3-turbo` (default) and `whisper-large-v3`.
+- **UI and Credentials**: Users can select Groq as their primary or fallback provider in the Models tab. Groq API keys are stored encrypted at rest via per-user credentials. The UI renders appropriate details for Groq under diarization and limits info.
+- **Flexible Environment Fallback**: The provider checks constructor keys, falling back to `GROQ_API_KEY` global variable if needed for CLI/admin compatibility.
+- **Dynamic File Limit Check**: Supports `GROQ_MAX_UPLOAD_MB` (default 25 MB) and `GROQ_USE_DEV_LIMIT` (which raises limits to 100 MB). Overlapping audio preprocessing/chunking handles oversized files dynamically.
+- **Verbose JSON Normalization**: Parses response payloads in `verbose_json` format, extracting both segment-level and word-level timestamps when available, and standardizing them into the database schema.
+- **Rate-Limit & Error Handling**: Captures HTTP 429 rate-limiting, parses the `retry-after` header to schedule retries with precise backoff, and maps auth failures (401/403) and large files (413) to friendly, trace-free exceptions.
+

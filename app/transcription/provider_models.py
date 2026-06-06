@@ -20,6 +20,7 @@ from app.errors import PROVIDER_DOCS_URL
 DEEPGRAM = "deepgram"
 OPENROUTER = "openrouter"
 GEMINI = "gemini"
+GROQ = "groq"
 LOCAL = "local"
 
 # Diarization "kind" classifies how trustworthy speaker labels are, so the UI can
@@ -55,9 +56,23 @@ class ProviderSpec:
     notes: str = ""
     docs_url: str = PROVIDER_DOCS_URL
     max_inline_bytes: int | None = None
-    max_file_bytes: int | None = None
+    _max_file_bytes: int | None = None
     # Free-form, provider-agnostic capability flags for future use.
     capabilities: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def max_file_bytes(self) -> int | None:
+        if self.provider_id == "groq":
+            import os
+            use_dev = os.environ.get("GROQ_USE_DEV_LIMIT", "").strip().lower() in ("1", "true", "yes", "y", "on")
+            try:
+                max_upload_mb = int(os.environ.get("GROQ_MAX_UPLOAD_MB", "25"))
+            except ValueError:
+                max_upload_mb = 25
+            if use_dev:
+                return 100 * 1024 * 1024
+            return max_upload_mb * 1024 * 1024
+        return self._max_file_bytes
 
     def has_model(self, model: str) -> bool:
         return model in self.models
@@ -73,7 +88,7 @@ _DEEPGRAM_SPEC = ProviderSpec(
     diarization="Diarização real (separação de locutores) disponível.",
     notes="Provedor de fala dedicado; melhor qualidade de diarização.",
     docs_url=PROVIDER_DOCS_URL,
-    max_file_bytes=2 * 1024 * 1024 * 1024,
+    _max_file_bytes=2 * 1024 * 1024 * 1024,
     capabilities=("diarization", "timestamps", "utterances"),
 )
 
@@ -95,7 +110,7 @@ _OPENROUTER_SPEC = ProviderSpec(
     diarization="Diarização depende do modelo; em geral indisponível.",
     notes="Roteador de modelos: a diarização e os timestamps variam por modelo.",
     docs_url=PROVIDER_DOCS_URL,
-    max_file_bytes=OPENROUTER_MAX_BYTES,
+    _max_file_bytes=OPENROUTER_MAX_BYTES,
     capabilities=("timestamps",),
 )
 
@@ -119,8 +134,22 @@ _GEMINI_SPEC = ProviderSpec(
     ),
     docs_url=PROVIDER_DOCS_URL,
     max_inline_bytes=GEMINI_INLINE_MAX_BYTES,
-    max_file_bytes=GEMINI_FILES_MAX_BYTES,
+    _max_file_bytes=GEMINI_FILES_MAX_BYTES,
     capabilities=("multimodal",),
+)
+
+_GROQ_SPEC = ProviderSpec(
+    provider_id=GROQ,
+    label="Groq",
+    models=("whisper-large-v3-turbo", "whisper-large-v3"),
+    default_model="whisper-large-v3-turbo",
+    requires_api_key=True,
+    diarization_kind=DIARIZATION_NONE,
+    diarization="Sem diarização real disponível.",
+    notes="Transcrição ultrarrápida via Whisper (Groq Cloud).",
+    docs_url=PROVIDER_DOCS_URL,
+    _max_file_bytes=25 * 1024 * 1024,
+    capabilities=("timestamps",),
 )
 
 _LOCAL_SPEC = ProviderSpec(
@@ -141,11 +170,12 @@ PROVIDERS: dict[str, ProviderSpec] = {
     DEEPGRAM: _DEEPGRAM_SPEC,
     OPENROUTER: _OPENROUTER_SPEC,
     GEMINI: _GEMINI_SPEC,
+    GROQ: _GROQ_SPEC,
     LOCAL: _LOCAL_SPEC,
 }
 
 # Cloud providers a user can select + supply a key for (excludes env-driven local).
-CLOUD_PROVIDERS: tuple[str, ...] = (DEEPGRAM, OPENROUTER, GEMINI)
+CLOUD_PROVIDERS: tuple[str, ...] = (DEEPGRAM, OPENROUTER, GEMINI, GROQ)
 
 # Providers selectable as a primary/fallback in the Models tab.
 SELECTABLE_PROVIDERS: tuple[str, ...] = CLOUD_PROVIDERS

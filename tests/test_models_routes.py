@@ -41,7 +41,7 @@ def test_models_page_renders(tmp_path):
         _login(client)
         page = client.get("/models")
     assert page.status_code == 200
-    assert "Deepgram" in page.text and "OpenRouter" in page.text and "Gemini" in page.text
+    assert "Deepgram" in page.text and "OpenRouter" in page.text and "Gemini" in page.text and "Groq" in page.text
 
 
 def test_save_primary_provider_and_model(tmp_path):

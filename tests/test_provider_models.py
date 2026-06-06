@@ -5,8 +5,8 @@ from app.transcription import provider_models as pm
 
 def test_known_providers_present():
     ids = set(pm.provider_ids())
-    assert {"deepgram", "openrouter", "gemini", "local"} <= ids
-    assert pm.CLOUD_PROVIDERS == ("deepgram", "openrouter", "gemini")
+    assert {"deepgram", "openrouter", "gemini", "groq", "local"} <= ids
+    assert pm.CLOUD_PROVIDERS == ("deepgram", "openrouter", "gemini", "groq")
 
 
 def test_deepgram_models_and_real_diarization():
@@ -30,6 +30,43 @@ def test_gemini_models_and_size_limits():
     assert spec.diarization_kind == pm.DIARIZATION_PSEUDO
     assert spec.max_inline_bytes == pm.GEMINI_INLINE_MAX_BYTES == 70 * 1024 * 1024
     assert spec.max_file_bytes == pm.GEMINI_FILES_MAX_BYTES == 99 * 1024 * 1024
+
+
+def test_groq_spec_and_dynamic_limits():
+    import os
+    spec = pm.get_provider_spec("groq")
+    assert spec.models == ("whisper-large-v3-turbo", "whisper-large-v3")
+    assert spec.default_model == "whisper-large-v3-turbo"
+    assert spec.requires_api_key is True
+    assert spec.diarization_kind == pm.DIARIZATION_NONE
+
+    # Test free-tier limit default (25 MB)
+    orig_dev = os.environ.get("GROQ_USE_DEV_LIMIT")
+    orig_max = os.environ.get("GROQ_MAX_UPLOAD_MB")
+    if "GROQ_MAX_UPLOAD_MB" in os.environ:
+        del os.environ["GROQ_MAX_UPLOAD_MB"]
+    if "GROQ_USE_DEV_LIMIT" in os.environ:
+        del os.environ["GROQ_USE_DEV_LIMIT"]
+    try:
+        assert spec.max_file_bytes == 25 * 1024 * 1024
+
+        # Test dev limit overrides (100 MB)
+        os.environ["GROQ_USE_DEV_LIMIT"] = "true"
+        assert spec.max_file_bytes == 100 * 1024 * 1024
+        del os.environ["GROQ_USE_DEV_LIMIT"]
+
+        # Test custom max upload mb override (e.g. 50 MB)
+        os.environ["GROQ_MAX_UPLOAD_MB"] = "50"
+        assert spec.max_file_bytes == 50 * 1024 * 1024
+    finally:
+        if orig_dev is not None:
+            os.environ["GROQ_USE_DEV_LIMIT"] = orig_dev
+        elif "GROQ_USE_DEV_LIMIT" in os.environ:
+            del os.environ["GROQ_USE_DEV_LIMIT"]
+        if orig_max is not None:
+            os.environ["GROQ_MAX_UPLOAD_MB"] = orig_max
+        elif "GROQ_MAX_UPLOAD_MB" in os.environ:
+            del os.environ["GROQ_MAX_UPLOAD_MB"]
 
 
 def test_local_needs_no_api_key():

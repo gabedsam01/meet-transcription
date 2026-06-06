@@ -733,3 +733,154 @@ def test_preprocessing_disabled_raises_friendly_error_groq(tmp_path):
     done = container.repositories.jobs.get_job(job.id)
     assert done.status == JobStatus.FAILED.value
     assert "No free tier do Groq" in done.error_message
+
+
+def test_groq_oversized_file_chunked_stitched(tmp_path):
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    cloud = FakeCloudProvider(provider_id="groq")
+    def custom_transcribe(source_path, *, original_name, file_id):
+        from app.transcription.provider import TranscriptionResult
+        cloud.calls.append((str(source_path), original_name, file_id))
+        return TranscriptionResult(
+            text="Groq chunk",
+            payload={
+                "provider": "groq", "engine": "groq",
+                "model": "m", "language": "pt", "text": "Groq chunk",
+                "segments": [{"start": 0.0, "end": 2.0, "text": "Groq chunk"}],
+                "words": [], "utterances": [], "raw": {},
+            }
+        )
+    cloud.transcribe = custom_transcribe
+    audio_cfg = AudioConfig(
+        enabled=True,
+        target_sample_rate=16000,
+        target_channels=1,
+        target_bitrate=24000,
+        chunk_max_duration_seconds=900,
+        chunk_overlap_seconds=2,
+        max_inline_mb=70,
+        max_file_api_mb=99,
+        compression_enabled=True,
+        compression_target_mb=99,
+        cloud_chunk_target_mb=24,
+        provider_limit_default_mb=99,
+        openrouter_max_upload_mb=99,
+        gemini_max_file_api_mb=99,
+        groq_max_upload_mb=25,
+    )
+    runner = _make_audio_runner(
+        flac_size=40 * 1024 * 1024,
+        mp3_size=30 * 1024 * 1024,
+        chunk_size=10 * 1024 * 1024,
+        duration=1800
+    )
+    container = make_worker_container(
+        tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+    )
+    ms = normalize_model_settings(
+        primary_provider="groq", primary_model="whisper-large-v3-turbo"
+    )
+    _seed_models(container.repositories, ms=ms, credentials={"groq": "groq-key"})
+    job = _claim_one(container.repositories)
+
+    original_stat = Path.stat
+    def fake_stat(self, *args, **kwargs):
+        if "meeting.mp4" in self.name:
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            mock.st_size = 45 * 1024 * 1024
+            return mock
+        return original_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", fake_stat):
+        JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    # Groq preferred format is mp3, so we check for chunk_*_compressed.mp3 calls!
+    assert len(cloud.calls) == 3
+    assert "chunk_0000_compressed.mp3" in cloud.calls[0][0]
+    assert "chunk_0001_compressed.mp3" in cloud.calls[1][0]
+    assert "chunk_0002_compressed.mp3" in cloud.calls[2][0]
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert "Groq chunk" in transcript.text
+
+
+def test_groq_oversized_file_with_dev_limit_no_chunk(tmp_path):
+    import os
+    from unittest.mock import patch
+    from pathlib import Path
+    from app.audio.config import AudioConfig
+    
+    os.environ["GROQ_USE_DEV_LIMIT"] = "true"
+    try:
+        cloud = FakeCloudProvider(provider_id="groq")
+        def custom_transcribe(source_path, *, original_name, file_id):
+            from app.transcription.provider import TranscriptionResult
+            cloud.calls.append((str(source_path), original_name, file_id))
+            return TranscriptionResult(
+                text="Groq single",
+                payload={
+                    "provider": "groq", "engine": "groq",
+                    "model": "m", "language": "pt", "text": "Groq single",
+                    "segments": [{"start": 0.0, "end": 2.0, "text": "Groq single"}],
+                    "words": [], "utterances": [], "raw": {},
+                }
+            )
+        cloud.transcribe = custom_transcribe
+        audio_cfg = AudioConfig(
+            enabled=True,
+            target_sample_rate=16000,
+            target_channels=1,
+            target_bitrate=24000,
+            chunk_max_duration_seconds=900,
+            chunk_overlap_seconds=2,
+            max_inline_mb=70,
+            max_file_api_mb=99,
+            compression_enabled=True,
+            compression_target_mb=99,
+            cloud_chunk_target_mb=24,
+            provider_limit_default_mb=99,
+            openrouter_max_upload_mb=99,
+            gemini_max_file_api_mb=99,
+            groq_max_upload_mb=25,
+        )
+        runner = _make_audio_runner(
+            flac_size=40 * 1024 * 1024,
+            mp3_size=30 * 1024 * 1024,
+            chunk_size=10 * 1024 * 1024,
+            duration=1800
+        )
+        container = make_worker_container(
+            tmp_path, build_cloud_provider=cloud.builder, audio_config=audio_cfg, audio_runner=runner
+        )
+        ms = normalize_model_settings(
+            primary_provider="groq", primary_model="whisper-large-v3-turbo"
+        )
+        _seed_models(container.repositories, ms=ms, credentials={"groq": "groq-key"})
+        job = _claim_one(container.repositories)
+
+        original_stat = Path.stat
+        def fake_stat(self, *args, **kwargs):
+            if "meeting.mp4" in self.name:
+                from unittest.mock import MagicMock
+                mock = MagicMock()
+                mock.st_size = 45 * 1024 * 1024
+                return mock
+            return original_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", fake_stat):
+            JobProcessor(container).process(job)
+
+        done = container.repositories.jobs.get_job(job.id)
+        assert done.status == JobStatus.COMPLETED.value
+        # Dev limit is 100 MB, the 45 MB file fits within the 100 MB limit, so it is transcribed in 1 call directly
+        assert len(cloud.calls) == 1
+        assert "meeting.mp4" in cloud.calls[0][0]
+        transcript = container.repositories.transcripts.get_by_job(job.id)
+        assert "Groq single" in transcript.text
+    finally:
+        del os.environ["GROQ_USE_DEV_LIMIT"]
+

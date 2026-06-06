@@ -221,6 +221,7 @@ class ProviderCredentialInvalidError(ProviderError):
 
 class ProviderRateLimitedError(ProviderError):
     code = "provider_rate_limited"
+    error_code = "provider_rate_limited"
     retryable = True
     default_user_message = (
         "O provedor está limitando as requisições (rate limit). Tente novamente em instantes."

@@ -116,6 +116,55 @@ def normalize_openrouter(
     )
 
 
+def normalize_groq(
+    raw: dict[str, Any], *, model: str, language: str | None
+) -> dict[str, Any]:
+    """Normalize a Groq audio-transcriptions response.
+
+    Supports verbose_json containing segments and words.
+    No diarization is assumed (speaker stays None).
+    """
+    data = raw if isinstance(raw, dict) else {}
+    raw_segments = data.get("segments") or []
+    segments = [
+        segment(
+            s.get("start", 0.0),
+            s.get("end", 0.0),
+            s.get("text") or "",
+        )
+        for s in raw_segments
+        if isinstance(s, dict) and (s.get("text") or "").strip()
+    ]
+
+    # Word timestamps normalization
+    raw_words = data.get("words") or []
+    words = [
+        {
+            "word": (w.get("word") or "").strip(),
+            "start": round(float(w.get("start") or 0.0), 3),
+            "end": round(float(w.get("end") or 0.0), 3),
+        }
+        for w in raw_words
+        if isinstance(w, dict) and (w.get("word") or "").strip()
+    ]
+
+    text = (data.get("text") or "").strip()
+    if segments and not text:
+        text = segments_text(segments)
+    if text and not segments:
+        segments = [segment(0.0, 0.0, text)]
+    return normalized_payload(
+        provider="groq",
+        engine="groq",
+        model=model,
+        language=data.get("language") or language,
+        text=text,
+        segments=segments,
+        words=words,
+        raw=data,
+    )
+
+
 def normalize_gemini(
     text: str, *, model: str, language: str | None, raw: dict[str, Any] | None = None
 ) -> dict[str, Any]:

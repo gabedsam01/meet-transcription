@@ -43,7 +43,7 @@ from app.transcription.deepgram_provider import DeepgramProvider
 from app.transcription.factory import build_local_provider, resolve_provider
 from app.transcription.normalizer import render_local_text
 from app.transcription.provider_kind import classify_provider_kind
-from app.transcription.provider_models import GEMINI, OPENROUTER
+from app.transcription.provider_models import GEMINI, OPENROUTER, GROQ
 from app.transcription.registry import resolve_cloud_provider
 from app.webhooks import JOB_COMPLETED, JOB_FAILED
 from app.worker.container import WorkerContainer
@@ -51,7 +51,7 @@ from app.worker.container import WorkerContainer
 # A user's explicit cloud choice in the Models tab takes over the worker's
 # provider selection; Deepgram stays on the legacy local-vs-Deepgram path so its
 # diarize/utterances settings and the "no silent fallback" rule are unchanged.
-_CLOUD_BRANCH = (OPENROUTER, GEMINI)
+_CLOUD_BRANCH = (OPENROUTER, GEMINI, GROQ)
 
 LOGGER = logging.getLogger(__name__)
 

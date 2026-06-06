@@ -35,9 +35,11 @@ def get_provider_capabilities(provider_name: str, config: AudioConfig) -> Provid
             supports_chunking=True,
         )
     elif p == "groq":
+        use_dev = os.environ.get("GROQ_USE_DEV_LIMIT", "").strip().lower() in ("1", "true", "yes", "y", "on")
+        max_upload_mb = 100 if use_dev else config.groq_max_upload_mb
         return ProviderCapabilities(
             provider=provider_name,
-            max_upload_mb=config.groq_max_upload_mb,
+            max_upload_mb=max_upload_mb,
             preferred_format="mp3",
             supports_chunking=True,
         )

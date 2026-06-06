@@ -92,3 +92,12 @@ def test_provider_resolver_wrapper():
     ms = normalize_model_settings(primary_provider="deepgram", primary_model="nova-3")
     resolved = resolver.resolve(ms, {"deepgram": "k"})
     assert resolved.provider_id == "deepgram"
+
+
+def test_resolves_groq_provider():
+    ms = normalize_model_settings(primary_provider="groq", primary_model="whisper-large-v3-turbo")
+    resolved = resolve_cloud_provider(ms, {"groq": "groq-key"}, build=_build)
+    assert resolved.provider_id == "groq"
+    assert resolved.model == "whisper-large-v3-turbo"
+    assert resolved.provider.api_key == "groq-key"
+
