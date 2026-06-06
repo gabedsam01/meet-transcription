@@ -17,10 +17,12 @@ from sqlalchemy.orm import Session
 from app.database.models import (
     DeepgramCredential,
     GoogleToken,
+    ProviderCredential,
     TranscriptionJob,
     Transcript,
     User,
     UserDriveSettings,
+    UserModelSettings,
 )
 
 
@@ -164,6 +166,92 @@ class DeepgramCredentialRepository:
         credential.encrypted_api_key = encrypted_api_key
         self.session.flush()
         return credential
+
+
+class ProviderCredentialRepository:
+    """Per-user, per-provider encrypted API keys.
+
+    Reads transparently fall back to the legacy ``deepgram_credentials`` row when
+    no ``provider_credentials`` row exists yet for ``provider='deepgram'`` — so
+    keys saved before the Models tab keep working without a forced migration.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_for_user(self, user_id: int, provider: str) -> ProviderCredential | None:
+        return self.session.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.user_id == user_id,
+                ProviderCredential.provider == provider,
+            )
+        )
+
+    def get_encrypted(self, user_id: int, provider: str) -> str | None:
+        row = self.get_for_user(user_id, provider)
+        if row is not None:
+            return row.encrypted_api_key
+        if provider == "deepgram":
+            legacy = self.session.scalar(
+                select(DeepgramCredential).where(DeepgramCredential.user_id == user_id)
+            )
+            if legacy is not None:
+                return legacy.encrypted_api_key
+        return None
+
+    def list_for_user(self, user_id: int) -> dict[str, str]:
+        rows = self.session.scalars(
+            select(ProviderCredential).where(ProviderCredential.user_id == user_id)
+        ).all()
+        creds = {row.provider: row.encrypted_api_key for row in rows}
+        if "deepgram" not in creds:
+            legacy = self.session.scalar(
+                select(DeepgramCredential).where(DeepgramCredential.user_id == user_id)
+            )
+            if legacy is not None:
+                creds["deepgram"] = legacy.encrypted_api_key
+        return creds
+
+    def upsert_for_user(
+        self, user_id: int, provider: str, *, encrypted_api_key: str
+    ) -> ProviderCredential:
+        row = self.get_for_user(user_id, provider)
+        if row is None:
+            row = ProviderCredential(user_id=user_id, provider=provider)
+            self.session.add(row)
+        row.encrypted_api_key = encrypted_api_key
+        self.session.flush()
+        return row
+
+
+class UserModelSettingsRepository:
+    FIELDS = (
+        "primary_provider",
+        "primary_model",
+        "fallback_enabled",
+        "fallback_provider",
+        "fallback_model",
+        "local_engine",
+        "local_model",
+        "local_quantization",
+    )
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_for_user(self, user_id: int) -> UserModelSettings | None:
+        return self.session.scalar(
+            select(UserModelSettings).where(UserModelSettings.user_id == user_id)
+        )
+
+    def upsert_for_user(self, user_id: int, **fields: Any) -> UserModelSettings:
+        row = self.get_for_user(user_id)
+        if row is None:
+            row = UserModelSettings(user_id=user_id)
+            self.session.add(row)
+        _apply(row, fields, self.FIELDS)
+        self.session.flush()
+        return row
 
 
 class UserDriveSettingsRepository:

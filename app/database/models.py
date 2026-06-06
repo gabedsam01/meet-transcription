@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -96,6 +97,64 @@ class DeepgramCredential(TimestampMixin, Base):
         index=True,
     )
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ProviderCredential(TimestampMixin, Base):
+    """Per-user, per-provider encrypted API key (Models tab).
+
+    Supersedes the single-provider ``deepgram_credentials`` table: a user has at
+    most one key per provider. ``encrypted_api_key`` is always Fernet ciphertext —
+    plaintext keys never reach this layer. The legacy ``deepgram_credentials``
+    table is kept for backward-compatible reads; migration 0002 copies its rows
+    here with ``provider='deepgram'``.
+    """
+
+    __tablename__ = "provider_credentials"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_provider_credentials_user_provider"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class UserModelSettings(TimestampMixin, Base):
+    """Per-user transcription model selection (Models tab).
+
+    One row per user (``user_id`` unique). ``primary_*`` is the chosen provider +
+    model; ``fallback_*`` an optional second provider used when the primary's
+    credential is missing; ``local_*`` mirrors the env-driven local engine for the
+    UI. All values are validated/clamped by ``provider_config.normalize_model_settings``
+    before use, so a stale row can never crash the worker.
+    """
+
+    __tablename__ = "user_model_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    primary_provider: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'deepgram'")
+    )
+    primary_model: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'nova-3'")
+    )
+    fallback_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    fallback_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fallback_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_engine: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_quantization: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class UserDriveSettings(TimestampMixin, Base):
