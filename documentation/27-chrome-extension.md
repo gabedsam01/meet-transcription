@@ -249,11 +249,10 @@ Open the popup, expand **Configurações**, and set:
 Click **Salvar configurações** (both values persist in `chrome.storage.local`).
 Tick *"Também gravar meu microfone"* to mix your mic in.
 
-> **Changing the backend origin:** `manifest.json` ships with the host permission
-> `http://localhost:8000/*`. If your backend lives elsewhere (e.g.
-> `https://meet.example.com`), add that origin to `host_permissions` in
-> `manifest.json` and reload the unpacked extension — the Backend URL field alone
-> is not enough, the host must be in `host_permissions` for `fetch` to reach it.
+> **Changing the backend origin:** No manifest edit needed. The extension uses
+> `optional_host_permissions` to request access to your backend origin at runtime.
+> When you enter the Backend URL and click **Salvar**, Chrome will prompt you to
+> grant permission for that origin. If denied, the extension shows a clear error.
 
 ### Permissions rationale
 
@@ -265,7 +264,8 @@ Tick *"Também gravar meu microfone"* to mix your mic in.
 | `activeTab` | Identify the Meet tab you clicked from. |
 | `scripting` | Reserved for injecting helpers into the Meet page when needed. |
 | host `https://meet.google.com/*` | Run the content script on Meet. |
-| host `http://localhost:8000/*` | Upload recordings to the backend (edit for your origin). |
+| optional_host `https://*/*` | Upload recordings to any HTTPS backend (granted at runtime). |
+| optional_host `http://localhost/*` | Upload recordings to a local dev backend (granted at runtime). |
 
 ## Troubleshooting
 
@@ -275,7 +275,7 @@ Tick *"Também gravar meu microfone"* to mix your mic in.
 | Upload returns `401` *"Token de upload inválido."* | Token in the popup doesn't match `EXTENSION_UPLOAD_TOKEN`. | Re-enter the exact token under Configurações. |
 | Upload returns `413` | Recording larger than `EXTENSION_UPLOAD_MAX_MB`. | Record shorter sessions or raise the limit. |
 | Upload returns `503` *"Conta de upload indisponível."* | `EXTENSION_UPLOAD_USER_EMAIL` (or admin) has no active user. | Point it at an existing active account. |
-| `fetch` never reaches the backend / network error in popup | Backend origin not in `host_permissions`. | Add the origin to `manifest.json`, reload the extension. |
+| `fetch` never reaches the backend / network error in popup | Backend origin permission not granted or backend unreachable. | Re-enter the Backend URL and click Salvar; grant the permission prompt. Ensure the backend is running and reachable. |
 | Recording won't start | `tabCapture` needs a user gesture; no active Meet tab. | Click **"Iniciar gravação"** from a focused Meet tab. |
 | Job created but stuck `pending` | Redis enqueue failed; worker reconciles from Postgres. | Wait — `requeue_pending_jobs` picks it up; check the worker is running. |
 | Job `failed` with "Recording media not found" | Media missing from `EXTENSION_RECORDINGS_DIR`. | Ensure web and worker share the same `./data` volume / dir. |
