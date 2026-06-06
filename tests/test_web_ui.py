@@ -188,10 +188,10 @@ def test_dashboard_shows_status_counts_and_ctas(tmp_path):
         _login(client)
         text = client.get("/").text
 
-    assert "Connected" in text  # Google
-    assert "Configured" in text  # Drive source + Models provider
+    assert "Conectado" in text  # Google
+    assert "Configurado" in text  # Drive source + Models provider
     assert "Total jobs" in text
-    assert "Last job" in text
+    assert "Último job" in text
     assert "badge-completed" in text  # last job status badge
     assert "/models" in text  # Models CTA (replaces the old Deepgram tab)
     assert "/jobs" in text  # Jobs CTA

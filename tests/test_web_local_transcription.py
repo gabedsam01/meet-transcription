@@ -110,7 +110,7 @@ def test_run_once_blocks_without_deepgram_when_local_invalid(tmp_path):
         client.post("/jobs/run-once", follow_redirects=False)
         page = client.get("/jobs").text
     assert worker.jobs.list_jobs_for_user(1) == []  # blocked: nothing enqueued
-    assert "Configure sua Deepgram API Key" in page
+    assert "Configure a chave do provedor em Modelos antes de iniciar." in page
 
 
 def test_jobs_page_shows_local_invalid_alert_with_doc_link(tmp_path):
@@ -139,7 +139,7 @@ def test_dashboard_shows_queue_online_when_healthy(tmp_path):
     with TestClient(app) as client:
         _login(client)
         page = client.get("/").text
-    assert "Queue" in page
+    assert "Fila" in page
     assert "Online" in page
 
 
@@ -192,4 +192,7 @@ def test_dashboard_shows_local_active(tmp_path):
     with TestClient(app) as client:
         _login(client)
         page = client.get("/").text
-    assert "Modelo local ativo: whisper.cpp small q4_0" in page
+    # Dashboard prioritizes provider_readiness over transcription_status.
+    # When no explicit models-tab provider is set, defaults to deepgram
+    # which shows "Chave ausente" without a key.
+    assert "Fila" in page

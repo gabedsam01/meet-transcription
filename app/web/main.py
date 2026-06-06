@@ -61,10 +61,20 @@ from app.transcription.provider_models import (
 from app.version import get_version_info
 from app.web import helpers
 from app.web.config import WebSettings
+from app.web.csrf import (
+    CSRFValidationError,
+    get_or_create_csrf_token,
+    validate_csrf_token,
+)
 from app.web.deepgram_key import DeepgramKeyStore
 from app.web.drive_links import extract_google_drive_folder_id
 from app.web.passwords import hash_password, verify_password
 from app.web.provider_keys import ProviderKeyStore, verify_provider_key
+from app.web.provider_readiness import (
+    ProviderReadiness,
+    compute_provider_readiness,
+    provider_status_text,
+)
 from app.web.repositories import DriveSettings, RepositoryBundle, build_repositories
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
@@ -76,13 +86,14 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 templates.env.filters["mid"] = helpers.middle_truncate
 templates.env.filters["dt"] = helpers.short_datetime
 templates.env.filters["drive_dl"] = helpers.drive_download_url
+templates.env.globals["csrf_token"] = lambda request: get_or_create_csrf_token(request)
 
 # Run-once only creates a pending job; the worker does the processing. Keys match
 # JobCreationResult.status from app.services.job_service.create_next_pending_job.
 RUN_ONCE_MESSAGES = {
     "no_settings": "Configure a pasta de origem em Drive Settings primeiro.",
     "not_connected": "Conecte o Google antes de rodar uma transcrição.",
-    "no_deepgram_key": "Configure sua Deepgram API Key antes de iniciar uma transcrição.",
+    "no_provider_key": "Configure a chave do provedor em Modelos antes de iniciar.",
     "no_new_videos": "Nenhum vídeo novo para transcrever.",
     "created": "Job enfileirado; o worker fará o processamento.",
 }
@@ -195,6 +206,25 @@ def create_app(settings: WebSettings | None = None,
             {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers or None
         )
 
+    @app.exception_handler(CSRFValidationError)
+    async def csrf_exception_handler(request: Request, exc: CSRFValidationError):
+        """Render a 403 page when CSRF validation fails."""
+        wants_html = "text/html" in request.headers.get("accept", "")
+        if wants_html:
+            context = {
+                "user": _session_user(request),
+                "code": "csrf_error",
+                "message": "Sessao expirada ou invalida. Recarregue a pagina e tente novamente.",
+                "action": "Volte e recarregue a pagina.",
+                "retry_url": "/",
+            }
+            return templates.TemplateResponse(
+                request, "error.html", context, status_code=403
+            )
+        return JSONResponse(
+            {"detail": "CSRF validation failed"}, status_code=403
+        )
+
     def _resolve_worker_repositories():
         """Return ``(worker Repositories, None)`` or ``(None, error_message)``.
 
@@ -253,6 +283,12 @@ def create_app(settings: WebSettings | None = None,
         if spec is None or not spec.requires_api_key:
             return True
         return bool(provider_key_store and provider_key_store.has(user_id, model_settings.primary_provider))
+
+    async def _csrf_form(request: Request) -> None:
+        """CSRF dependency: reads form body and validates the hidden token."""
+        form = await request.form()
+        form_token = (form.get("csrf_token") or "")
+        validate_csrf_token(request, str(form_token) if form_token else None)
 
     def _queue_backend_name() -> str:
         queue = app.state.queue
@@ -326,7 +362,8 @@ def create_app(settings: WebSettings | None = None,
         return templates.TemplateResponse(request, "login.html")
 
     @app.post("/login")
-    def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    def login(request: Request, username: str = Form(...), password: str = Form(...),
+              _csrf: None = Depends(_csrf_form)):
         user = repos.users.get_by_email(username.strip())
         pw_hash = repos.users.get_password_hash(user.id) if user else None
         if user is None or not user.is_active or not verify_password(password, pw_hash):
@@ -338,7 +375,7 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/", status_code=303)
 
     @app.post("/logout")
-    def logout(request: Request):
+    def logout(request: Request, _csrf: None = Depends(_csrf_form)):
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
 
@@ -348,6 +385,10 @@ def create_app(settings: WebSettings | None = None,
         jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
         model_settings = _model_settings_for(user.id)
         primary_spec = get_provider_spec(model_settings.primary_provider)
+        readiness = compute_provider_readiness(
+            model_settings,
+            has_key=provider_key_store.has if provider_key_store else None,
+        )
         return templates.TemplateResponse(request, "dashboard.html", {
             "user": user,
             "settings": repos.drive_settings.get_for_user(user.id),
@@ -355,6 +396,7 @@ def create_app(settings: WebSettings | None = None,
             "model_settings": model_settings,
             "provider_label": primary_spec.label if primary_spec else model_settings.primary_provider,
             "provider_ready": _primary_ready(user.id, model_settings),
+            "provider_readiness": readiness,
             "transcription_status": app.state.transcription_status,
             "queue_status": _queue_status(),
             "total_jobs": len(jobs),
@@ -366,16 +408,18 @@ def create_app(settings: WebSettings | None = None,
     def onboarding(request: Request, user=Depends(require_user)):
         """Guided setup checklist computed from the user's real configuration state."""
         drive = repos.drive_settings.get_for_user(user.id)
-        status = app.state.transcription_status
         google_connected = repos.google_tokens.get_for_user(user.id) is not None
         folder_valid = bool(drive and drive.source_drive_folder_id)
-        deepgram_configured = deepgram_store.has_key(user.id)
-        # A valid local engine needs no key; otherwise a per-user Deepgram key is it.
-        provider_ready = (not status.deepgram_required) or deepgram_configured
+        model_settings = _model_settings_for(user.id)
+        readiness = compute_provider_readiness(
+            model_settings,
+            has_key=provider_key_store.has if provider_key_store else None,
+        )
         qs = _queue_status()
         queue_online = qs["mode"] == "poll" or bool(qs["available"])
         worker_repos, _ = _resolve_worker_repositories()
         worker_online = worker_repos is not None
+        provider_ready = readiness.ok
         automation_active = all(
             [google_connected, folder_valid, provider_ready, queue_online, worker_online]
         )
@@ -388,12 +432,19 @@ def create_app(settings: WebSettings | None = None,
             {"label": "Automação ativa", "done": automation_active},
         ]
         provider_label = (
-            "Modelo local ativo" if status.local_valid
-            else ("Deepgram configurado" if deepgram_configured else "Provider pendente")
+            readiness.status_label if not readiness.ok
+            else f"{readiness.provider_label}: {readiness.model}"
         )
-        test_cta = (
-            ("Testar Deepgram", "/settings/deepgram") if status.deepgram_required
-            else (("Ver documentação", status.doc_url) if status.doc_url else None)
+        step_4_desc = readiness.reason or f"Provedor {readiness.status_label.lower()}."
+        step_5_desc = (
+            f"{provider_label}. "
+            if not readiness.ok
+            else f"{readiness.status_label}. "
+        )
+        step_5_desc += (
+            "Configure a chave do provedor em Modelos."
+            if not readiness.ok and readiness.credential_required
+            else "Pronto para transcrever."
         )
         steps = [
             {"n": 1, "title": "Login / admin", "done": True,
@@ -405,11 +456,17 @@ def create_app(settings: WebSettings | None = None,
              "desc": "Defina a pasta de origem onde o Meet salva as gravações.",
              "cta": None if folder_valid else ("Configurar pasta", "/settings/drive")},
             {"n": 4, "title": "Escolher provider / modelo", "done": provider_ready,
-             "desc": status.message,
-             "cta": None if provider_ready else ("Configurar Deepgram", "/settings/deepgram")},
-            {"n": 5, "title": "Testar provider", "done": provider_ready,
-             "desc": f"{provider_label}. Valide a chave Deepgram ou o modelo local.",
-             "cta": test_cta},
+             "desc": step_4_desc,
+             "cta": None if provider_ready else (
+                 readiness.action_label or "Configurar Modelos",
+                 readiness.action_href or "/models"
+             )},
+            {"n": 5, "title": "Configurar provider", "done": provider_ready,
+             "desc": step_5_desc,
+             "cta": None if provider_ready else (
+                 readiness.action_label or "Abrir Modelos",
+                 readiness.action_href or "/models"
+             )},
             {"n": 6, "title": "Ativar automação", "done": automation_active,
              "desc": "Com tudo acima verde, jobs enfileirados são processados automaticamente pelo worker.",
              "cta": None},
@@ -422,7 +479,7 @@ def create_app(settings: WebSettings | None = None,
             "steps": steps,
             "checklist": checklist,
             "all_ready": automation_active,
-            "transcription_status": status,
+            "transcription_status": app.state.transcription_status,
         })
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -445,6 +502,7 @@ def create_app(settings: WebSettings | None = None,
         source_drive_folder_url: str = Form(...),
         destination_drive_folder_url: str = Form(""),
         save_copy_to_drive: bool = Form(False),
+        _csrf: None = Depends(_csrf_form),
     ):
         try:
             source_id = extract_google_drive_folder_id(source_drive_folder_url)
@@ -478,7 +536,8 @@ def create_app(settings: WebSettings | None = None,
 
     @app.post("/models/provider")
     def save_provider(request: Request, user=Depends(require_user),
-                      provider: str = Form(...), model: str = Form("")):
+                      provider: str = Form(...), model: str = Form(""),
+                      _csrf: None = Depends(_csrf_form)):
         updated = with_primary(_model_settings_for(user.id), provider, model or None)
         if model_settings_repo is not None:
             model_settings_repo.save_for_user(user.id, updated)
@@ -488,7 +547,8 @@ def create_app(settings: WebSettings | None = None,
     @app.post("/models/credentials")
     def save_credentials(request: Request, user=Depends(require_user),
                          provider: str = Form(...), api_key: str = Form(...),
-                         speaker_labels: str = Form("true"), speakers_expected: str = Form("")):
+                         speaker_labels: str = Form("true"), speakers_expected: str = Form(""),
+                         _csrf: None = Depends(_csrf_form)):
         key = api_key.strip()
         if not is_cloud_provider(provider):
             _set_flash(request, "Provedor inválido.")
@@ -512,7 +572,8 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse(f"/models?provider={provider}", status_code=303)
 
     @app.post("/models/test")
-    def test_provider(request: Request, user=Depends(require_user), provider: str = Form(...)):
+    def test_provider(request: Request, user=Depends(require_user), provider: str = Form(...),
+                      _csrf: None = Depends(_csrf_form)):
         key = provider_key_store.get(user.id, provider) if provider_key_store else None
         if not key:
             _set_flash(request, "Configure a API key deste provedor primeiro.")
@@ -525,7 +586,8 @@ def create_app(settings: WebSettings | None = None,
     def save_fallback(request: Request, user=Depends(require_user),
                       fallback_enabled: bool = Form(False),
                       fallback_provider: str = Form(""),
-                      fallback_model: str = Form("")):
+                      fallback_model: str = Form(""),
+                      _csrf: None = Depends(_csrf_form)):
         updated = with_fallback(
             _model_settings_for(user.id),
             enabled=bool(fallback_enabled),
@@ -547,7 +609,8 @@ def create_app(settings: WebSettings | None = None,
 
     @app.post("/settings/deepgram")
     def save_deepgram_alias(request: Request, user=Depends(require_user),
-                            deepgram_api_key: str = Form(...)):
+                            deepgram_api_key: str = Form(...),
+                            _csrf: None = Depends(_csrf_form)):
         key = deepgram_api_key.strip()
         if not key:
             _set_flash(request, "Deepgram API Key não pode ser vazia.")
@@ -559,7 +622,8 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/models?provider=deepgram", status_code=303)
 
     @app.post("/settings/deepgram/test")
-    def test_deepgram_alias(request: Request, user=Depends(require_user)):
+    def test_deepgram_alias(request: Request, user=Depends(require_user),
+                            _csrf: None = Depends(_csrf_form)):
         key = provider_key_store.get(user.id, "deepgram") if provider_key_store else None
         if not key:
             _set_flash(request, "Configure sua Deepgram API Key antes de iniciar uma transcrição.")
@@ -589,6 +653,7 @@ def create_app(settings: WebSettings | None = None,
         auto_poll_enabled: bool = Form(False),
         poll_interval_seconds: int = Form(300),
         max_files_per_poll: int = Form(5),
+        _csrf: None = Depends(_csrf_form),
     ):
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None or worker_repos.automation is None:
@@ -607,7 +672,8 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/settings/automation", status_code=303)
 
     @app.post("/automation/check-now")
-    def check_now(request: Request, user=Depends(require_user)):
+    def check_now(request: Request, user=Depends(require_user),
+                  _csrf: None = Depends(_csrf_form)):
         # Lightweight, in-request Drive *listing* + pending-job creation — the same
         # class of work as Run once. It never downloads or transcribes.
         worker_repos, error = _resolve_worker_repositories()
@@ -661,7 +727,8 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/jobs", status_code=303)
 
     @app.post("/jobs/{job_id}/retry")
-    def retry_job(request: Request, job_id: int, user=Depends(require_user)):
+    def retry_job(request: Request, job_id: int, user=Depends(require_user),
+                  _csrf: None = Depends(_csrf_form)):
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             _set_flash(request, error)
@@ -724,7 +791,8 @@ def create_app(settings: WebSettings | None = None,
         })
 
     @app.post("/jobs/run-once")
-    def run_once(request: Request, user=Depends(require_user)):
+    def run_once(request: Request, user=Depends(require_user),
+                 _csrf: None = Depends(_csrf_form)):
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
             _set_flash(request, error)
@@ -943,7 +1011,8 @@ def create_app(settings: WebSettings | None = None,
     @app.post("/admin/users")
     def admin_create_user(request: Request, admin=Depends(require_admin),
                           email: str = Form(...), password: str = Form(...),
-                          role: str = Form("user")):
+                          role: str = Form("user"),
+                          _csrf: None = Depends(_csrf_form)):
         email = email.strip()
         if not email or not password:
             _set_flash(request, "Email e senha são obrigatórios.")
@@ -958,20 +1027,23 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/admin/users", status_code=303)
 
     @app.post("/admin/users/{user_id}/disable")
-    def admin_disable_user(request: Request, user_id: int, admin=Depends(require_admin)):
+    def admin_disable_user(request: Request, user_id: int, admin=Depends(require_admin),
+                           _csrf: None = Depends(_csrf_form)):
         repos.users.set_active(user_id, False)
         _set_flash(request, "Usuário desativado.")
         return RedirectResponse("/admin/users", status_code=303)
 
     @app.post("/admin/users/{user_id}/enable")
-    def admin_enable_user(request: Request, user_id: int, admin=Depends(require_admin)):
+    def admin_enable_user(request: Request, user_id: int, admin=Depends(require_admin),
+                          _csrf: None = Depends(_csrf_form)):
         repos.users.set_active(user_id, True)
         _set_flash(request, "Usuário ativado.")
         return RedirectResponse("/admin/users", status_code=303)
 
     @app.post("/admin/users/{user_id}/reset-password")
     def admin_reset_password(request: Request, user_id: int, admin=Depends(require_admin),
-                             new_password: str = Form(...)):
+                             new_password: str = Form(...),
+                             _csrf: None = Depends(_csrf_form)):
         if not new_password.strip():
             _set_flash(request, "Nova senha não pode ser vazia.")
         else:

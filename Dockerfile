@@ -13,6 +13,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ARG INSTALL_LOCAL_TRANSCRIPTION=false
 ARG INSTALL_FASTER_WHISPER=false
 ARG INSTALL_WHISPER_CPP=false
+# Install ffmpeg for cloud audio preprocessing/compression/chunking (ON by default).
+# Set to false to keep the image smaller when audio preprocessing is never used.
+ARG INSTALL_FFMPEG=true
 # Optional local diarization (pyannote.audio + torch — very large, CPU-only). OFF
 # by default. Enable with: docker build --build-arg INSTALL_PYANNOTE=true ...
 # See documentation/26-diarization.md.
@@ -39,11 +42,10 @@ RUN if [ "$INSTALL_WHISPER_CPP" = "true" ] || [ "$INSTALL_LOCAL_TRANSCRIPTION" =
         && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Optional audio preprocessing (probe/extract/compress/chunk) needs ffmpeg+ffprobe.
-# Installed only when requested so the default image stays small. (Already present
-# when whisper.cpp is enabled above; this covers using preprocessing with Deepgram
-# or faster-whisper.)
-RUN if [ "$INSTALL_LOCAL_TRANSCRIPTION" = "true" ] && [ "$INSTALL_WHISPER_CPP" != "true" ]; then \
+# Easy audio preprocessing (probe/extract/compress/chunk) needs ffmpeg+ffprobe.
+# Installed by default (INSTALL_FFMPEG=true), or already covered when whisper.cpp
+# or local transcription are enabled.
+RUN if [ "$INSTALL_FFMPEG" = "true" ] && [ "$INSTALL_WHISPER_CPP" != "true" ] && [ "$INSTALL_LOCAL_TRANSCRIPTION" != "true" ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends ffmpeg \
         && rm -rf /var/lib/apt/lists/*; \

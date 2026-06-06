@@ -3,47 +3,52 @@
 <section class="hero">
   <div>
     <p class="eyebrow">Dashboard</p>
-    <h1>Meeting transcription control panel</h1>
-    <p>Connect Google Drive, configure folders, save your Deepgram key, and enqueue a run.</p>
+    <h1>Painel de controle</h1>
+    <p>Conecte o Google Drive, configure pastas, seu provedor de transcrição e enfileire execuções.</p>
   </div>
-  {% if not google_connected %}<a class="button" href="/connect-google">Connect Google</a>{% endif %}
+  {% if not google_connected %}<a class="button" href="/connect-google">Conectar Google</a>{% endif %}
 </section>
 
 <section class="grid">
   <article class="card">
     <h2>Google</h2>
-    <p class="{{ 'ok' if google_connected else 'off' }}">{{ "Connected" if google_connected else "Not connected" }}</p>
-    {% if not google_connected %}<p><a href="/connect-google">Connect now</a></p>{% endif %}
+    <p class="{{ 'ok' if google_connected else 'off' }}">{{ "Conectado" if google_connected else "Não conectado" }}</p>
+    {% if not google_connected %}<p><a href="/connect-google">Conectar agora</a></p>{% endif %}
   </article>
   <article class="card">
-    <h2>Drive source</h2>
+    <h2>Drive origem</h2>
     {% if settings and settings.source_drive_folder_id %}
-    <p class="ok">Configured</p>
+    <p class="ok">Configurado</p>
     <p class="mono hint" title="{{ settings.source_drive_folder_id }}">{{ settings.source_drive_folder_id | mid }}</p>
     {% else %}
-    <p class="off">Not configured</p><p><a href="/settings/drive">Set folder</a></p>
+    <p class="off">Não configurado</p><p><a href="/settings/drive">Configurar pasta</a></p>
     {% endif %}
   </article>
   <article class="card">
-    <h2>Models</h2>
-    <p class="{{ 'ok' if provider_ready else 'off' }}">{{ "Configured" if provider_ready else "Not configured" }}</p>
+    <h2>Modelos</h2>
+    <p class="{{ 'ok' if provider_ready else 'off' }}">{{ "Configurado" if provider_ready else "Não configurado" }}</p>
     <p class="hint">{{ provider_label }} · <span class="mono">{{ model_settings.primary_model }}</span></p>
-    <p><a href="/models">Manage models</a></p>
+    <p><a href="/models">Gerenciar modelos</a></p>
   </article>
   <article class="card">
-    <h2>Transcription</h2>
-    {% if transcription_status and transcription_status.local_valid %}
+    <h2>Transcrição</h2>
+    {% if provider_readiness and provider_readiness.ok %}
+    <p class="ok">Pronto</p>
+    <p class="hint">{{ provider_readiness.provider_label }}: {{ provider_readiness.model }}</p>
+    {% elif provider_readiness %}
+    <p class="off">{{ provider_readiness.status_label }}</p>
+    {% if provider_readiness.action_href %}<p><a href="{{ provider_readiness.action_href }}">{{ provider_readiness.action_label }}</a></p>{% endif %}
+    {% elif transcription_status and transcription_status.local_valid %}
     <p class="ok">{{ transcription_status.message }}</p>
-    <p class="hint">Deepgram opcional, modelo local será usado.</p>
     {% elif transcription_status and transcription_status.enabled %}
     <p class="off">{{ transcription_status.message }}</p>
     {% if transcription_status.doc_url %}<p><a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Documentação de modelos locais</a></p>{% endif %}
     {% else %}
-    <p class="hint">Deepgram (transcrição local desativada).</p>
+    <p class="hint">Provedor de nuvem: configure na aba Modelos.</p>
     {% endif %}
   </article>
   <article class="card">
-    <h2>Queue</h2>
+    <h2>Fila</h2>
     {% if not queue_status or queue_status.mode == 'poll' %}
     <p class="hint">Polling (sem Redis)</p>
     {% elif queue_status.available %}
@@ -59,28 +64,28 @@
 <section class="grid">
   <article class="card"><h2>Total jobs</h2><p>{{ total_jobs }}</p></article>
   <article class="card">
-    <h2>Last job</h2>
+    <h2>Último job</h2>
     {% if last_job %}
     <p><span class="badge badge-{{ last_job.status }}">{{ last_job.status }}</span></p>
-    <p class="hint">{{ last_job.source_file_name or 'Manual run' }} · {{ last_job.created_at | dt }}</p>
-    {% else %}<p class="muted">No jobs yet</p>{% endif %}
+    <p class="hint">{{ last_job.source_file_name or 'Manual' }} · {{ last_job.created_at | dt }}</p>
+    {% else %}<p class="muted">Nenhum job ainda</p>{% endif %}
   </article>
   <article class="card">
-    <h2>Quick actions</h2>
+    <h2>Ações rápidas</h2>
     <div class="cta-row">
       <a class="button button-sm" href="/jobs">Jobs</a>
-      <a class="button button-sm button-ghost" href="/settings">Settings</a>
-      <a class="button button-sm button-ghost" href="/models">Models</a>
+      <a class="button button-sm button-ghost" href="/settings">Configurações</a>
+      <a class="button button-sm button-ghost" href="/models">Modelos</a>
     </div>
   </article>
 </section>
 
 <section class="card">
-  <h2>Recent jobs</h2>
+  <h2>Jobs recentes</h2>
   {% if jobs %}
   <ul class="list">
-    {% for job in jobs %}<li><a href="/jobs/{{ job.id }}">{{ job.source_file_name or "Manual run" }}</a> — {{ job.status }}</li>{% endfor %}
+    {% for job in jobs %}<li><a href="/jobs/{{ job.id }}">{{ job.source_file_name or "Manual" }}</a> — {{ job.status }}</li>{% endfor %}
   </ul>
-  {% else %}<p>No jobs yet.</p>{% endif %}
+  {% else %}<p>Nenhum job ainda.</p>{% endif %}
 </section>
 {% endblock %}

@@ -53,7 +53,7 @@ def get_provider_capabilities(provider_name: str, config: AudioConfig) -> Provid
     elif p == "assemblyai":
         return ProviderCapabilities(
             provider=provider_name,
-            max_upload_mb=config.provider_limit_default_mb,
+            max_upload_mb=config.assemblyai_max_upload_mb,
             preferred_format="flac",
             supports_chunking=True,
         )
@@ -92,6 +92,7 @@ class AudioConfig:
     openrouter_max_upload_mb: int
     gemini_max_file_api_mb: int
     groq_max_upload_mb: int
+    assemblyai_max_upload_mb: int
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "AudioConfig":
@@ -114,6 +115,7 @@ class AudioConfig:
             openrouter_max_upload_mb=_int(values, "OPENROUTER_MAX_UPLOAD_MB", 99),
             gemini_max_file_api_mb=_int(values, "GEMINI_MAX_FILE_API_MB", 99),
             groq_max_upload_mb=_int(values, "GROQ_MAX_UPLOAD_MB", 25),
+            assemblyai_max_upload_mb=_int(values, "ASSEMBLYAI_MAX_UPLOAD_MB", 99),
         )
 
     @classmethod

@@ -16,7 +16,7 @@ BLOCKING_STATUSES = ("pending", "processing", "completed")
 
 @dataclass(frozen=True)
 class JobCreationResult:
-    status: str  # created | no_settings | not_connected | no_deepgram_key | no_new_videos
+    status: str  # created | no_settings | not_connected | no_provider_key | no_new_videos
     job: Job | None = None
 
 
@@ -50,10 +50,10 @@ def create_next_pending_job(
 
     # A per-user provider credential is mandatory before a job may be enqueued
     # *unless* a valid local engine is active (deepgram_required=False). Any cloud
-    # provider key counts (Deepgram, OpenRouter, Gemini) — enforcing it here keeps
-    # the UI from creating a job that is doomed to fail for a missing key.
+    # provider key counts (Deepgram, OpenRouter, Gemini, Groq, AssemblyAI) —
+    # enforcing it here keeps the UI from creating a job that is doomed to fail.
     if deepgram_required and not _has_provider_credential(settings):
-        return JobCreationResult("no_deepgram_key")
+        return JobCreationResult("no_provider_key")
 
     credentials = credentials_from_token(token)
     drive = build_drive_client(

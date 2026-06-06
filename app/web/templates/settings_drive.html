@@ -7,6 +7,7 @@
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
   <form method="post" action="/settings/drive" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <label>Source Drive Folder URL
       <input name="source_drive_folder_url" value="{{ settings.source_drive_folder_url if settings else '' }}" required></label>
     <label>Destination Drive Folder URL (opcional)

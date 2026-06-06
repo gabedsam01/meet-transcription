@@ -59,6 +59,18 @@ x-transcription-env: &transcription-env
   AUDIO_CHUNK_OVERLAP_SECONDS: ${AUDIO_CHUNK_OVERLAP_SECONDS:-2}
   AUDIO_MAX_INLINE_MB: ${AUDIO_MAX_INLINE_MB:-70}
   AUDIO_MAX_FILE_API_MB: ${AUDIO_MAX_FILE_API_MB:-99}
+  # Optional audio compression settings (AUDIO_COMPRESSION_ENABLED defaults to true
+  # when preprocessing is on). See documentation/41-audio-compression-pipeline.md.
+  AUDIO_COMPRESSION_ENABLED: ${AUDIO_COMPRESSION_ENABLED:-true}
+  AUDIO_COMPRESSION_TARGET_MB: ${AUDIO_COMPRESSION_TARGET_MB:-99}
+  AUDIO_CLOUD_CHUNK_TARGET_MB: ${AUDIO_CLOUD_CHUNK_TARGET_MB:-24}
+  AUDIO_PROVIDER_LIMIT_DEFAULT_MB: ${AUDIO_PROVIDER_LIMIT_DEFAULT_MB:-99}
+  # Per-provider upload limits for cloud transcription.
+  OPENROUTER_MAX_UPLOAD_MB: ${OPENROUTER_MAX_UPLOAD_MB:-99}
+  GEMINI_MAX_FILE_API_MB: ${GEMINI_MAX_FILE_API_MB:-99}
+  GROQ_MAX_UPLOAD_MB: ${GROQ_MAX_UPLOAD_MB:-25}
+  GROQ_USE_DEV_LIMIT: ${GROQ_USE_DEV_LIMIT:-false}
+  ASSEMBLYAI_MAX_UPLOAD_MB: ${ASSEMBLYAI_MAX_UPLOAD_MB:-99}
   # Optional local diarization (OFF by default; pyannote is a build-arg engine and
   # DIARIZATION_AUTH_TOKEN is a secret — see documentation/26-diarization.md).
   DIARIZATION_ENABLED: ${DIARIZATION_ENABLED:-false}

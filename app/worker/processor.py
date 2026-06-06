@@ -163,54 +163,67 @@ class JobProcessor:
             self._check_audio(media_path)
 
             config = self.container.audio_config or AudioConfig.disabled()
-            capabilities = get_provider_capabilities(resolved.name, config)
             
-            from app.audio.compression import prepare_audio_for_provider
-            prepared = prepare_audio_for_provider(media_path, capabilities, job_dir, config=config, runner=self.container.audio_runner)
-
-            if not prepared.was_chunked:
+            # Local providers handle their own audio preparation internally
+            # (e.g. WhisperCppProvider extracts to WAV itself). Skip cloud
+            # compression/chunking to avoid double-conversion overhead.
+            if resolved.kind == "local":
                 result = provider.transcribe(
-                    prepared.files[0],
+                    media_path,
                     original_name=original_name,
                     file_id=job.source_file_id,
                 )
                 transcript_text = result.text
                 payload = result.payload
             else:
-                chunk_payloads = []
-                current_offset = 0.0
-                for chunk_path in prepared.files:
-                    LOGGER.info("Transcribing chunk at offset %.2f seconds: %s", current_offset, chunk_path.name)
-                    chunk_res = provider.transcribe(
-                        chunk_path,
-                        original_name=chunk_path.name,
+                capabilities = get_provider_capabilities(resolved.name, config)
+                
+                from app.audio.compression import prepare_audio_for_provider
+                prepared = prepare_audio_for_provider(media_path, capabilities, job_dir, config=config, runner=self.container.audio_runner)
+
+                if not prepared.was_chunked:
+                    result = provider.transcribe(
+                        prepared.files[0],
+                        original_name=original_name,
                         file_id=job.source_file_id,
                     )
-                    chunk_payloads.append({
-                        "start_offset": current_offset,
-                        "segments": chunk_res.payload.get("segments") or [],
-                        "text": chunk_res.payload.get("text") or "",
-                        "raw": chunk_res.payload.get("raw") or {},
-                    })
-                    try:
-                        from app.audio.probe import probe_audio
-                        chunk_dur = probe_audio(chunk_path).duration_seconds
-                    except Exception:
-                        chunk_dur = float(config.chunk_max_duration_seconds)
-                    current_offset += chunk_dur
+                    transcript_text = result.text
+                    payload = result.payload
+                else:
+                    chunk_payloads = []
+                    current_offset = 0.0
+                    for chunk_path in prepared.files:
+                        LOGGER.info("Transcribing chunk at offset %.2f seconds: %s", current_offset, chunk_path.name)
+                        chunk_res = provider.transcribe(
+                            chunk_path,
+                            original_name=chunk_path.name,
+                            file_id=job.source_file_id,
+                        )
+                        chunk_payloads.append({
+                            "start_offset": current_offset,
+                            "segments": chunk_res.payload.get("segments") or [],
+                            "text": chunk_res.payload.get("text") or "",
+                            "raw": chunk_res.payload.get("raw") or {},
+                        })
+                        try:
+                            from app.audio.probe import probe_audio
+                            chunk_dur = probe_audio(chunk_path).duration_seconds
+                        except Exception:
+                            chunk_dur = float(config.chunk_max_duration_seconds)
+                        current_offset += chunk_dur
 
-                stitched = stitch_transcript_chunks(chunk_payloads)
-                from app.transcription.normalizer import normalized_payload, render_transcript_text
-                payload = normalized_payload(
-                    provider=resolved.name,
-                    engine=resolved.name,
-                    model=resolved.model,
-                    language=None,
-                    text=stitched["text"],
-                    segments=stitched["segments"],
-                    raw={"chunks": [p["raw"] for p in chunk_payloads]}
-                )
-                transcript_text = render_transcript_text(payload, original_name or "", job.source_file_id or "")
+                    stitched = stitch_transcript_chunks(chunk_payloads)
+                    from app.transcription.normalizer import normalized_payload, render_transcript_text
+                    payload = normalized_payload(
+                        provider=resolved.name,
+                        engine=resolved.name,
+                        model=resolved.model,
+                        language=None,
+                        text=stitched["text"],
+                        segments=stitched["segments"],
+                        raw={"chunks": [p["raw"] for p in chunk_payloads]}
+                    )
+                    transcript_text = render_transcript_text(payload, original_name or "", job.source_file_id or "")
 
             # Optional local diarization (OFF by default). When it assigns speakers,
             # re-render the .txt so the download reflects them.

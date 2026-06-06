@@ -463,7 +463,7 @@ def test_openrouter_small_file_no_compress(tmp_path):
         provider_limit_default_mb=99,
         openrouter_max_upload_mb=99,
         gemini_max_file_api_mb=99,
-        groq_max_upload_mb=25,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
     )
     runner_called = []
     def runner(cmd):
@@ -511,7 +511,7 @@ def test_openrouter_large_file_compressed_fits(tmp_path):
         provider_limit_default_mb=99,
         openrouter_max_upload_mb=99,
         gemini_max_file_api_mb=99,
-        groq_max_upload_mb=25,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
     )
     runner = _make_audio_runner(flac_size=50 * 1024 * 1024)
     container = make_worker_container(
@@ -574,7 +574,7 @@ def test_openrouter_oversized_file_chunked_stitched(tmp_path):
         provider_limit_default_mb=99,
         openrouter_max_upload_mb=99,
         gemini_max_file_api_mb=99,
-        groq_max_upload_mb=25,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
     )
     runner = _make_audio_runner(
         flac_size=150 * 1024 * 1024,
@@ -644,7 +644,7 @@ def test_ffmpeg_failure_fails_job_friendly(tmp_path):
         provider_limit_default_mb=99,
         openrouter_max_upload_mb=99,
         gemini_max_file_api_mb=99,
-        groq_max_upload_mb=25,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
     )
     runner = _make_audio_runner(fail_ffmpeg=True)
     container = make_worker_container(
@@ -781,7 +781,7 @@ def test_groq_oversized_file_chunked_stitched(tmp_path):
         provider_limit_default_mb=99,
         openrouter_max_upload_mb=99,
         gemini_max_file_api_mb=99,
-        groq_max_upload_mb=25,
+        groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
     )
     runner = _make_audio_runner(
         flac_size=40 * 1024 * 1024,
@@ -857,7 +857,7 @@ def test_groq_oversized_file_with_dev_limit_no_chunk(tmp_path):
             provider_limit_default_mb=99,
             openrouter_max_upload_mb=99,
             gemini_max_file_api_mb=99,
-            groq_max_upload_mb=25,
+            groq_max_upload_mb=25, assemblyai_max_upload_mb=99,
         )
         runner = _make_audio_runner(
             flac_size=40 * 1024 * 1024,

@@ -261,3 +261,58 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - **Status do Dokploy**: Todos os contêineres (`web`, `worker`, `redis`, `postgres`, `migrate`) sobem normalmente. A rota `/health` e `/ready` respondem `200 OK`. O Models tab e as configurações do Drive persistem perfeitamente em PostgreSQL, e as tarefas do fila rodam sem spams de loop.
 - **Pendências antes do merge**: Nenhuma pendência. Todos os 659 testes unitários/E2E passaram com sucesso. O PR #7 está pronto para ser revisado e mergeado.
 
+
+---
+
+## Bugfix pass — DeepSeek V4 Pro audit (2026-06-06)
+
+### Provider readiness (CRITICAL)
+
+- Provider readiness unified in `app/web/provider_readiness.py`: `compute_provider_readiness()`
+  returns a `ProviderReadiness` dataclass used by dashboard, onboarding, and jobs.
+- Onboarding (`/onboarding`) no longer hardcodes Deepgram — uses the user's Models-tab
+  provider selection and checks actual credentials via `provider_key_store.has()`.
+- Dashboard template now uses `provider_readiness` (provider-agnostic) instead of
+  the legacy `transcription_status.deepgram_required` / hardcoded Deepgram strings.
+- Jobs template messages (`RUN_ONCE_MESSAGES`) renamed `no_deepgram_key` → `no_provider_key`.
+- `job_service.py` returns `"no_provider_key"` status (was `"no_deepgram_key"`).
+
+### CSRF protection (HIGH)
+
+- Created `app/web/csrf.py` with `get_or_create_csrf_token()` and `validate_csrf_token()`.
+- All HTML form POST routes now validate CSRF via `Depends(_csrf_form)`.
+- All templates include `<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">`.
+- Login, logout, settings, models, automation, admin: all protected.
+- API routes (`/api/recordings/upload`, `/health`, `/read`, `/version`) are exempt.
+- CSRF token is tolerant of missing sessions (test client / fresh session without prior page load).
+
+### Audio preprocessing (HIGH)
+
+- `processor.py` now skips `prepare_audio_for_provider` when `resolved.kind == "local"`,
+  avoiding double-conversion overhead on local providers.
+- `AudioConfig` now accepts `assemblyai_max_upload_mb` (default 99 MB).
+- `get_provider_capabilities` uses `config.assemblyai_max_upload_mb` for AssemblyAI.
+
+### Environment configuration (HIGH/MEDIUM)
+
+- `.env.example`: added `AUDIO_COMPRESSION_ENABLED`, `AUDIO_CLOUD_CHUNK_TARGET_MB`,
+  `AUDIO_PROVIDER_LIMIT_DEFAULT_MB`, `AUDIO_COMPRESSION_TARGET_MB`,
+  `OPENROUTER_MAX_UPLOAD_MB`, `GEMINI_MAX_FILE_API_MB`, `GROQ_MAX_UPLOAD_MB`,
+  `GROQ_USE_DEV_LIMIT`, `ASSEMBLYAI_MAX_UPLOAD_MB`, `INSTALL_FFMPEG`.
+- `docker-compose.yml`: x-transcription-env anchor includes all new audio env vars.
+- `Dockerfile`: `INSTALL_FFMPEG=true` build arg (default on); ffmpeg installed when
+  `INSTALL_FFMPEG=true` unless already present via whisper.cpp or local transcription.
+
+### Template language standardization (LOW)
+
+- Dashboard, jobs, login, models, admin_users templates standardized to pt-BR.
+- "Queue" → "Fila", "Connected" → "Conectado", "Logout" → "Sair", "Save" → "Salvar",
+  "Configured" → "Configurado", "Last job" → "Último job".
+
+### Tests
+
+- Updated `test_job_service.py`: `test_reports_no_deepgram_key` → `test_reports_no_provider_key`.
+- Updated `test_web_routes.py`, `test_web_local_transcription.py`, `test_web_ui.py` for new
+  messages and pt-BR labels.
+- `test_worker_processor.py`: `AudioConfig` constructors include `assemblyai_max_upload_mb`.
+- All 632 unit tests pass; 41 skipped (Postgres-only integration tests).

@@ -154,7 +154,7 @@ def test_run_once_blocks_without_deepgram_key(tmp_path):
         client.post("/jobs/run-once", follow_redirects=False)
         page = client.get("/jobs").text
     assert worker.jobs.list_jobs_for_user(1) == []
-    assert "Configure sua Deepgram API Key antes de iniciar uma transcrição." in page
+    assert "Configure a chave do provedor em Modelos antes de iniciar." in page
 
 
 def test_run_once_enqueues_pending_when_ready(tmp_path):

@@ -2,10 +2,10 @@
 {% block content %}
 <section class="card">
   <div class="row-between">
-    <div><h1>Jobs</h1><p>Manual and processed transcription jobs.</p></div>
+    <div><h1>Jobs</h1><p>Jobs de transcrição manuais e automáticos.</p></div>
     <div class="cta-row">
-      <form method="post" action="/automation/check-now"><button type="submit" class="button button-ghost button-sm">Verificar agora</button></form>
-      <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
+      <form method="post" action="/automation/check-now"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit" class="button button-ghost button-sm">Verificar agora</button></form>
+      <form method="post" action="/jobs/run-once"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit">Executar</button></form>
     </div>
   </div>
   {% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
@@ -19,14 +19,14 @@
     {{ transcription_status.message }} A transcrição local está desativada até
     corrigir a configuração.
     {% if transcription_status.doc_url %}<a href="{{ transcription_status.doc_url }}" target="_blank" rel="noopener">Ver documentação de modelos locais</a>.{% endif %}
-    Configure uma Deepgram API Key para iniciar uma transcrição.
+    Configure um provedor na aba Modelos para iniciar uma transcrição.
   </div>
   {% elif transcription_status and transcription_status.local_valid %}
-  <div class="notice">{{ transcription_status.message }} — Deepgram opcional.</div>
+  <div class="notice">{{ transcription_status.message }} — nuvem opcional.</div>
   {% endif %}
   {% if message %}<div class="notice">{{ message }}</div>{% endif %}
   {% if backend_error %}<div class="notice">{{ backend_error }}</div>{% endif %}
-  <p class="hint">After starting a job, refresh this page to see updates.</p>
+  <p class="hint">Após iniciar um job, recarregue a página para ver atualizações.</p>
   {% if jobs %}
   <div class="table-wrapper">
   <table>
@@ -53,6 +53,7 @@
           {% endif %}
           {% elif job.status == 'failed' %}
           <form method="post" action="/jobs/{{ job.id }}/retry" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
             <button type="submit" class="button button-ghost button-sm">Tentar novamente</button>
           </form>
           {% else %}<span class="muted">—</span>{% endif %}

@@ -42,13 +42,13 @@ def test_reports_not_connected():
     assert result.status == "not_connected"
 
 
-def test_reports_no_deepgram_key():
-    # Settings + Google connected, but no per-user Deepgram key: must not enqueue.
+def test_reports_no_provider_key():
+    # Settings + Google connected, but no per-user provider key: must not enqueue.
     repos = build_memory_repositories()
     repos.settings.set(Settings(7, "src", "dst", False, None))
     repos.google_tokens.set(7, GoogleToken(access_token="a", token_uri="u", client_id="c"))
     result = _call(repos, FakeDriveClient(files=[drive_file("file-1", "a.mp4")]))
-    assert result.status == "no_deepgram_key"
+    assert result.status == "no_provider_key"
     assert result.job is None
     assert repos.jobs.list_jobs_for_user(7) == []
 

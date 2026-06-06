@@ -11,6 +11,7 @@
 
   <h2>Provedor principal</h2>
   <form method="post" action="/models/provider" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <label>Provedor
       <select name="provider">
         {% for p in providers %}
@@ -50,6 +51,7 @@
         </p>
         {% if p.requires_api_key %}
         <form method="post" action="/models/credentials" class="form-stack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
           <input type="hidden" name="provider" value="{{ p.id }}">
           <label>{{ p.label }} API Key<input name="api_key" type="password" autocomplete="off" required></label>
           {% if p.id == "assemblyai" %}
@@ -79,6 +81,7 @@
   <h2>Fallback</h2>
   <p class="hint">Se o provedor principal estiver sem chave, o worker usa o fallback configurado.</p>
   <form method="post" action="/models/fallback" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <label class="checkbox">
       <input type="checkbox" name="fallback_enabled" value="true" {{ "checked" if model_settings.fallback_enabled else "" }}>
       Ativar fallback
