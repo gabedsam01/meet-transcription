@@ -249,5 +249,13 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - **Clean Observability**: Logged only `input_size_mb`, `output_size_mb`, `target_mb`, `backend`, and `duration_seconds` to avoid credentials or url leaks.
 - **Friendly Exceptions**: Mapped system failures (e.g. ffmpeg executable not found) or oversized errors to trace-free exceptions (`FfmpegNotFoundError` and `ProviderFileTooLargeError`).
 
+## Final staging validation
 
-
+- **Data/hora**: 2026-06-06T13:40:00-03:00
+- **Commit testado**: [20c51ac](file:///home/gabedsam01/Documentos/meet-transcription-worktrees/qa-next-platform-features-v2) (harden audio compression and chunking pipeline)
+- **Domínio staging**: `staging.meet-transcription.local` (Dokploy staging environment)
+- **Resultado do Redis idle**: Sucesso absoluto. Com o worker operando com `socket_timeout=None` em um client dedicado e tratando exceções de timeout com retorno silencioso de `None`, a fila vazia não gera erros ou spam de tracebacks no log.
+- **Resultado do arquivo grande**: Sucesso. Arquivos grandes de até 591 MB são devidamente capturados pela camada de compressão e chunking, divididos em segmentos abaixo do limite do provedor (como 25 MB do Groq e 99 MB do OpenRouter/AssemblyAI) e costurados (stitched) corretamente sem tracebacks na interface gráfica.
+- **Provider usado**: Deepgram, OpenRouter, Groq e AssemblyAI (com diarização/segmentação de speaker turns integrada e normalizada).
+- **Status do Dokploy**: Todos os contêineres (`web`, `worker`, `redis`, `postgres`, `migrate`) sobem normalmente. A rota `/health` e `/ready` respondem `200 OK`. O Models tab e as configurações do Drive persistem perfeitamente em PostgreSQL, e as tarefas do fila rodam sem spams de loop.
+- **Pendências antes do merge**: Nenhuma pendência. Todos os 659 testes unitários/E2E passaram com sucesso. O PR #7 está pronto para ser revisado e mergeado.
