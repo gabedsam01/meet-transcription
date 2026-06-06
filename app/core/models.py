@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
+
+from app.transcription.provider_config import ModelSettings
 
 
 class JobStatus(str, Enum):
@@ -37,6 +39,10 @@ class Settings:
     destination_drive_folder_id: str
     save_copy_to_drive: bool = False
     deepgram_api_key: str | None = None
+    # Per-user provider selection + decrypted cloud credentials (Models tab). Both
+    # optional/empty by default so the legacy Deepgram-only path is unchanged.
+    model_settings: ModelSettings | None = None
+    provider_credentials: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

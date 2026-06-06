@@ -25,11 +25,22 @@ from app.services.download_service import DownloadError, get_downloadable_transc
 from app.services.job_service import create_next_pending_job
 from app.transcription.config import TranscriptionConfig
 from app.transcription.provider import get_transcription_provider_status
+from app.transcription.provider_config import (
+    default_model_settings,
+    with_fallback,
+    with_primary,
+)
+from app.transcription.provider_models import (
+    SELECTABLE_PROVIDERS,
+    get_provider_spec,
+    is_cloud_provider,
+)
 from app.web import helpers
 from app.web.config import WebSettings
-from app.web.deepgram_key import DeepgramKeyStore, verify_deepgram_key
+from app.web.deepgram_key import DeepgramKeyStore
 from app.web.drive_links import extract_google_drive_folder_id
 from app.web.passwords import hash_password, verify_password
+from app.web.provider_keys import ProviderKeyStore, verify_provider_key
 from app.web.repositories import DriveSettings, RepositoryBundle, build_repositories
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
@@ -51,9 +62,9 @@ RUN_ONCE_MESSAGES = {
     "no_new_videos": "Nenhum vídeo novo para transcrever.",
     "created": "Job enfileirado; o worker fará o processamento.",
 }
-DEEPGRAM_TEST_MESSAGES = {
-    "valid": "Deepgram API Key válida.",
-    "invalid": "Deepgram API Key inválida.",
+PROVIDER_TEST_MESSAGES = {
+    "valid": "API key válida.",
+    "invalid": "API key inválida.",
     "unverifiable": "Não foi possível verificar agora.",
 }
 
@@ -69,6 +80,13 @@ def create_app(settings: WebSettings | None = None,
     fernet = fernet_from_secret(web_settings.app_secret_key)
     token_store = TokenStore(repos.google_tokens, fernet)
     deepgram_store = DeepgramKeyStore(repos.deepgram_credentials, fernet)
+    # Models tab: per-provider encrypted keys + per-user provider/model selection.
+    provider_key_store = (
+        ProviderKeyStore(repos.provider_credentials, fernet)
+        if repos.provider_credentials is not None
+        else None
+    )
+    model_settings_repo = repos.model_settings
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -84,6 +102,8 @@ def create_app(settings: WebSettings | None = None,
     app.state.repositories = repos
     app.state.token_store = token_store
     app.state.deepgram_store = deepgram_store
+    app.state.provider_key_store = provider_key_store
+    app.state.model_settings_repo = model_settings_repo
     # Worker bundle (jobs/transcripts over the same PostgreSQL) — injected in
     # tests; built lazily from the environment in production.
     app.state.worker_repositories = worker_repositories
@@ -138,6 +158,33 @@ def create_app(settings: WebSettings | None = None,
             available = False
         return {"mode": "queue", "available": available}
 
+    def _model_settings_for(user_id: int):
+        saved = model_settings_repo.get_for_user(user_id) if model_settings_repo else None
+        return saved or default_model_settings()
+
+    def _providers_view(user_id: int) -> list[dict]:
+        view = []
+        for pid in SELECTABLE_PROVIDERS:
+            spec = get_provider_spec(pid)
+            view.append({
+                "id": pid,
+                "label": spec.label,
+                "models": spec.models,
+                "requires_api_key": spec.requires_api_key,
+                "diarization": spec.diarization,
+                "size_note": _size_note(spec),
+                "docs_url": spec.docs_url,
+                "configured": bool(provider_key_store and provider_key_store.has(user_id, pid)),
+                "masked": provider_key_store.masked(user_id, pid) if provider_key_store else None,
+            })
+        return view
+
+    def _primary_ready(user_id: int, model_settings) -> bool:
+        spec = get_provider_spec(model_settings.primary_provider)
+        if spec is None or not spec.requires_api_key:
+            return True
+        return bool(provider_key_store and provider_key_store.has(user_id, model_settings.primary_provider))
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -167,11 +214,15 @@ def create_app(settings: WebSettings | None = None,
     def dashboard(request: Request, user=Depends(require_user)):
         worker_repos, _ = _resolve_worker_repositories()
         jobs = worker_repos.jobs.list_jobs_for_user(user.id) if worker_repos else []
+        model_settings = _model_settings_for(user.id)
+        primary_spec = get_provider_spec(model_settings.primary_provider)
         return templates.TemplateResponse(request, "dashboard.html", {
             "user": user,
             "settings": repos.drive_settings.get_for_user(user.id),
             "google_connected": repos.google_tokens.get_for_user(user.id) is not None,
-            "deepgram_configured": deepgram_store.has_key(user.id),
+            "model_settings": model_settings,
+            "provider_label": primary_spec.label if primary_spec else model_settings.primary_provider,
+            "provider_ready": _primary_ready(user.id, model_settings),
             "transcription_status": app.state.transcription_status,
             "queue_status": _queue_status(),
             "total_jobs": len(jobs),
@@ -220,34 +271,96 @@ def create_app(settings: WebSettings | None = None,
         _set_flash(request, "Drive settings salvos.")
         return RedirectResponse("/settings/drive", status_code=303)
 
-    @app.get("/settings/deepgram", response_class=HTMLResponse)
-    def deepgram_page(request: Request, user=Depends(require_user)):
-        return templates.TemplateResponse(request, "settings_deepgram.html", {
+    @app.get("/models", response_class=HTMLResponse)
+    def models_page(request: Request, user=Depends(require_user), provider: str | None = None):
+        return templates.TemplateResponse(request, "models.html", {
             "user": user,
-            "configured": deepgram_store.has_key(user.id),
-            "masked": deepgram_store.masked(user.id),
+            "model_settings": _model_settings_for(user.id),
+            "providers": _providers_view(user.id),
+            "preselect": provider,
             "message": _pop_flash(request),
         })
 
+    @app.post("/models/provider")
+    def save_provider(request: Request, user=Depends(require_user),
+                      provider: str = Form(...), model: str = Form("")):
+        updated = with_primary(_model_settings_for(user.id), provider, model or None)
+        if model_settings_repo is not None:
+            model_settings_repo.save_for_user(user.id, updated)
+        _set_flash(request, f"Provedor salvo: {updated.primary_provider} / {updated.primary_model}")
+        return RedirectResponse("/models", status_code=303)
+
+    @app.post("/models/credentials")
+    def save_credentials(request: Request, user=Depends(require_user),
+                         provider: str = Form(...), api_key: str = Form(...)):
+        key = api_key.strip()
+        if not is_cloud_provider(provider):
+            _set_flash(request, "Provedor inválido.")
+        elif not key:
+            _set_flash(request, "API key não pode ser vazia.")
+        elif provider_key_store is None:
+            _set_flash(request, "Armazenamento de credenciais indisponível.")
+        else:
+            provider_key_store.save(user.id, provider, key)
+            _set_flash(request, f"API key salva para {provider}.")
+        return RedirectResponse(f"/models?provider={provider}", status_code=303)
+
+    @app.post("/models/test")
+    def test_provider(request: Request, user=Depends(require_user), provider: str = Form(...)):
+        key = provider_key_store.get(user.id, provider) if provider_key_store else None
+        if not key:
+            _set_flash(request, "Configure a API key deste provedor primeiro.")
+        else:
+            result = verify_provider_key(provider, key)
+            _set_flash(request, PROVIDER_TEST_MESSAGES.get(result, "Não foi possível verificar agora."))
+        return RedirectResponse(f"/models?provider={provider}", status_code=303)
+
+    @app.post("/models/fallback")
+    def save_fallback(request: Request, user=Depends(require_user),
+                      fallback_enabled: bool = Form(False),
+                      fallback_provider: str = Form(""),
+                      fallback_model: str = Form("")):
+        updated = with_fallback(
+            _model_settings_for(user.id),
+            enabled=bool(fallback_enabled),
+            provider=fallback_provider or None,
+            model=fallback_model or None,
+        )
+        if model_settings_repo is not None:
+            model_settings_repo.save_for_user(user.id, updated)
+        if updated.fallback_enabled:
+            _set_flash(request, f"Fallback ativo: {updated.fallback_provider} / {updated.fallback_model}")
+        else:
+            _set_flash(request, "Fallback desativado.")
+        return RedirectResponse("/models", status_code=303)
+
+    # Backward-compatible aliases: the old Deepgram tab now lives under Models.
+    @app.get("/settings/deepgram")
+    def deepgram_alias(request: Request, user=Depends(require_user)):
+        return RedirectResponse("/models?provider=deepgram", status_code=303)
+
     @app.post("/settings/deepgram")
-    def save_deepgram(request: Request, user=Depends(require_user),
-                      deepgram_api_key: str = Form(...)):
+    def save_deepgram_alias(request: Request, user=Depends(require_user),
+                            deepgram_api_key: str = Form(...)):
         key = deepgram_api_key.strip()
         if not key:
             _set_flash(request, "Deepgram API Key não pode ser vazia.")
+        elif provider_key_store is None:
+            _set_flash(request, "Armazenamento de credenciais indisponível.")
         else:
-            deepgram_store.save_for_user(user.id, key)
+            provider_key_store.save(user.id, "deepgram", key)
             _set_flash(request, "Deepgram API Key salva.")
-        return RedirectResponse("/settings/deepgram", status_code=303)
+        return RedirectResponse("/models?provider=deepgram", status_code=303)
 
     @app.post("/settings/deepgram/test")
-    def test_deepgram(request: Request, user=Depends(require_user)):
-        key = deepgram_store.get_key(user.id)
+    def test_deepgram_alias(request: Request, user=Depends(require_user)):
+        key = provider_key_store.get(user.id, "deepgram") if provider_key_store else None
         if not key:
             _set_flash(request, "Configure sua Deepgram API Key antes de iniciar uma transcrição.")
         else:
-            _set_flash(request, DEEPGRAM_TEST_MESSAGES[verify_deepgram_key(key)])
-        return RedirectResponse("/settings/deepgram", status_code=303)
+            result = verify_provider_key("deepgram", key)
+            _set_flash(request, PROVIDER_TEST_MESSAGES.get(result, "Não foi possível verificar agora."))
+        return RedirectResponse("/models?provider=deepgram", status_code=303)
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, user=Depends(require_user)):
@@ -413,6 +526,16 @@ def create_app(settings: WebSettings | None = None,
         return RedirectResponse("/", status_code=303)
 
     return app
+
+
+def _size_note(spec) -> str:
+    """Human size hint for the Models tab, e.g. 'Limite: inline ~70 MB, até ~99 MB'."""
+    parts = []
+    if spec.max_inline_bytes:
+        parts.append(f"inline ~{spec.max_inline_bytes // (1024 * 1024)} MB")
+    if spec.max_file_bytes:
+        parts.append(f"até ~{spec.max_file_bytes // (1024 * 1024)} MB")
+    return "Limite: " + ", ".join(parts) if parts else ""
 
 
 def _set_flash(request: Request, message: str) -> None:

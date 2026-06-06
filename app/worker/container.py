@@ -5,6 +5,7 @@ from typing import Callable
 
 from app.core.ports import Repositories
 from app.deepgram_client import DeepgramClient
+from app.errors import ProviderUnavailableError
 from app.drive_client import DriveClient
 from app.google_auth import credentials_from_token
 from app.queue import QueueSettings, build_queue
@@ -26,6 +27,9 @@ class WorkerContainer:
     transcription_config: TranscriptionConfig | None = None
     transcription_probes: object | None = None
     build_local_provider: Callable | None = None
+    # build_cloud_provider(provider_id, *, api_key, model) -> TranscriptionProvider
+    # for OpenRouter/Gemini. None falls back to the legacy Deepgram/local path.
+    build_cloud_provider: Callable | None = None
     queue: object | None = None
     queue_lock_ttl: int = 14400
 
@@ -42,15 +46,33 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
             credentials, source_folder_id, destination_folder_id
         )
 
-    def build_deepgram_client(api_key: str):
+    def build_deepgram_client(api_key: str, model: str | None = None):
+        # model override honours a per-user Deepgram model from the Models tab;
+        # None keeps the environment default (legacy behaviour).
         return DeepgramClient.from_api_key(
             api_key,
-            model=worker_settings.deepgram_model,
+            model=model or worker_settings.deepgram_model,
             language=worker_settings.deepgram_language,
             smart_format=worker_settings.deepgram_smart_format,
             punctuate=worker_settings.deepgram_punctuate,
             diarize=worker_settings.deepgram_diarize,
             utterances=worker_settings.deepgram_utterances,
+        )
+
+    def build_cloud_provider(provider_id: str, *, api_key: str, model: str):
+        # Lazy imports: keep the cloud SDK surface out of unrelated worker paths.
+        # language=None lets each provider auto-detect (the worker's deepgram_language
+        # like "pt-BR" is not a valid code for whisper-style cloud models).
+        if provider_id == "openrouter":
+            from app.transcription.openrouter_provider import OpenRouterProvider
+
+            return OpenRouterProvider(api_key=api_key, model=model, language=None)
+        if provider_id == "gemini":
+            from app.transcription.gemini_provider import GeminiProvider
+
+            return GeminiProvider(api_key=api_key, model=model, language=None)
+        raise ProviderUnavailableError(
+            f"Unsupported cloud provider {provider_id!r}", provider=provider_id
         )
 
     return WorkerContainer(
@@ -61,6 +83,7 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
         credentials_from_token=credentials_from_token,
         transcription_config=transcription_config,
         build_local_provider=_build_local_provider,
+        build_cloud_provider=build_cloud_provider,
         queue=queue,
         queue_lock_ttl=queue_settings.global_lock_ttl_seconds,
     )
