@@ -13,6 +13,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ARG INSTALL_LOCAL_TRANSCRIPTION=false
 ARG INSTALL_FASTER_WHISPER=false
 ARG INSTALL_WHISPER_CPP=false
+# Optional local diarization (pyannote.audio + torch — very large, CPU-only). OFF
+# by default. Enable with: docker build --build-arg INSTALL_PYANNOTE=true ...
+# See documentation/26-diarization.md.
+ARG INSTALL_PYANNOTE=false
 
 WORKDIR /app
 
@@ -33,6 +37,22 @@ RUN if [ "$INSTALL_WHISPER_CPP" = "true" ] || [ "$INSTALL_LOCAL_TRANSCRIPTION" =
         apt-get update \
         && apt-get install -y --no-install-recommends ffmpeg \
         && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Optional audio preprocessing (probe/extract/compress/chunk) needs ffmpeg+ffprobe.
+# Installed only when requested so the default image stays small. (Already present
+# when whisper.cpp is enabled above; this covers using preprocessing with Deepgram
+# or faster-whisper.)
+RUN if [ "$INSTALL_LOCAL_TRANSCRIPTION" = "true" ] && [ "$INSTALL_WHISPER_CPP" != "true" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends ffmpeg \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# pyannote.audio for local diarization (pulls in torch — large, CPU-only). The
+# provider imports it lazily; installed only when requested.
+RUN if [ "$INSTALL_PYANNOTE" = "true" ]; then \
+        pip install --no-cache-dir "pyannote.audio>=3.1,<4"; \
     fi
 
 COPY app ./app

@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <title>Meet Audio Recorder — offscreen</title>
+  </head>
+  <body>
+    <!--
+      Invisible offscreen document. It exists only to host MediaRecorder and the
+      getUserMedia / AudioContext Web APIs that MV3 service workers cannot use.
+      It has no visible UI and is created/destroyed by background.js on demand.
+    -->
+    <script type="module" src="offscreen.js"></script>
+  </body>
+</html>

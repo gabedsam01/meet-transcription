@@ -9,8 +9,13 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -19,6 +24,13 @@ from app.drive_client import DriveClient
 from app.google_auth import credentials_from_token
 from app.logger import setup_logging
 from app.queue import QueueSettings, build_queue
+from app.recordings import (
+    RecordingMetadata,
+    new_recording_id,
+    recording_path,
+    source_file_id_for,
+    write_metadata,
+)
 from app.repositories import RepositoryBackendError
 from app.repositories import build_repositories as build_worker_repositories
 from app.services.download_service import DownloadError, get_downloadable_transcript
@@ -106,6 +118,16 @@ def create_app(settings: WebSettings | None = None,
         secret_key=web_settings.app_secret_key,
         https_only=web_settings.session_cookie_secure,
         same_site="lax",
+    )
+    # Reject an oversized upload by Content-Length BEFORE the multipart body is
+    # buffered to a temp file, so a (authenticated) client cannot force the server
+    # to spool gigabytes to disk. The in-handler streaming check stays the
+    # authoritative cap on the stored recording (and covers chunked uploads with no
+    # Content-Length). A reverse proxy body limit is still recommended in prod.
+    app.add_middleware(
+        _UploadSizeLimitMiddleware,
+        path="/api/recordings/upload",
+        max_bytes=lambda: web_settings.extension_upload_max_mb * 1024 * 1024,
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -302,6 +324,104 @@ def create_app(settings: WebSettings | None = None,
         _set_flash(request, flash_message)
         return RedirectResponse("/jobs", status_code=303)
 
+    @app.post("/api/recordings/upload")
+    async def upload_recording(
+        request: Request,
+        file: UploadFile = File(...),
+        meeting_url: str | None = Form(None),
+        meeting_title: str | None = Form(None),
+        started_at: str | None = Form(None),
+        ended_at: str | None = Form(None),
+        duration_seconds: float | None = Form(None),
+        source: str = Form("chrome-extension"),
+    ):
+        """Accept a Chrome-extension recording, persist it, and enqueue a job.
+
+        Token-authenticated (NOT a logged-in session). This request only validates,
+        streams the media to the shared recordings dir, and creates a pending job —
+        it NEVER downloads, transcribes, or uploads. The worker owns all of that.
+        """
+        configured = web_settings.extension_upload_token
+        if not configured:
+            raise HTTPException(status_code=503, detail="Upload da extensão desativado.")
+        provided = _extract_upload_token(request)
+        # constant-time compare; the token is never logged or echoed in any error.
+        if not provided or not secrets.compare_digest(provided, configured):
+            raise HTTPException(status_code=401, detail="Token de upload inválido.")
+
+        target_email = (
+            web_settings.extension_upload_user_email or web_settings.admin_username
+        )
+        owner = repos.users.get_by_email(target_email)
+        if owner is None or not owner.is_active:
+            raise HTTPException(status_code=503, detail="Conta de upload indisponível.")
+
+        worker_repos, error = _resolve_worker_repositories()
+        if worker_repos is None:
+            raise HTTPException(status_code=503, detail=error)
+
+        recording_id = new_recording_id()
+        dest = recording_path(
+            web_settings.recordings_dir, recording_id, _recording_suffix(file)
+        )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        max_bytes = web_settings.extension_upload_max_mb * 1024 * 1024
+        written = 0
+        try:
+            with dest.open("wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "Gravação excede o limite de "
+                                f"{web_settings.extension_upload_max_mb} MB."
+                            ),
+                        )
+                    out.write(chunk)
+        except HTTPException:
+            dest.unlink(missing_ok=True)
+            raise
+        finally:
+            await file.close()
+        if written == 0:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Gravação vazia.")
+
+        write_metadata(web_settings.recordings_dir, RecordingMetadata(
+            recording_id=recording_id, filename=dest.name,
+            source=(source or "chrome-extension").strip() or "chrome-extension",
+            meeting_url=_clean(meeting_url), meeting_title=_clean(meeting_title),
+            started_at=_clean(started_at), ended_at=_clean(ended_at),
+            duration_seconds=duration_seconds, content_type=file.content_type,
+        ))
+
+        job = worker_repos.jobs.create_job(
+            user_id=owner.id,
+            source_file_id=source_file_id_for(recording_id),
+            source_file_name=_clean(meeting_title) or "Gravação do Meet",
+            now=datetime.now(timezone.utc),
+        )
+        logging.getLogger(__name__).info(
+            "Recording upload accepted: job_id=%s user_id=%s bytes=%s",
+            job.id, owner.id, written,
+        )
+        if app.state.queue is not None:
+            try:
+                app.state.queue.enqueue(job.id)
+            except Exception:  # noqa: BLE001 - stays pending; the worker reconciles.
+                logging.getLogger(__name__).exception(
+                    "Could not enqueue uploaded job_id=%s; it stays pending", job.id
+                )
+        return JSONResponse(
+            {"job_id": job.id, "status": "pending", "recording_id": recording_id},
+            status_code=201,
+        )
+
     @app.get("/jobs/{job_id}/download")
     def download_transcript(job_id: int, request: Request, user=Depends(require_user)):
         worker_repos, error = _resolve_worker_repositories()
@@ -415,12 +535,91 @@ def create_app(settings: WebSettings | None = None,
     return app
 
 
+class _UploadSizeLimitMiddleware:
+    """Pure-ASGI guard: 413 an oversized upload by Content-Length before the body
+    is read. Scoped to one POST path; everything else passes straight through.
+
+    A small margin above the limit absorbs multipart boundaries + metadata fields
+    so a recording exactly at the limit is never falsely rejected; the handler's
+    streaming check remains the authoritative cap on the stored bytes.
+    """
+
+    _MARGIN = 1024 * 1024  # 1 MiB for multipart overhead.
+
+    def __init__(self, app, *, path: str, max_bytes) -> None:
+        self.app = app
+        self._path = path
+        self._max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http" and scope.get("method") == "POST" and scope.get("path") == self._path:
+            limit = self._max_bytes()
+            content_length = _header_value(scope, b"content-length")
+            if limit and content_length and content_length.isdigit():
+                if int(content_length) > limit + self._MARGIN:
+                    mb = limit // (1024 * 1024)
+                    response = JSONResponse(
+                        {"detail": f"Gravação excede o limite de {mb} MB."},
+                        status_code=413,
+                    )
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
+def _header_value(scope, name: bytes) -> str | None:
+    for key, value in scope.get("headers", []):
+        if key.lower() == name:
+            return value.decode("latin-1")
+    return None
+
+
 def _set_flash(request: Request, message: str) -> None:
     request.session["flash"] = message
 
 
 def _pop_flash(request: Request) -> str | None:
     return request.session.pop("flash", None)
+
+
+def _extract_upload_token(request: Request) -> str | None:
+    """Read the extension upload token from ``Authorization: Bearer`` or
+    ``X-Upload-Token``. The token is never logged."""
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() == "bearer ":
+        token = auth[7:].strip()
+        if token:
+            return token
+    header = request.headers.get("X-Upload-Token", "").strip()
+    return header or None
+
+
+# Container/audio formats the extension may send, mapped to a stored suffix.
+_RECORDING_EXTS = (".webm", ".ogg", ".opus", ".m4a", ".mp4", ".wav", ".mp3")
+
+
+def _recording_suffix(file: UploadFile) -> str:
+    name = (file.filename or "").lower()
+    for ext in _RECORDING_EXTS:
+        if name.endswith(ext):
+            return ext
+    ctype = (file.content_type or "").lower()
+    if "ogg" in ctype:
+        return ".ogg"
+    if "m4a" in ctype or "mp4" in ctype:
+        return ".m4a"
+    if "wav" in ctype:
+        return ".wav"
+    if "mpeg" in ctype:
+        return ".mp3"
+    return ".webm"  # the extension records WebM/Opus by default
+
+
+def _clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def require_user(request: Request):

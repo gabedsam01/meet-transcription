@@ -415,6 +415,37 @@ The greatest hits:
 
 ---
 
+## Audio preprocessing, local models, diarization & Chrome recorder
+
+Four optional, **off‑by‑default** capabilities. None changes the Deepgram/whisper
+path until you turn it on; the heavy engines stay gated behind Docker build args.
+
+- **Audio preprocessing** (`AUDIO_PREPROCESSING_ENABLED`) — when on, the worker
+  fast‑fails a recording with no audio track (friendly error). The
+  probe / extract / compress / chunk / stitch helpers (`app/audio/`) are also a
+  tested library for size‑limited providers. → **[documentation/24-audio-preprocessing.md](documentation/24-audio-preprocessing.md)**
+- **Local model manager** (`app/models/`, `python -m app.model_init`) — validates
+  the configured local model and, when `LOCAL_TRANSCRIPTION_AUTO_DOWNLOAD=true`,
+  downloads it (whisper.cpp ggml via Hugging Face, faster‑whisper via
+  `huggingface_hub`). Run the **opt‑in** one‑shot service with
+  `docker compose --profile model-init run --rm model-init`. Downloads never happen
+  in the web service or in tests. → **[documentation/25-local-model-manager.md](documentation/25-local-model-manager.md)**
+- **Local diarization** (`DIARIZATION_ENABLED`, engine `pyannote`, build arg
+  `INSTALL_PYANNOTE=true`) — optional speaker labels by maximal temporal overlap
+  with the transcript segments; `DIARIZATION_REQUIRED` decides whether an invalid
+  setup fails the job or just continues without speakers. The Hugging Face token is
+  a **secret** and never appears in logs, errors, the UI, or stored transcripts.
+  → **[documentation/26-diarization.md](documentation/26-diarization.md)**
+- **Chrome Meet recorder + upload** — a Manifest V3 extension
+  (`chrome-extension/meet-audio-recorder/`) records Google Meet **tab audio** with
+  one click and `POST`s WebM/Opus to `POST /api/recordings/upload`
+  (`Authorization: Bearer EXTENSION_UPLOAD_TOKEN`, max `EXTENSION_UPLOAD_MAX_MB`).
+  The request only stores the file and creates a pending job (sentinel
+  `chrome-extension:<uuid>`, **no Drive, no migration**); the worker transcribes it
+  out of band. → **[documentation/27-chrome-extension.md](documentation/27-chrome-extension.md)**
+
+---
+
 ## Legacy Simple Worker Mode
 
 The original env‑driven CLI worker (`python -m app.main`) still works and is kept
