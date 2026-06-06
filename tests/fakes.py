@@ -91,21 +91,33 @@ class InMemoryDeepgramCredentialsRepository:
 
 
 class InMemoryProviderCredentialsRepository:
-    def __init__(self) -> None:
+    """Mirrors the real adapter, including the legacy ``deepgram_credentials``
+    read-fallback, so tests exercise the same backward-compatible behaviour."""
+
+    def __init__(self, legacy_deepgram=None) -> None:
         self._creds: dict[tuple[int, str], str] = {}
+        self._legacy_deepgram = legacy_deepgram
 
     def get_encrypted(self, user_id: int, provider: str) -> str | None:
-        return self._creds.get((user_id, provider))
+        value = self._creds.get((user_id, provider))
+        if value is None and provider == "deepgram" and self._legacy_deepgram is not None:
+            return self._legacy_deepgram.get_encrypted_for_user(user_id)
+        return value
 
     def save(self, user_id: int, provider: str, encrypted_api_key: str) -> None:
         self._creds[(user_id, provider)] = encrypted_api_key
 
     def list_encrypted(self, user_id: int) -> dict[str, str]:
-        return {
+        creds = {
             provider: value
             for (uid, provider), value in self._creds.items()
             if uid == user_id
         }
+        if "deepgram" not in creds and self._legacy_deepgram is not None:
+            legacy = self._legacy_deepgram.get_encrypted_for_user(user_id)
+            if legacy is not None:
+                creds["deepgram"] = legacy
+        return creds
 
 
 class InMemoryUserModelSettingsRepository:
@@ -172,12 +184,17 @@ class InMemoryTranscriptionJobsRepository:
 
 
 def build_fake_repositories() -> RepositoryBundle:
+    deepgram_credentials = InMemoryDeepgramCredentialsRepository()
     return RepositoryBundle(
         users=InMemoryUsersRepository(),
         google_tokens=InMemoryGoogleTokensRepository(),
-        deepgram_credentials=InMemoryDeepgramCredentialsRepository(),
+        deepgram_credentials=deepgram_credentials,
         drive_settings=InMemoryDriveSettingsRepository(),
         jobs=InMemoryTranscriptionJobsRepository(),
-        provider_credentials=InMemoryProviderCredentialsRepository(),
+        # Faithful to the Postgres adapter: provider_credentials reads fall back to
+        # the legacy deepgram_credentials row when no new row exists.
+        provider_credentials=InMemoryProviderCredentialsRepository(
+            legacy_deepgram=deepgram_credentials
+        ),
         model_settings=InMemoryUserModelSettingsRepository(),
     )

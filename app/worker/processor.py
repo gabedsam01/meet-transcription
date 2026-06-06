@@ -124,15 +124,23 @@ class JobProcessor:
                 ms, self._cloud_credentials(settings), build=self._build_cloud_provider
             )
             return resolved.provider, resolved.label
-        provider, status = self._resolve_legacy(settings, config)
-        return provider, (status.summary if status.local_valid else "deepgram")
+        # Honour an explicit per-user Deepgram model from the Models tab; the
+        # local-vs-Deepgram product rule and its messages stay on the legacy path.
+        deepgram_model = self.container.settings.deepgram_model
+        if ms is not None and ms.primary_provider == "deepgram" and ms.primary_model:
+            deepgram_model = ms.primary_model
+        provider, status = self._resolve_legacy(settings, config, deepgram_model)
+        label = status.summary if status.local_valid else f"deepgram:{deepgram_model}"
+        return provider, label
 
-    def _resolve_legacy(self, settings, config):
+    def _resolve_legacy(self, settings, config, deepgram_model):
         def build_deepgram_provider():
-            client = self.container.build_deepgram_client(settings.deepgram_api_key)
+            client = self.container.build_deepgram_client(
+                settings.deepgram_api_key, deepgram_model
+            )
             return DeepgramProvider(
                 client,
-                model=self.container.settings.deepgram_model,
+                model=deepgram_model,
                 language=self.container.settings.deepgram_language,
             )
 

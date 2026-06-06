@@ -247,6 +247,8 @@ def _extract_text(raw: dict[str, Any]) -> str:
         parts = raw["candidates"][0]["content"]["parts"]
     except (KeyError, IndexError, TypeError):
         return ""
+    if not isinstance(parts, list):  # malformed but structurally-valid responses
+        return ""
     chunks = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
     return "\n".join(chunk.strip() for chunk in chunks if chunk).strip()
 

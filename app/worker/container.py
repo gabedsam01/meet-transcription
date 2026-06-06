@@ -46,10 +46,12 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
             credentials, source_folder_id, destination_folder_id
         )
 
-    def build_deepgram_client(api_key: str):
+    def build_deepgram_client(api_key: str, model: str | None = None):
+        # model override honours a per-user Deepgram model from the Models tab;
+        # None keeps the environment default (legacy behaviour).
         return DeepgramClient.from_api_key(
             api_key,
-            model=worker_settings.deepgram_model,
+            model=model or worker_settings.deepgram_model,
             language=worker_settings.deepgram_language,
             smart_format=worker_settings.deepgram_smart_format,
             punctuate=worker_settings.deepgram_punctuate,
@@ -59,6 +61,8 @@ def build_container(settings: WorkerSettings | None = None) -> WorkerContainer:
 
     def build_cloud_provider(provider_id: str, *, api_key: str, model: str):
         # Lazy imports: keep the cloud SDK surface out of unrelated worker paths.
+        # language=None lets each provider auto-detect (the worker's deepgram_language
+        # like "pt-BR" is not a valid code for whisper-style cloud models).
         if provider_id == "openrouter":
             from app.transcription.openrouter_provider import OpenRouterProvider
 

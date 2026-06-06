@@ -233,6 +233,24 @@ def test_run_once_uses_configured_cloud_provider(tmp_path):
     assert deepgram.api_key is None  # Deepgram never built
 
 
+def test_explicit_deepgram_model_selection_is_honoured(tmp_path):
+    # A user who picks Deepgram + a non-default model in the Models tab must get
+    # THAT model on the actual client (not the environment default).
+    deepgram = FakeDeepgramClient()
+    container = make_worker_container(tmp_path, deepgram=deepgram)
+    ms = normalize_model_settings(primary_provider="deepgram", primary_model="nova-2")
+    _seed_models(container.repositories, ms=ms, credentials={}, deepgram_key="dg-key")
+    job = _claim_one(container.repositories)
+
+    JobProcessor(container).process(job)
+
+    done = container.repositories.jobs.get_job(job.id)
+    assert done.status == JobStatus.COMPLETED.value
+    assert deepgram.model == "nova-2"  # client built with the user's model
+    transcript = container.repositories.transcripts.get_by_job(job.id)
+    assert transcript.json_payload["model"] == "nova-2"
+
+
 def test_cloud_provider_falls_back_to_deepgram_when_primary_key_missing(tmp_path):
     deepgram = FakeDeepgramClient()
     container = make_worker_container(

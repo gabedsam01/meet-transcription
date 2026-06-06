@@ -50,6 +50,7 @@ class FakeDeepgramClient:
         }
         self.fail = fail
         self.api_key = None
+        self.model = None  # last model the client was built with
 
     def transcribe(self, video_path, api_key=None):
         if self.fail:
@@ -110,8 +111,9 @@ def make_worker_container(
     drive = drive if drive is not None else FakeDriveClient()
     deepgram = deepgram if deepgram is not None else FakeDeepgramClient()
 
-    def build_deepgram(api_key):
+    def build_deepgram(api_key, model=None):
         deepgram.api_key = api_key
+        deepgram.model = model
         return deepgram
 
     return WorkerContainer(

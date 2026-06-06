@@ -345,7 +345,9 @@ def create_app(settings: WebSettings | None = None,
         key = deepgram_api_key.strip()
         if not key:
             _set_flash(request, "Deepgram API Key não pode ser vazia.")
-        elif provider_key_store is not None:
+        elif provider_key_store is None:
+            _set_flash(request, "Armazenamento de credenciais indisponível.")
+        else:
             provider_key_store.save(user.id, "deepgram", key)
             _set_flash(request, "Deepgram API Key salva.")
         return RedirectResponse("/models?provider=deepgram", status_code=303)

@@ -125,3 +125,19 @@ def test_deepgram_alias_post_saves_to_provider_credentials(tmp_path):
         client.post("/settings/deepgram", data={"deepgram_api_key": "dg-key-xyz"},
                     follow_redirects=False)
     assert repos.provider_credentials.get_encrypted(_admin_id(repos), "deepgram") is not None
+
+
+def test_legacy_deepgram_key_shows_configured_on_models_page(tmp_path):
+    # A key stored only in the legacy deepgram_credentials table (pre-Models-tab)
+    # must render as "Configurado" on the Models page (backward compatibility).
+    from app.web.security import encrypt_value, fernet_from_secret
+
+    client, repos = _client(tmp_path)
+    with client:
+        _login(client)
+        admin = _admin_id(repos)
+        fernet = fernet_from_secret("a-long-secret-for-tests")
+        repos.deepgram_credentials.save_for_user(admin, encrypt_value(fernet, "legacy-dg-key"))
+        page = client.get("/models").text
+    assert "legacy-dg-key" not in page  # never echoed
+    assert "Configurado" in page  # the legacy Deepgram key is recognised

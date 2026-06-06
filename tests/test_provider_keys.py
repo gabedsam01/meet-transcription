@@ -37,6 +37,27 @@ def test_has_false_when_absent():
     assert store.masked(1, "openrouter") is None
 
 
+def test_legacy_deepgram_credential_is_visible_through_store():
+    # "Deepgram antigo é compatível": a key saved in the legacy table is read via
+    # the new per-provider store (the fake mirrors the Postgres adapter fallback).
+    from app.web.security import encrypt_value
+    from tests.fakes import InMemoryDeepgramCredentialsRepository
+
+    fernet = fernet_from_secret("s")
+    legacy = InMemoryDeepgramCredentialsRepository()
+    legacy.save_for_user(1, encrypt_value(fernet, "old-dg-key"))
+    store = ProviderKeyStore(
+        InMemoryProviderCredentialsRepository(legacy_deepgram=legacy), fernet
+    )
+    assert store.has(1, "deepgram") is True
+    assert store.get(1, "deepgram") == "old-dg-key"
+    assert store.masked(1, "deepgram") == "…-key"
+    assert "deepgram" in store.configured_providers(1)
+    # A new save shadows the legacy value.
+    store.save(1, "deepgram", "new-dg-key")
+    assert store.get(1, "deepgram") == "new-dg-key"
+
+
 # --- verify_provider_key -----------------------------------------------------
 
 

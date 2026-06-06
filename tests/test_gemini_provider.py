@@ -125,3 +125,13 @@ def test_429_is_rate_limited(tmp_path):
     )
     with pytest.raises(ProviderRateLimitedError):
         provider.transcribe(_media(tmp_path), original_name="m.mp4", file_id="x")
+
+
+def test_malformed_parts_does_not_crash(tmp_path):
+    # 200 OK but "parts" is non-iterable: must degrade to empty text, never raise.
+    session = FakeSession(FakeResponse(200, {"candidates": [{"content": {"parts": None}}]}))
+    provider = GeminiProvider(api_key="g", model="gemini-2.5-flash", session=session)
+    result = provider.transcribe(_media(tmp_path), original_name="m.mp4", file_id="x")
+    assert result.payload["text"] == ""
+    assert result.payload["segments"] == []
+    assert "TRANSCRIÇÃO DA REUNIÃO" in result.text
