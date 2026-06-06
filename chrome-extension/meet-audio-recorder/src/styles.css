@@ -1,0 +1,216 @@
+/* styles.css — local CSS for the popup. No CDN, no framework, no build step. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #202124;
+  --muted: #5f6368;
+  --border: #dadce0;
+  --primary: #1a73e8;
+  --primary-hover: #1761c7;
+  --danger: #d93025;
+  --danger-hover: #b3271c;
+  --ok: #188038;
+  --field-bg: #f8f9fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  width: 320px;
+}
+
+.panel {
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Recording indicator -------------------------------------------------- */
+
+.indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.indicator .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.indicator.recording {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.indicator.recording .dot {
+  background: var(--danger);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(217, 48, 37, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(217, 48, 37, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(217, 48, 37, 0);
+  }
+}
+
+/* Controls ------------------------------------------------------------- */
+
+.controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.btn {
+  flex: 1;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: var(--primary-hover);
+}
+
+.btn-danger {
+  background: var(--danger);
+}
+
+.btn-danger:not(:disabled):hover {
+  background: var(--danger-hover);
+}
+
+.btn-secondary {
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.status {
+  min-height: 18px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+/* Settings ------------------------------------------------------------- */
+
+.settings {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.settings > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.settings-form {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field input {
+  border: 1px solid var(--border);
+  background: var(--field-bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.field input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 0;
+  background: #fff;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-status {
+  min-height: 16px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.hint {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}

@@ -78,6 +78,12 @@ def make_worker_container(
     transcription_probes=None,
     build_local_provider=None,
     queue=None,
+    audio_config=None,
+    audio_runner=None,
+    diarization_config=None,
+    diarization_probes=None,
+    build_diarization_provider=None,
+    recordings_dir=None,
 ):
     repositories = repositories if repositories is not None else build_memory_repositories()
     drive = drive if drive is not None else FakeDriveClient()
@@ -97,4 +103,10 @@ def make_worker_container(
         transcription_probes=transcription_probes,
         build_local_provider=build_local_provider,
         queue=queue,
+        audio_config=audio_config,
+        audio_runner=audio_runner,
+        diarization_config=diarization_config,
+        diarization_probes=diarization_probes,
+        build_diarization_provider=build_diarization_provider,
+        recordings_dir=recordings_dir,
     )
