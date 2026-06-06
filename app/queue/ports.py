@@ -39,6 +39,36 @@ class TranscriptionQueue(Protocol):
     def release_global_lock(self, token: str) -> None:
         """Release the lock only if ``token`` still owns it (no foreign release)."""
 
+    def acquire_provider_slot(self, kind: str, ttl_seconds: int) -> str | None:
+        """Acquire one concurrency slot for ``kind`` ('cloud' or 'local').
+
+        'local' is a single token lock (one CPU transcription at a time). 'cloud'
+        is a counting semaphore capped at the configured cloud concurrency. Returns
+        an opaque token, or None when no slot is free (the caller requeues with a
+        short delay — it must never fail the job for lack of a slot)."""
+
+    def release_provider_slot(self, kind: str, token: str) -> None:
+        """Release a slot previously acquired for ``kind`` (token-checked)."""
+
+    def mark_processing(self, job_id: int) -> None:
+        """Record that ``job_id`` is actively processing (observability)."""
+
+    def clear_processing(self, job_id: int) -> None:
+        """Drop ``job_id`` from the processing set when it reaches a terminal state."""
+
+    def mark_dead(self, job_id: int) -> None:
+        """Add ``job_id`` to the dead-letter set (terminal/exhausted). Observability;
+        Postgres status='failed' stays the source of truth."""
+
+    def remove_dead(self, job_id: int) -> None:
+        """Remove ``job_id`` from the dead-letter set (manual retry)."""
+
+    def dead_job_ids(self) -> set[int]:
+        """Snapshot of dead-letter ids."""
+
+    def queue_stats(self) -> dict[str, int]:
+        """``{'queued': n, 'processing': n, 'dead': n}`` for the observability panel."""
+
     def queued_job_ids(self) -> set[int]:
         """Snapshot of currently-queued ids (introspection / tests)."""
 
