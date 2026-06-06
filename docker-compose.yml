@@ -182,7 +182,7 @@ services:
       GIT_COMMIT: ${GIT_COMMIT:-}
       BUILD_TIME: ${BUILD_TIME:-}
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
     # Liveness probe against the public /health endpoint (no auth, no DB needed).
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)\""]
