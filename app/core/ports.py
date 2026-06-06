@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from app.core.models import GoogleToken, Job, Settings, Transcript
+from app.core.models import (
+    AutomationSettings,
+    GoogleToken,
+    Job,
+    Settings,
+    Transcript,
+)
 
 
 @runtime_checkable
@@ -129,9 +135,34 @@ class GoogleTokenRepository(Protocol):
     def get(self, user_id: int) -> GoogleToken | None: ...
 
 
+@runtime_checkable
+class AutomationSettingsRepository(Protocol):
+    def get_for_user(self, user_id: int) -> AutomationSettings | None: ...
+
+    def upsert_for_user(self, user_id: int, **fields) -> AutomationSettings:
+        """Create or update the user's automation settings; return the new state."""
+
+    def list_due_for_poll(self, now: datetime, limit: int) -> list[AutomationSettings]:
+        """Enabled users whose last poll is None or older than their interval.
+
+        Capped at ``limit``, oldest poll first, so the auto-poll thread spreads
+        work fairly across users within ``AUTO_POLL_MAX_USERS_PER_TICK``.
+        """
+
+    def mark_poll_result(
+        self, user_id: int, now: datetime, *, success: bool,
+        error_code: str | None = None, error_message: str | None = None,
+    ) -> None:
+        """Stamp ``last_poll_at`` (always); on success also ``last_success_at`` and
+        clear the error; on failure record the friendly error code/message."""
+
+
 @dataclass
 class Repositories:
     jobs: JobRepository
     transcripts: TranscriptRepository
     settings: SettingsRepository
     google_tokens: GoogleTokenRepository
+    # Optional so existing constructions (tests, legacy) keep working; the real
+    # builders (memory + postgres) always populate it.
+    automation: AutomationSettingsRepository | None = None

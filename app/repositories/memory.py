@@ -2,8 +2,26 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-from app.core.models import GoogleToken, Job, JobStatus, Settings, Transcript
+from datetime import timedelta
+
+from app.core.models import (
+    AutomationSettings,
+    GoogleToken,
+    Job,
+    JobStatus,
+    Settings,
+    Transcript,
+)
 from app.core.ports import Repositories
+
+_AUTOMATION_FIELDS = frozenset(
+    {
+        "auto_poll_enabled", "poll_interval_seconds", "max_files_per_poll",
+        "last_poll_at", "last_success_at", "last_error_code", "last_error_message",
+        "daily_jobs_limit", "max_file_size_mb", "monthly_cloud_minutes_limit",
+        "max_file_duration_minutes",
+    }
+)
 
 
 def _copy(obj):
@@ -213,10 +231,59 @@ class InMemoryGoogleTokenRepository:
         return _copy(self._tokens.get(user_id))
 
 
+class InMemoryAutomationSettingsRepository:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_user: dict[int, AutomationSettings] = {}
+
+    def get_for_user(self, user_id) -> AutomationSettings | None:
+        with self._lock:
+            return _copy(self._by_user.get(user_id))
+
+    def upsert_for_user(self, user_id, **fields) -> AutomationSettings:
+        with self._lock:
+            current = self._by_user.get(user_id) or AutomationSettings(user_id=user_id)
+            for key, value in fields.items():
+                if key in _AUTOMATION_FIELDS:
+                    setattr(current, key, value)
+            self._by_user[user_id] = current
+            return _copy(current)
+
+    def list_due_for_poll(self, now, limit) -> list[AutomationSettings]:
+        with self._lock:
+            due = [
+                s for s in self._by_user.values()
+                if s.auto_poll_enabled and _poll_due(s, now)
+            ]
+        # Oldest poll first (None counts as oldest) so users are served fairly.
+        due.sort(key=lambda s: (s.last_poll_at is not None, s.last_poll_at or now))
+        return [_copy(s) for s in due[:limit]]
+
+    def mark_poll_result(self, user_id, now, *, success, error_code=None, error_message=None) -> None:
+        with self._lock:
+            current = self._by_user.get(user_id) or AutomationSettings(user_id=user_id)
+            current.last_poll_at = now
+            if success:
+                current.last_success_at = now
+                current.last_error_code = None
+                current.last_error_message = None
+            else:
+                current.last_error_code = error_code
+                current.last_error_message = error_message
+            self._by_user[user_id] = current
+
+
+def _poll_due(settings: AutomationSettings, now) -> bool:
+    if settings.last_poll_at is None:
+        return True
+    return settings.last_poll_at <= now - timedelta(seconds=settings.poll_interval_seconds)
+
+
 def build_memory_repositories() -> Repositories:
     return Repositories(
         jobs=InMemoryJobRepository(),
         transcripts=InMemoryTranscriptRepository(),
         settings=InMemorySettingsRepository(),
         google_tokens=InMemoryGoogleTokenRepository(),
+        automation=InMemoryAutomationSettingsRepository(),
     )

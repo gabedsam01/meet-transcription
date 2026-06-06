@@ -53,6 +53,28 @@ class GoogleToken:
 
 
 @dataclass
+class AutomationSettings:
+    """Per-user auto-poll configuration + status + guardrail overrides.
+
+    NULL guardrail fields fall back to the global env defaults. ``last_*`` mirror
+    the most recent poll attempt for the UI.
+    """
+
+    user_id: int
+    auto_poll_enabled: bool = False
+    poll_interval_seconds: int = 300
+    max_files_per_poll: int = 5
+    last_poll_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    daily_jobs_limit: int | None = None
+    max_file_size_mb: int | None = None
+    monthly_cloud_minutes_limit: int | None = None
+    max_file_duration_minutes: int | None = None
+
+
+@dataclass
 class Transcript:
     id: int
     job_id: int

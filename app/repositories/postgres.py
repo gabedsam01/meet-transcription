@@ -15,7 +15,7 @@ The worker never sees ciphertext and never decrypts. Secrets are never logged.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -36,6 +36,7 @@ from app.web.security import decrypt_value, fernet_from_secret
 
 try:  # Prefer the real contract once the worker branch is merged.
     from app.core.models import (  # type: ignore
+        AutomationSettings,
         GoogleToken,
         Job,
         Settings,
@@ -50,6 +51,14 @@ except ImportError:  # postgres-core standalone
         Settings,
         Transcript,
     )
+    AutomationSettings = None  # type: ignore
+
+_AUTOMATION_FIELDS = (
+    "auto_poll_enabled", "poll_interval_seconds", "max_files_per_poll",
+    "last_poll_at", "last_success_at", "last_error_code", "last_error_message",
+    "daily_jobs_limit", "max_file_size_mb", "monthly_cloud_minutes_limit",
+    "max_file_duration_minutes",
+)
 
 _STALE_MESSAGE = "stale timeout: job exceeded processing window"
 
@@ -122,6 +131,25 @@ def _due_predicate(now: datetime):
     return or_(
         models.TranscriptionJob.next_retry_at.is_(None),
         models.TranscriptionJob.next_retry_at <= now,
+    )
+
+
+def _to_automation(s: "models.UserAutomationSettings | None"):
+    if s is None:
+        return None
+    return AutomationSettings(
+        user_id=s.user_id,
+        auto_poll_enabled=s.auto_poll_enabled,
+        poll_interval_seconds=s.poll_interval_seconds,
+        max_files_per_poll=s.max_files_per_poll,
+        last_poll_at=s.last_poll_at,
+        last_success_at=s.last_success_at,
+        last_error_code=s.last_error_code,
+        last_error_message=s.last_error_message,
+        daily_jobs_limit=s.daily_jobs_limit,
+        max_file_size_mb=s.max_file_size_mb,
+        monthly_cloud_minutes_limit=s.monthly_cloud_minutes_limit,
+        max_file_duration_minutes=s.max_file_duration_minutes,
     )
 
 
@@ -416,6 +444,68 @@ class PgGoogleTokenRepository(_Bound):
             )
 
 
+class PgAutomationSettingsRepository(_Bound):
+    def get_for_user(self, user_id: int):
+        with self._sf.begin() as s:
+            return _to_automation(self._row(s, user_id))
+
+    def upsert_for_user(self, user_id: int, **fields):
+        with self._sf.begin() as s:
+            row = self._row(s, user_id)
+            if row is None:
+                row = models.UserAutomationSettings(user_id=user_id)
+                s.add(row)
+            for key, value in fields.items():
+                if key in _AUTOMATION_FIELDS:
+                    setattr(row, key, value)
+            s.flush()
+            return _to_automation(row)
+
+    def list_due_for_poll(self, now: datetime, limit: int):
+        with self._sf.begin() as s:
+            stmt = (
+                select(models.UserAutomationSettings)
+                .where(models.UserAutomationSettings.auto_poll_enabled.is_(True))
+                .order_by(
+                    models.UserAutomationSettings.last_poll_at.asc().nulls_first(),
+                )
+            )
+            due = []
+            for row in s.scalars(stmt):
+                if row.last_poll_at is None or row.last_poll_at <= now - timedelta(
+                    seconds=row.poll_interval_seconds
+                ):
+                    due.append(_to_automation(row))
+                if len(due) >= limit:
+                    break
+            return due
+
+    def mark_poll_result(
+        self, user_id: int, now: datetime, *, success: bool,
+        error_code: str | None = None, error_message: str | None = None,
+    ) -> None:
+        with self._sf.begin() as s:
+            row = self._row(s, user_id)
+            if row is None:
+                row = models.UserAutomationSettings(user_id=user_id)
+                s.add(row)
+            row.last_poll_at = now
+            if success:
+                row.last_success_at = now
+                row.last_error_code = None
+                row.last_error_message = None
+            else:
+                row.last_error_code = error_code
+                row.last_error_message = error_message
+            s.flush()
+
+    def _row(self, s, user_id: int):
+        stmt = select(models.UserAutomationSettings).where(
+            models.UserAutomationSettings.user_id == user_id
+        )
+        return s.scalar(stmt)
+
+
 def build_postgres_repositories(
     database_url: Any = None, *, engine=None, app_secret_key: str | None = None
 ) -> Repositories:
@@ -441,4 +531,5 @@ def build_postgres_repositories(
         transcripts=PgTranscriptRepository(factory),
         settings=PgSettingsRepository(factory, decryptor),
         google_tokens=PgGoogleTokenRepository(factory, decryptor),
+        automation=PgAutomationSettingsRepository(factory),
     )
