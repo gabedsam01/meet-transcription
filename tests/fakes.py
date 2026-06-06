@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from app.transcription.provider_config import ModelSettings
 from app.web.repositories import (
     DriveSettings,
     GoogleToken,
@@ -89,6 +90,35 @@ class InMemoryDeepgramCredentialsRepository:
         self._keys[user_id] = api_key_encrypted
 
 
+class InMemoryProviderCredentialsRepository:
+    def __init__(self) -> None:
+        self._creds: dict[tuple[int, str], str] = {}
+
+    def get_encrypted(self, user_id: int, provider: str) -> str | None:
+        return self._creds.get((user_id, provider))
+
+    def save(self, user_id: int, provider: str, encrypted_api_key: str) -> None:
+        self._creds[(user_id, provider)] = encrypted_api_key
+
+    def list_encrypted(self, user_id: int) -> dict[str, str]:
+        return {
+            provider: value
+            for (uid, provider), value in self._creds.items()
+            if uid == user_id
+        }
+
+
+class InMemoryUserModelSettingsRepository:
+    def __init__(self) -> None:
+        self._by_user: dict[int, ModelSettings] = {}
+
+    def get_for_user(self, user_id: int) -> ModelSettings | None:
+        return self._by_user.get(user_id)
+
+    def save_for_user(self, user_id: int, settings: ModelSettings) -> None:
+        self._by_user[user_id] = settings
+
+
 class InMemoryDriveSettingsRepository:
     def __init__(self) -> None:
         self._settings: dict[int, DriveSettings] = {}
@@ -148,4 +178,6 @@ def build_fake_repositories() -> RepositoryBundle:
         deepgram_credentials=InMemoryDeepgramCredentialsRepository(),
         drive_settings=InMemoryDriveSettingsRepository(),
         jobs=InMemoryTranscriptionJobsRepository(),
+        provider_credentials=InMemoryProviderCredentialsRepository(),
+        model_settings=InMemoryUserModelSettingsRepository(),
     )

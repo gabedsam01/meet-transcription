@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+# The Models tab and worker share one provider-selection type.
+from app.transcription.provider_config import ModelSettings  # noqa: F401  (re-exported)
+
 
 @dataclass(frozen=True)
 class User:
@@ -74,6 +77,24 @@ class DeepgramCredentialsRepository(Protocol):
     def save_for_user(self, user_id: int, api_key_encrypted: str) -> None: ...
 
 
+class ProviderCredentialsRepository(Protocol):
+    """Per-user, per-provider encrypted API keys (Models tab).
+
+    Values cross this boundary as Fernet ciphertext; encryption lives in the web
+    layer (``ProviderKeyStore``). ``get_encrypted``/``list_encrypted`` transparently
+    fall back to the legacy single-provider Deepgram credential.
+    """
+
+    def get_encrypted(self, user_id: int, provider: str) -> str | None: ...
+    def save(self, user_id: int, provider: str, encrypted_api_key: str) -> None: ...
+    def list_encrypted(self, user_id: int) -> dict[str, str]: ...
+
+
+class UserModelSettingsRepository(Protocol):
+    def get_for_user(self, user_id: int) -> ModelSettings | None: ...
+    def save_for_user(self, user_id: int, settings: ModelSettings) -> None: ...
+
+
 class DriveSettingsRepository(Protocol):
     def get_for_user(self, user_id: int) -> DriveSettings | None: ...
     def save_for_user(self, user_id: int, settings: DriveSettings) -> None: ...
@@ -100,6 +121,10 @@ class RepositoryBundle:
     deepgram_credentials: DeepgramCredentialsRepository
     drive_settings: DriveSettingsRepository
     jobs: TranscriptionJobsRepository
+    # Added by the Models tab. Default None keeps older constructions valid while
+    # both builders (Postgres + in-memory fake) populate them.
+    provider_credentials: ProviderCredentialsRepository | None = None
+    model_settings: UserModelSettingsRepository | None = None
 
 
 class RepositoryBackendUnavailable(RuntimeError):
