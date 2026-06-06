@@ -21,6 +21,7 @@ _CSRF_SESSION_KEY = "_csrf_token"
 # POST routes that are exempt from CSRF.
 _CSRF_EXEMPT_ROUTES = {
     "/api/recordings/upload",
+    "/api/recordings/ping",
     "/health",
     "/ready",
     "/version",

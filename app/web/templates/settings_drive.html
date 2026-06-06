@@ -7,8 +7,24 @@
     <p class="page-subtitle">A pasta de origem é obrigatória. O destino é opcional (backup). Cole a URL da pasta do Google Drive, por exemplo
       <span class="mono">https://drive.google.com/drive/folders/1zv32Q...tBD5</span>.</p>
   </div>
+  {% if google_disabled %}
+  <span class="badge badge-warning">Google Drive desativado</span>
+  {% endif %}
 </div>
 
+{% if google_disabled %}
+<section class="card">
+  <div class="alert alert-warning" role="status">
+    <strong>Google Drive desativado.</strong>
+    As variáveis <span class="mono">GOOGLE_WEB_CLIENT_ID</span>,
+    <span class="mono">GOOGLE_WEB_CLIENT_SECRET</span> e
+    <span class="mono">GOOGLE_REDIRECT_URI</span> não estão configuradas.
+    Para usar este recurso, peça ao administrador para defini-las. Enquanto
+    isso, use a <a class="btn-link" href="/extensao">extensão Chrome</a> para
+    enviar gravações.
+  </div>
+</section>
+{% else %}
 <section class="card">
   {% if error %}<div class="alert alert-danger mb-1">{{ error }}</div>{% endif %}
   {% if message %}<div class="alert alert-info mb-1">{{ message }}</div>{% endif %}
@@ -36,6 +52,7 @@
   <p class="hint mt-1">ID pasta origem: <span class="mono">{{ settings.source_drive_folder_id }}</span>{% if settings.destination_drive_folder_id %} · ID pasta destino: <span class="mono">{{ settings.destination_drive_folder_id }}</span>{% endif %}</p>
   {% endif %}
 </section>
+{% endif %}
 
 <div class="actions-row">
   <a class="btn btn-ghost" href="/settings">← Voltar para configurações</a>

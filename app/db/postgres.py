@@ -26,6 +26,7 @@ from app.database.repositories import (
     ProviderCredentialRepository as CoreProviderCreds,
     TranscriptionJobRepository as CoreJobs,
     UserDriveSettingsRepository as CoreSettings,
+    UserExtensionTokenRepository as CoreExtensionTokens,
     UserModelSettingsRepository as CoreModelSettings,
     UserRepository as CoreUsers,
 )
@@ -34,6 +35,7 @@ from app.transcription.provider_config import ModelSettings, normalize_model_set
 try:  # Prefer the real contract once the auth branch is merged.
     from app.web.repositories import (  # type: ignore
         DriveSettings,
+        ExtensionToken,
         GoogleToken,
         Job,
         RepositoryBundle,
@@ -42,6 +44,7 @@ try:  # Prefer the real contract once the auth branch is merged.
 except ImportError:  # postgres-core standalone
     from app.db._auth_contract import (
         DriveSettings,
+        ExtensionToken,
         GoogleToken,
         Job,
         RepositoryBundle,
@@ -325,6 +328,63 @@ class PgTranscriptionJobsRepository(_Bound):
             return _to_job(CoreJobs(s).get_active_for_user(user_id))
 
 
+def _to_extension_token(row) -> ExtensionToken | None:
+    if row is None:
+        return None
+    return ExtensionToken(
+        id=row.id,
+        user_id=row.user_id,
+        name=row.name,
+        masked=row.token_prefix,
+        created_at=_iso(row.created_at),
+        last_used_at=_iso(row.last_used_at),
+        revoked_at=_iso(row.revoked_at),
+    )
+
+
+class PgExtensionTokensRepository(_Bound):
+    def list_for_user(self, user_id: int) -> list[ExtensionToken]:
+        with self._sf.begin() as s:
+            return [
+                _to_extension_token(t) for t in CoreExtensionTokens(s).list_for_user(user_id)
+            ]
+
+    def get_for_user(self, token_id: int, user_id: int) -> ExtensionToken | None:
+        with self._sf.begin() as s:
+            return _to_extension_token(
+                CoreExtensionTokens(s).get_for_user(token_id, user_id)
+            )
+
+    def find_by_hash(self, token_hash: str) -> ExtensionToken | None:
+        with self._sf.begin() as s:
+            return _to_extension_token(CoreExtensionTokens(s).find_by_hash(token_hash))
+
+    def create_for_user(
+        self,
+        user_id: int,
+        *,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> ExtensionToken:
+        with self._sf.begin() as s:
+            row = CoreExtensionTokens(s).create(
+                user_id=user_id,
+                name=name,
+                token_hash=token_hash,
+                token_prefix=token_prefix,
+            )
+            return _to_extension_token(row)
+
+    def revoke_for_user(self, token_id: int, user_id: int) -> bool:
+        with self._sf.begin() as s:
+            return CoreExtensionTokens(s).revoke(token_id, user_id)
+
+    def touch(self, token_id: int) -> None:
+        with self._sf.begin() as s:
+            CoreExtensionTokens(s).touch(token_id)
+
+
 def build_repositories(database_url: Any = None, *, engine=None) -> RepositoryBundle:
     """Build the Postgres-backed RepositoryBundle the auth branch consumes.
 
@@ -347,4 +407,5 @@ def build_repositories(database_url: Any = None, *, engine=None) -> RepositoryBu
         jobs=PgTranscriptionJobsRepository(factory),
         provider_credentials=PgProviderCredentialsRepository(factory),
         model_settings=PgUserModelSettingsRepository(factory),
+        extension_tokens=PgExtensionTokensRepository(factory),
     )

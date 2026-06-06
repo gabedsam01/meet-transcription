@@ -5,6 +5,7 @@ from dataclasses import replace
 from app.transcription.provider_config import ModelSettings
 from app.web.repositories import (
     DriveSettings,
+    ExtensionToken,
     GoogleToken,
     Job,
     RepositoryBundle,
@@ -142,6 +143,78 @@ class InMemoryDriveSettingsRepository:
         self._settings[user_id] = settings
 
 
+class InMemoryExtensionTokensRepository:
+    """In-memory adapter for the per-user extension-token contract.
+
+    Mirrors the Postgres adapter closely enough for web-layer tests:
+    - ``create_for_user`` returns the persisted masked view (no raw token);
+    - ``find_by_hash`` returns the row for the auth helper to apply the
+      revoked/active policy;
+    - ``touch`` is best-effort and never fatal.
+    """
+
+    def __init__(self) -> None:
+        self._tokens: dict[int, ExtensionToken] = {}
+        self._by_hash: dict[str, int] = {}
+        self._seq = 0
+
+    def _next_id(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def list_for_user(self, user_id: int) -> list[ExtensionToken]:
+        return sorted(
+            (t for t in self._tokens.values() if t.user_id == user_id),
+            key=lambda t: t.id,
+            reverse=True,
+        )
+
+    def get_for_user(self, token_id: int, user_id: int) -> ExtensionToken | None:
+        token = self._tokens.get(token_id)
+        if token is None or token.user_id != user_id:
+            return None
+        return token
+
+    def find_by_hash(self, token_hash: str) -> ExtensionToken | None:
+        token_id = self._by_hash.get(token_hash)
+        if token_id is None:
+            return None
+        return self._tokens.get(token_id)
+
+    def create_for_user(
+        self,
+        user_id: int,
+        *,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> ExtensionToken:
+        token = ExtensionToken(
+            id=self._next_id(),
+            user_id=user_id,
+            name=(name or "Token").strip() or "Token",
+            masked=token_prefix,
+            created_at=_FIXED_TS,
+            last_used_at=None,
+            revoked_at=None,
+        )
+        self._tokens[token.id] = token
+        self._by_hash[token_hash] = token.id
+        return token
+
+    def revoke_for_user(self, token_id: int, user_id: int) -> bool:
+        token = self.get_for_user(token_id, user_id)
+        if token is None or token.revoked_at is not None:
+            return False
+        self._tokens[token_id] = replace(token, revoked_at=_FIXED_TS)
+        return True
+
+    def touch(self, token_id: int) -> None:
+        token = self._tokens.get(token_id)
+        if token is not None:
+            self._tokens[token_id] = replace(token, last_used_at=_FIXED_TS)
+
+
 class InMemoryTranscriptionJobsRepository:
     def __init__(self) -> None:
         self._jobs: dict[int, Job] = {}
@@ -197,4 +270,5 @@ def build_fake_repositories() -> RepositoryBundle:
             legacy_deepgram=deepgram_credentials
         ),
         model_settings=InMemoryUserModelSettingsRepository(),
+        extension_tokens=InMemoryExtensionTokensRepository(),
     )

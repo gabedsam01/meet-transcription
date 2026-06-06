@@ -29,11 +29,18 @@ def test_onboarding_all_green_when_fully_configured(tmp_path):
     app = build_app(tmp_path, auth=auth, worker=worker, transcription_status=deepgram_required_status())
     seed_auth_connected(auth)
     seed_deepgram_key(auth)
+    # The new "extension-first" path needs the user to have an extension
+    # token too. Mint one so the checklist is fully green.
+    from app.web.extension_tokens import new_raw_token
+
+    raw, token_hash, prefix = new_raw_token("a-long-secret-for-tests")
+    auth.extension_tokens.create_for_user(
+        1, name="E2E device", token_hash=token_hash, token_prefix=prefix
+    )
     with TestClient(app) as client:
         login(client)
         page = client.get("/onboarding").text
     assert "Tudo pronto" in page
-    assert "Automação ativa" in page
 
 
 def test_onboarding_requires_login(tmp_path):

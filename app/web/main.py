@@ -61,6 +61,7 @@ from app.transcription.provider_models import (
 from app.version import get_version_info
 from app.web import helpers
 from app.web.config import WebSettings
+from app.web.cors import ChromeExtensionCORSMiddleware
 from app.web.csrf import (
     CSRFValidationError,
     get_or_create_csrf_token,
@@ -68,6 +69,12 @@ from app.web.csrf import (
 )
 from app.web.deepgram_key import DeepgramKeyStore
 from app.web.drive_links import extract_google_drive_folder_id
+from app.web.extension_tokens import (
+    TOKEN_PREFIX as EXT_TOKEN_PREFIX,
+    hash_token,
+    new_raw_token,
+    verify_token,
+)
 from app.web.passwords import hash_password, verify_password
 from app.web.provider_keys import ProviderKeyStore, verify_provider_key
 from app.web.provider_readiness import (
@@ -75,7 +82,12 @@ from app.web.provider_readiness import (
     compute_provider_readiness,
     provider_status_text,
 )
-from app.web.repositories import DriveSettings, RepositoryBundle, build_repositories
+from app.web.repositories import (
+    DriveSettings,
+    ExtensionToken,
+    RepositoryBundle,
+    build_repositories,
+)
 from app.web.security import fernet_from_secret
 from app.web.token_store import TokenStore
 
@@ -167,6 +179,11 @@ def create_app(settings: WebSettings | None = None,
         https_only=web_settings.session_cookie_secure,
         same_site="lax",
     )
+    # Chrome extension (chrome-extension://<id>) lives on a foreign origin; the
+    # browser enforces CORS on the upload preflight. We MUST allow it
+    # explicitly. Scoped to /api/recordings/* so Drive/Download remain locked to
+    # the app origin. See app/web/cors.py.
+    app.add_middleware(ChromeExtensionCORSMiddleware)
     # Reject an oversized upload by Content-Length BEFORE the multipart body is
     # buffered to a temp file, so a (authenticated) client cannot force the server
     # to spool gigabytes to disk. The in-handler streaming check stays the
@@ -412,9 +429,17 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/onboarding", response_class=HTMLResponse)
     def onboarding(request: Request, user=Depends(require_user)):
-        """Guided setup checklist computed from the user's real configuration state."""
+        """Guided setup checklist computed from the user's real configuration state.
+
+        Google Drive is OPTIONAL: the readiness check is "is the user able to
+        *get audio in*", which is satisfied by either an extension token OR a
+        connected Google Drive. With Google envs absent, the Google-dependent
+        steps are marked "skipped" and the checklist focuses on the extension
+        path.
+        """
         drive = repos.drive_settings.get_for_user(user.id)
         google_connected = repos.google_tokens.get_for_user(user.id) is not None
+        google_available = web_settings.google_enabled
         folder_valid = bool(drive and drive.source_drive_folder_id)
         model_settings = _model_settings_for(user.id)
         readiness = compute_provider_readiness(
@@ -426,17 +451,42 @@ def create_app(settings: WebSettings | None = None,
         worker_repos, _ = _resolve_worker_repositories()
         worker_online = worker_repos is not None
         provider_ready = readiness.ok
-        automation_active = all(
-            [google_connected, folder_valid, provider_ready, queue_online, worker_online]
+        extension_store = repos.extension_tokens
+        if extension_store is None:
+            extension_tokens = 0
+        else:
+            extension_tokens = sum(
+                1
+                for t in extension_store.list_for_user(user.id)
+                if t.revoked_at is None
+            )
+        extension_ready = extension_tokens > 0
+        # Audio input can come from either path:
+        audio_input_ready = (
+            (google_available and google_connected and folder_valid)
+            or extension_ready
         )
-        checklist = [
-            {"label": "Google conectado", "done": google_connected},
-            {"label": "Pasta do Drive válida", "done": folder_valid},
-            {"label": "Provider válido", "done": provider_ready},
-            {"label": "Fila online", "done": queue_online},
-            {"label": "Worker online", "done": worker_online},
-            {"label": "Automação ativa", "done": automation_active},
-        ]
+        automation_active = audio_input_ready and provider_ready and queue_online and worker_online
+        if google_available:
+            checklist = [
+                {"label": "Google conectado", "done": google_connected},
+                {"label": "Pasta do Drive válida", "done": folder_valid},
+                {"label": "Extensão configurada", "done": extension_ready},
+                {"label": "Provider válido", "done": provider_ready},
+                {"label": "Fila online", "done": queue_online},
+                {"label": "Worker online", "done": worker_online},
+                {"label": "Tudo pronto", "done": automation_active},
+            ]
+        else:
+            checklist = [
+                {"label": "Google Drive desativado", "done": True,
+                 "muted": True, "desc": "Use a extensão Chrome para enviar áudio."},
+                {"label": "Extensão configurada", "done": extension_ready},
+                {"label": "Provider válido", "done": provider_ready},
+                {"label": "Fila online", "done": queue_online},
+                {"label": "Worker online", "done": worker_online},
+                {"label": "Tudo pronto", "done": automation_active},
+            ]
         provider_label = (
             readiness.status_label if not readiness.ok
             else f"{readiness.provider_label}: {readiness.model}"
@@ -452,40 +502,73 @@ def create_app(settings: WebSettings | None = None,
             if not readiness.ok and readiness.credential_required
             else "Pronto para transcrever."
         )
-        steps = [
-            {"n": 1, "title": "Login / admin", "done": True,
-             "desc": f"Autenticado como {user.email} ({user.role}).", "cta": None},
-            {"n": 2, "title": "Conectar Google", "done": google_connected,
-             "desc": "Autorize o acesso ao Google Drive para ler as gravações do Meet.",
-             "cta": None if google_connected else ("Conectar Google", "/connect-google")},
-            {"n": 3, "title": "Escolher pasta do Drive", "done": folder_valid,
-             "desc": "Defina a pasta de origem onde o Meet salva as gravações.",
-             "cta": None if folder_valid else ("Configurar pasta", "/settings/drive")},
-            {"n": 4, "title": "Escolher provider / modelo", "done": provider_ready,
-             "desc": step_4_desc,
-             "cta": None if provider_ready else (
-                 readiness.action_label or "Configurar Modelos",
-                 readiness.action_href or "/models"
-             )},
-            {"n": 5, "title": "Configurar provider", "done": provider_ready,
-             "desc": step_5_desc,
-             "cta": None if provider_ready else (
-                 readiness.action_label or "Abrir Modelos",
-                 readiness.action_href or "/models"
-             )},
-            {"n": 6, "title": "Ativar automação", "done": automation_active,
-             "desc": "Com tudo acima verde, jobs enfileirados são processados automaticamente pelo worker.",
-             "cta": None},
-            {"n": 7, "title": "Rodar teste final", "done": False,
-             "desc": "Rode uma transcrição de teste para confirmar o fluxo ponta a ponta.",
-             "cta": ("Ir para Jobs", "/jobs")},
-        ]
+        # Steps: when Google is unavailable, replace the Drive steps with
+        # extension steps so the checklist never blocks on a missing Google env.
+        if google_available:
+            steps = [
+                {"n": 1, "title": "Login / admin", "done": True,
+                 "desc": f"Autenticado como {user.email} ({user.role}).", "cta": None},
+                {"n": 2, "title": "Conectar Google", "done": google_connected,
+                 "desc": "Autorize o acesso ao Google Drive para ler as gravações do Meet.",
+                 "cta": None if google_connected else ("Conectar Google", "/connect-google")},
+                {"n": 3, "title": "Escolher pasta do Drive", "done": folder_valid,
+                 "desc": "Defina a pasta de origem onde o Meet salva as gravações.",
+                 "cta": None if folder_valid else ("Configurar pasta", "/settings/drive")},
+                {"n": 4, "title": "Configurar extensão", "done": extension_ready,
+                 "desc": "Gere um token de upload para a extensão Chrome do Meet.",
+                 "cta": None if extension_ready else ("Configurar extensão", "/extensao")},
+                {"n": 5, "title": "Escolher provider / modelo", "done": provider_ready,
+                 "desc": step_4_desc,
+                 "cta": None if provider_ready else (
+                     readiness.action_label or "Configurar Modelos",
+                     readiness.action_href or "/models"
+                 )},
+                {"n": 6, "title": "Configurar provider", "done": provider_ready,
+                 "desc": step_5_desc,
+                 "cta": None if provider_ready else (
+                     readiness.action_label or "Abrir Modelos",
+                     readiness.action_href or "/models"
+                 )},
+                {"n": 7, "title": "Ativar automação", "done": automation_active,
+                 "desc": "Com tudo acima verde, jobs enfileirados são processados automaticamente pelo worker.",
+                 "cta": None},
+                {"n": 8, "title": "Rodar teste final", "done": False,
+                 "desc": "Rode uma transcrição de teste para confirmar o fluxo ponta a ponta.",
+                 "cta": ("Ir para Jobs", "/jobs")},
+            ]
+        else:
+            steps = [
+                {"n": 1, "title": "Login / admin", "done": True,
+                 "desc": f"Autenticado como {user.email} ({user.role}).", "cta": None},
+                {"n": 2, "title": "Google Drive desativado", "done": True,
+                 "desc": "As variáveis GOOGLE_WEB_CLIENT_ID/SECRET/REDIRECT_URI não estão configuradas. Use a extensão Chrome para enviar áudio.",
+                 "cta": None, "muted": True},
+                {"n": 3, "title": "Configurar extensão", "done": extension_ready,
+                 "desc": "Gere um token de upload para a extensão Chrome do Meet e cole na popup.",
+                 "cta": None if extension_ready else ("Configurar extensão", "/extensao")},
+                {"n": 4, "title": "Escolher provider / modelo", "done": provider_ready,
+                 "desc": step_4_desc,
+                 "cta": None if provider_ready else (
+                     readiness.action_label or "Configurar Modelos",
+                     readiness.action_href or "/models"
+                 )},
+                {"n": 5, "title": "Configurar provider", "done": provider_ready,
+                 "desc": step_5_desc,
+                 "cta": None if provider_ready else (
+                     readiness.action_label or "Abrir Modelos",
+                     readiness.action_href or "/models"
+                 )},
+                {"n": 6, "title": "Pronto para gravar", "done": automation_active,
+                 "desc": "Com a extensão configurada e o provider válido, a transcrição já funciona.",
+                 "cta": None},
+            ]
         return templates.TemplateResponse(request, "onboarding.html", _ctx(request, user,
             active_nav="onboarding",
             steps=steps,
             checklist=checklist,
             all_ready=automation_active,
             transcription_status=app.state.transcription_status,
+            google_disabled=not google_available,
         ))
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -499,6 +582,7 @@ def create_app(settings: WebSettings | None = None,
             active_nav="drive",
             settings=repos.drive_settings.get_for_user(user.id),
             message=_pop_flash(request),
+            google_disabled=not web_settings.google_enabled,
         ))
 
     @app.post("/settings/drive")
@@ -639,6 +723,127 @@ def create_app(settings: WebSettings | None = None,
             result = verify_provider_key("deepgram", key)
             _set_flash(request, PROVIDER_TEST_MESSAGES.get(result, "Não foi possível verificar agora."))
         return RedirectResponse("/models?provider=deepgram", status_code=303)
+
+    # ------------------------------------------------------------------ /extensao
+    # Per-user Chrome-extension upload tokens. The extension authenticates with
+    # one of these tokens (Bearer) and the upload job is owned by that user.
+    # Google Drive is intentionally NOT a precondition here: the extension
+    # path is extension-first, not Google-first.
+
+    @app.get("/extensao", response_class=HTMLResponse)
+    def extension_page(request: Request, user=Depends(require_user)):
+        store = repos.extension_tokens
+        tokens = list(store.list_for_user(user.id)) if store is not None else []
+        newly_issued = request.session.pop("extension_newly_issued_token", None)
+        return templates.TemplateResponse(request, "extension.html", _ctx(request, user,
+            active_nav="extension",
+            backend_url=_public_backend_url(request),
+            tokens=tokens,
+            newly_issued_token=newly_issued,
+            message=_pop_flash(request),
+            google_disabled=not web_settings.google_enabled,
+        ))
+
+    @app.post("/extensao/gerar")
+    def extension_create_token(
+        request: Request,
+        user=Depends(require_user),
+        name: str = Form(""),
+        _csrf: None = Depends(_csrf_form),
+    ):
+        store = repos.extension_tokens
+        if store is None:
+            _set_flash(request, "Armazenamento de tokens indisponível.")
+            return RedirectResponse("/extensao", status_code=303)
+        raw, token_hash, prefix = new_raw_token(web_settings.app_secret_key)
+        store.create_for_user(
+            user.id,
+            name=(name or "").strip() or "Token",
+            token_hash=token_hash,
+            token_prefix=prefix,
+        )
+        # The plaintext is shown exactly once on the redirected GET.
+        request.session["extension_newly_issued_token"] = raw
+        return RedirectResponse("/extensao", status_code=303)
+
+    @app.post("/extensao/revogar")
+    def extension_revoke_token(
+        request: Request,
+        user=Depends(require_user),
+        token_id: int = Form(...),
+        _csrf: None = Depends(_csrf_form),
+    ):
+        store = repos.extension_tokens
+        if store is None:
+            _set_flash(request, "Armazenamento de tokens indisponível.")
+            return RedirectResponse("/extensao", status_code=303)
+        if store.revoke_for_user(int(token_id), user.id):
+            _set_flash(request, "Token revogado.")
+        else:
+            _set_flash(request, "Token não encontrado.")
+        return RedirectResponse("/extensao", status_code=303)
+
+    # ------------------------------------------------------------------ /api/recordings
+    # Chrome-extension contract: CORS-friendly preflight, per-user token auth
+    # (Bearer or X-Upload-Token or upload_token form field), and a friendly
+    # ping so the extension can test the connection before recording.
+
+    @app.post("/api/recordings/ping")
+    async def recordings_ping(
+        request: Request,
+        upload_token: str | None = Form(None),
+        client_name: str | None = Form(None),
+        extension_version: str | None = Form(None),
+    ):
+        """Lightweight token check for the extension. Never logs the token.
+
+        Returns 200 ``{"ok": true, "user_email": "..."}`` on a valid token, or
+        401 ``{"ok": false, "error": "invalid_token", "message": "..."}`` on
+        bad/missing/revoked. The legacy env token is also accepted so a single
+        shared extension can still be used in dev.
+        """
+        provided = upload_token or _extract_upload_token(request)
+        if not provided:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "missing_token",
+                    "message": "Token não fornecido.",
+                },
+                status_code=401,
+            )
+        resolved = _resolve_extension_token(
+            provided,
+            web_settings,
+            repos.extension_tokens,
+            repos.users,
+        )
+        if resolved is None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "invalid_token",
+                    "message": "Token inválido ou revogado.",
+                },
+                status_code=401,
+            )
+        owner, _token = resolved
+        # Best-effort touch; never blocks the response. The legacy sentinel
+        # has ``id = None`` so we skip touching it (no row to update).
+        if repos.extension_tokens is not None and getattr(_token, "id", None):
+            try:
+                repos.extension_tokens.touch(_token.id)
+            except Exception:  # noqa: BLE001 - observability, not security.
+                logging.getLogger(__name__).exception("Could not touch extension token")
+        return JSONResponse(
+            {
+                "ok": True,
+                "user_email": owner.email,
+                "user_id": owner.id,
+                "client_name": client_name or "",
+                "extension_version": extension_version or "",
+            }
+        )
 
     @app.get("/settings/automation", response_class=HTMLResponse)
     def automation_page(request: Request, user=Depends(require_user)):
@@ -843,6 +1048,7 @@ def create_app(settings: WebSettings | None = None,
     async def upload_recording(
         request: Request,
         file: UploadFile = File(...),
+        upload_token: str | None = Form(None),
         meeting_url: str | None = Form(None),
         meeting_title: str | None = Form(None),
         started_at: str | None = Form(None),
@@ -855,21 +1061,44 @@ def create_app(settings: WebSettings | None = None,
         Token-authenticated (NOT a logged-in session). This request only validates,
         streams the media to the shared recordings dir, and creates a pending job —
         it NEVER downloads, transcribes, or uploads. The worker owns all of that.
-        """
-        configured = web_settings.extension_upload_token
-        if not configured:
-            raise HTTPException(status_code=503, detail="Upload da extensão desativado.")
-        provided = _extract_upload_token(request)
-        # constant-time compare; the token is never logged or echoed in any error.
-        if not provided or not secrets.compare_digest(provided, configured):
-            raise HTTPException(status_code=401, detail="Token de upload inválido.")
 
-        target_email = (
-            web_settings.extension_upload_user_email or web_settings.admin_username
+        Token resolution:
+        1. Per-user token in the database (preferred).
+        2. Legacy env token (EXTENSION_UPLOAD_TOKEN), mapped to the configured
+           owner (EXTENSION_UPLOAD_USER_EMAIL or admin).
+
+        The token travels in any of: ``Authorization: Bearer <t>``,
+        ``X-Upload-Token: <t>``, or ``upload_token`` form field.
+        """
+        # The form field wins over headers (avoids any proxy that mangles
+        # Authorization for cross-origin uploads).
+        provided = upload_token or _extract_upload_token(request)
+        # If neither a per-user store nor the legacy env token is configured,
+        # the feature is OFF for this deployment.
+        store = repos.extension_tokens
+        legacy_token = web_settings.extension_upload_token
+        if store is None and not legacy_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Upload da extensão desativado.",
+            )
+        if not provided:
+            raise HTTPException(status_code=401, detail="Token de upload ausente.")
+        resolved = _resolve_extension_token(
+            provided, web_settings, store, repos.users
         )
-        owner = repos.users.get_by_email(target_email)
-        if owner is None or not owner.is_active:
-            raise HTTPException(status_code=503, detail="Conta de upload indisponível.")
+        if resolved is None:
+            # constant-time: never leak which path failed; no token in any branch.
+            raise HTTPException(
+                status_code=401, detail="Token de upload inválido ou revogado."
+            )
+        owner, auth_token = resolved
+        # Best-effort touch (no-op for the legacy sentinel).
+        if store is not None and getattr(auth_token, "id", None):
+            try:
+                store.touch(auth_token.id)
+            except Exception:  # noqa: BLE001 - observability, not security.
+                logging.getLogger(__name__).exception("Could not touch extension token")
 
         worker_repos, error = _resolve_worker_repositories()
         if worker_repos is None:
@@ -1074,6 +1303,15 @@ def create_app(settings: WebSettings | None = None,
 
     @app.get("/connect-google")
     def connect_google(request: Request, user=Depends(require_user)):
+        if not web_settings.google_enabled:
+            # Google envs are absent: the app boots fine, but Drive features are
+            # unavailable. Surface a friendly flash instead of crashing on a
+            # Google URL.
+            _set_flash(
+                request,
+                "Google Drive desativado: configure GOOGLE_WEB_CLIENT_ID/SECRET/REDIRECT_URI para usar esta funcionalidade.",
+            )
+            return RedirectResponse("/settings/drive", status_code=303)
         state = secrets.token_urlsafe(32)
         request.session["oauth_state"] = state
         params = {
@@ -1155,6 +1393,69 @@ def _header_value(scope, name: bytes) -> str | None:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _public_backend_url(request: Request) -> str:
+    """Best-effort absolute URL the browser is currently using.
+
+    The extension must hit the same origin the user sees, so we reconstruct
+    the public URL from the request scheme/host. Proxies must forward the
+    ``X-Forwarded-Proto`` and ``Host`` headers (typical Nginx/Caddy setup).
+    """
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    )
+    return f"{scheme}://{host}".rstrip("/")
+
+
+class _LegacyTokenSentinel:
+    """Marker returned by the legacy-env-token path so callers can distinguish
+    a per-user token row from a shared legacy token (the legacy path owns no
+    row, so we cannot ``touch`` it)."""
+
+    id: int | None = None
+    name: str = "legacy"
+    masked: str = "***"
+    revoked_at: str | None = None
+
+
+def _resolve_extension_token(
+    raw_token: str | None,
+    settings: WebSettings,
+    store,
+    users_repo,
+):
+    """Resolve a raw upload token to ``(User, ExtensionToken|_LegacySentinel)``
+    or ``None``.
+
+    Order:
+    1. Per-user token in the database (preferred).
+    2. Legacy ``EXTENSION_UPLOAD_TOKEN`` env var, mapped to a configured user
+       (``EXTENSION_UPLOAD_USER_EMAIL`` or admin).
+
+    Returns ``None`` for any failure (missing/empty/revoked/wrong). The raw
+    token is never logged.
+    """
+    if not raw_token:
+        return None
+    if store is not None:
+        digest = hash_token(settings.app_secret_key, raw_token)
+        row = store.find_by_hash(digest)
+        if row is not None and row.revoked_at is None:
+            owner = users_repo.get_by_id(row.user_id)
+            if owner is not None and owner.is_active:
+                return owner, row
+    # Legacy fallback: the global token.
+    legacy = settings.extension_upload_token
+    if legacy and secrets.compare_digest(legacy, raw_token):
+        email = settings.extension_upload_user_email or settings.admin_username
+        owner = users_repo.get_by_email(email)
+        if owner is not None and owner.is_active:
+            return owner, _LegacyTokenSentinel()
+    return None
 
 
 def _set_flash(request: Request, message: str) -> None:

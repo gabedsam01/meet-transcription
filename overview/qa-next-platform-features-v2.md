@@ -402,3 +402,89 @@ queue-loop hang; it is a dev-only aid, not a runtime dependency.
 - docker compose config: OK
 - docker compose build: OK
 - alembic heads: single head `0002_transcript_fts`
+
+## 7. Extension-first mode (per-user tokens, optional Google)
+
+Follow-up commit range on top of the four merges above that turns the
+"Chrome extension upload" feature from an *opt-in side path* into the
+**primary transcription input**:
+
+### What changed
+
+- **Google envs are optional.** `WebSettings.google_enabled` is now a derived
+  boolean (true only when all three `GOOGLE_*` envs are present). The app
+  boots cleanly without them, the UI shows *"Google Drive desativado"*, and
+  `/connect-google` is a friendly redirect instead of a broken OAuth URL.
+- **Per-user extension tokens.** Each user mints their own token from a new
+  `/extensao` page. Tokens are stored hashed (SHA-256, peppered with
+  `APP_SECRET_KEY`) in a new `user_extension_tokens` table; the raw token is
+  shown **once** at creation. Revocation is one click.
+- **CORS for `chrome-extension://<id>`.** A new pure-ASGI middleware
+  (`app/web/cors.py`) is scoped to `/api/recordings/*` and only sets
+  `Access-Control-Allow-Origin` when the request's `Origin` matches
+  `^chrome-extension://[a-z]{32}$`. The rest of the app stays locked to the
+  app origin.
+- **`POST /api/recordings/ping`** lets the extension verify its token
+  without uploading audio. CSRF-exempt (token-authenticated). Returns
+  `{ok, user_id, user_email, client_name, extension_version}`.
+- **Legacy `EXTENSION_UPLOAD_TOKEN` env kept** as a fallback for an
+  existing single-token deployment; per-user tokens always win. The
+  upload route now resolves `(user, token)` first by per-user lookup,
+  then by constant-time env compare, then 401.
+- **Alembic:** new revision `0002_extension_tokens` chained off
+  `0002_transcript_fts`. Single head.
+- **Onboarding reflects the new model:** when Google is disabled, the
+  *"connect Drive"* steps are replaced with *"mint an extension token"*.
+  The "Tudo pronto" check needs a token when Google is off.
+
+### Files added / changed
+
+- `app/web/cors.py` — new pure-ASGI CORS middleware.
+- `app/web/extension_tokens.py` — `new_raw_token`, `hash_token`, `verify_token`,
+  `TOKEN_PREFIX = "mtrec_"`, `RAW_TOKEN_BYTES = 24`.
+- `app/web/config.py` — `google_enabled` derived field; Google envs optional.
+- `app/web/main.py` — registered CORS middleware; added `/extensao`,
+  `/extensao/gerar`, `/extensao/revogar`, `/api/recordings/ping`; updated
+  `/connect-google`, `/onboarding`, `/settings/drive`, `/api/recordings/upload`
+  to support per-user tokens with legacy fallback.
+- `app/web/templates/extension.html` — new token management UI (PT-BR).
+- `app/web/templates/base.html` — added *"Extensão"* nav link.
+- `app/web/templates/settings_drive.html` — *"Google Drive desativado"*
+  banner.
+- `app/database/models.py` — new `UserExtensionToken` ORM model.
+- `app/database/repositories.py` — new `UserExtensionTokenRepository`.
+- `app/db/postgres.py` — `PgExtensionTokensRepository`; `build_repositories`
+  includes `extension_tokens`.
+- `app/db/_auth_contract.py` — added `ExtensionToken` dataclass and
+  `extension_tokens` field on `RepositoryBundle`.
+- `app/web/repositories.py` — added `ExtensionToken` dataclass,
+  `ExtensionTokensRepository` Protocol, `RepositoryBundle.extension_tokens`.
+- `tests/fakes.py` — `InMemoryExtensionTokensRepository`; `build_fake_repositories`
+  populates it.
+- `alembic/versions/0002_extension_tokens.py` — new migration.
+- `tests/test_extension_tokens.py` — 25 tests (all passing).
+- `tests/test_cors_middleware.py` — 15 tests (regex + preflight + scoped).
+- `tests/test_google_optional.py` — 11 tests (app boots without Google envs,
+  /connect-google friendly redirect, dashboard/onboarding render).
+- `tests/e2e/test_extension_flow_e2e.py` — 5 tests (full E2E happy path,
+  isolation, revocation).
+- `tests/test_recordings_upload.py` — updated to support
+  `with_extension_store` flag for "feature off" simulation.
+- `tests/e2e/test_onboarding_e2e.py` — updated for the new checklist
+  (extension token requirement when Google is off).
+- `tests/e2e/helpers.py` — `web_settings` now sets `EXTENSION_RECORDINGS_DIR`
+  to `tmp_path/recordings` (was hardcoded to `/app`).
+- `documentation/extension-first.md` — new architecture doc.
+- `documentation/27-chrome-extension.md` — still authoritative for the
+  end-to-end protocol; cross-references the new doc.
+- `.env.example` — Google envs explicitly marked optional; extension
+  section updated to describe the per-user model.
+- `CLAUDE.md` — new hard rule: "Extension upload is the primary input;
+  Google Drive is optional."
+
+### Validation
+
+- pytest: 715 passed, 41 skipped, 0 failures
+- compileall: OK
+- alembic heads: single head `0002_extension_tokens`
+- `docker compose config`: OK (Google envs empty; build still validates)

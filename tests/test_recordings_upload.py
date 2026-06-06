@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
@@ -29,11 +30,17 @@ def _settings(tmp_path, *, token=TOKEN, max_mb=500) -> WebSettings:
     return WebSettings.from_env(env)
 
 
-def _app(tmp_path, *, token=TOKEN, max_mb=500):
+def _app(tmp_path, *, token=TOKEN, max_mb=500, with_extension_store=True):
     worker = build_memory_repositories()
+    auth = build_fake_repositories()
+    if not with_extension_store:
+        # Simulate a deploy without the extension-tokens table (e.g. an
+        # older schema that hasn't run the new migration): the per-user path
+        # is gone, so the feature is OFF unless the legacy env token is set.
+        auth = replace(auth, extension_tokens=None)
     app = create_app(
         _settings(tmp_path, token=token, max_mb=max_mb),
-        repositories=build_fake_repositories(),
+        repositories=auth,
         worker_repositories=worker,
     )
     return app, worker
@@ -76,7 +83,9 @@ def test_upload_creates_pending_job_and_persists_recording(tmp_path):
 
 
 def test_upload_disabled_without_configured_token(tmp_path):
-    app, worker = _app(tmp_path, token="")  # feature off
+    # Feature OFF: no legacy env token AND no per-user store. The endpoint
+    # answers 503 (service disabled) before the auth check.
+    app, worker = _app(tmp_path, token="", with_extension_store=False)
     with TestClient(app) as client:
         r = client.post(
             "/api/recordings/upload",

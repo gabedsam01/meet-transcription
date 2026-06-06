@@ -292,3 +292,41 @@ class Transcript(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class UserExtensionToken(Base):
+    """Per-user upload token for the Chrome extension.
+
+    One user may have many tokens (rotate, label per device); each one is a
+    separate credential that authenticates the extension on behalf of that user.
+    The real token is shown to the user EXACTLY ONCE at creation time; we
+    persist only ``token_hash`` (SHA-256 + server-side pepper) and a short
+    ``token_prefix`` used to render the masked display. ``revoked_at`` makes
+    revocations a soft-delete (the hash stays so an old client gets a clean
+    ``invalid_token`` rather than 404).
+    """
+
+    __tablename__ = "user_extension_tokens"
+    __table_args__ = (
+        Index("ix_user_extension_tokens_user", "user_id"),
+        Index("ix_user_extension_tokens_prefix", "token_prefix"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Hex SHA-256 of (raw_token + server pepper). Never reversed.
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # First chars of the raw token, used for the masked list (e.g. "mtrec_a1b2…").
+    token_prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

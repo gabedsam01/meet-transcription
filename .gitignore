@@ -36,3 +36,5 @@ models/*
 .idea/
 .vscode/
 .agents/
+opencode.json
+.opencode/

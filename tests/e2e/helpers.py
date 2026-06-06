@@ -41,6 +41,7 @@ def web_settings(tmp_path) -> WebSettings:
         "GOOGLE_REDIRECT_URI": "http://localhost:8000/oauth/google/callback",
         "DATABASE_URL": "postgresql://test",
         "TMP_DIR": str(tmp_path / "tmp"),
+        "EXTENSION_RECORDINGS_DIR": str(tmp_path / "recordings"),
     })
 
 

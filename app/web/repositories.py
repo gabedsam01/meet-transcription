@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from datetime import datetime
+from typing import Protocol, Sequence
 
 # The Models tab and worker share one provider-selection type.
 from app.transcription.provider_config import ModelSettings  # noqa: F401  (re-exported)
@@ -56,6 +57,25 @@ class Job:
     processed_at: str | None = None
 
 
+@dataclass(frozen=True)
+class ExtensionToken:
+    """A per-user Chrome-extension upload token (masked view).
+
+    The real raw token is never persisted; only ``token_hash`` is. The
+    ``masked`` field is a short prefix for the UI list (e.g. ``"mtrec_ab…wxyz"``).
+    ``revoked_at`` non-null means the token is dead and the auth path should
+    reject it with a friendly 401.
+    """
+
+    id: int
+    user_id: int
+    name: str
+    masked: str
+    created_at: str | None
+    last_used_at: str | None
+    revoked_at: str | None
+
+
 class UsersRepository(Protocol):
     def get_by_email(self, email: str) -> User | None: ...
     def get_by_id(self, user_id: int) -> User | None: ...
@@ -101,6 +121,26 @@ class DriveSettingsRepository(Protocol):
     def save_for_user(self, user_id: int, settings: DriveSettings) -> None: ...
 
 
+class ExtensionTokensRepository(Protocol):
+    """Per-user Chrome-extension upload tokens.
+
+    The repository only persists ``token_hash`` and a short ``token_prefix``
+    for masked display. The real token is generated once in
+    :mod:`app.web.extension_tokens` and is never returned by this protocol —
+    :meth:`create_for_user` returns ``(raw_token, ExtensionToken)`` because the
+    raw token is only available at creation time.
+    """
+
+    def list_for_user(self, user_id: int) -> Sequence[ExtensionToken]: ...
+    def get_for_user(self, token_id: int, user_id: int) -> ExtensionToken | None: ...
+    def find_by_hash(self, token_hash: str) -> ExtensionToken | None: ...
+    def create_for_user(
+        self, user_id: int, *, name: str, token_hash: str, token_prefix: str
+    ) -> ExtensionToken: ...
+    def revoke_for_user(self, token_id: int, user_id: int) -> bool: ...
+    def touch(self, token_id: int) -> None: ...
+
+
 class TranscriptionJobsRepository(Protocol):
     # Minimal subset compatible with postgres-worker's JobRepository naming.
     def create_job(
@@ -126,6 +166,10 @@ class RepositoryBundle:
     # both builders (Postgres + in-memory fake) populate them.
     provider_credentials: ProviderCredentialsRepository | None = None
     model_settings: UserModelSettingsRepository | None = None
+    # Per-user Chrome-extension upload tokens. ``None`` for older test
+    # constructions that don't exercise the extension; the web layer treats
+    # None as "feature unavailable" and renders a banner.
+    extension_tokens: ExtensionTokensRepository | None = None
 
 
 class RepositoryBackendUnavailable(RuntimeError):

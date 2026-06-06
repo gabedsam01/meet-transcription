@@ -22,6 +22,7 @@ from app.database.models import (
     Transcript,
     User,
     UserDriveSettings,
+    UserExtensionToken,
     UserModelSettings,
 )
 
@@ -410,3 +411,77 @@ class TranscriptRepository:
             .where(Transcript.user_id == user_id)
             .order_by(Transcript.id.desc())
         ).all()
+
+
+class UserExtensionTokenRepository:
+    """Per-user Chrome-extension upload tokens.
+
+    Only ``token_hash`` crosses the repository boundary; the real plaintext is
+    generated once in the web layer and never persisted. ``list_for_user``
+    returns every token, including revoked ones, ordered newest-first — the UI
+    renders a small status badge so the user knows which are still active.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> UserExtensionToken:
+        token = UserExtensionToken(
+            user_id=user_id,
+            name=name.strip() or "Token",
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+        )
+        self.session.add(token)
+        self.session.flush()
+        return token
+
+    def get(self, token_id: int) -> UserExtensionToken | None:
+        return self.session.get(UserExtensionToken, token_id)
+
+    def get_for_user(self, token_id: int, user_id: int) -> UserExtensionToken | None:
+        """Owner-scoped lookup used by the revoke action."""
+        return self.session.scalar(
+            select(UserExtensionToken).where(
+                UserExtensionToken.id == token_id,
+                UserExtensionToken.user_id == user_id,
+            )
+        )
+
+    def list_for_user(self, user_id: int) -> Sequence[UserExtensionToken]:
+        return self.session.scalars(
+            select(UserExtensionToken)
+            .where(UserExtensionToken.user_id == user_id)
+            .order_by(UserExtensionToken.created_at.desc(), UserExtensionToken.id.desc())
+        ).all()
+
+    def find_by_hash(self, token_hash: str) -> UserExtensionToken | None:
+        """Lookup by hash. Returns active OR revoked rows — callers must check
+        ``revoked_at`` themselves to keep the policy in one place (the web
+        auth helper)."""
+        return self.session.scalar(
+            select(UserExtensionToken).where(UserExtensionToken.token_hash == token_hash)
+        )
+
+    def revoke(self, token_id: int, user_id: int, *, now: datetime | None = None) -> bool:
+        """Soft-revoke a token. Returns ``True`` if a row was updated."""
+        token = self.get_for_user(token_id, user_id)
+        if token is None or token.revoked_at is not None:
+            return False
+        token.revoked_at = now or _utcnow()
+        self.session.flush()
+        return True
+
+    def touch(self, token_id: int, *, now: datetime | None = None) -> None:
+        """Stamp ``last_used_at`` on a successful auth — best effort, never fatal."""
+        token = self.session.get(UserExtensionToken, token_id)
+        if token is not None:
+            token.last_used_at = now or _utcnow()
+            self.session.flush()
