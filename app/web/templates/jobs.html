@@ -3,7 +3,10 @@
 <section class="card">
   <div class="row-between">
     <div><h1>Jobs</h1><p>Manual and processed transcription jobs.</p></div>
-    <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
+    <div class="cta-row">
+      <form method="post" action="/automation/check-now"><button type="submit" class="button button-ghost button-sm">Verificar agora</button></form>
+      <form method="post" action="/jobs/run-once"><button type="submit">Run once</button></form>
+    </div>
   </div>
   {% if queue_status and queue_status.mode == 'queue' and not queue_status.available %}
   <div class="notice notice-warn">
@@ -48,6 +51,10 @@
           {% if job.transcript_drive_file_id %}
           · <a href="https://drive.google.com/file/d/{{ job.transcript_drive_file_id }}/view" target="_blank" rel="noopener">Drive</a>
           {% endif %}
+          {% elif job.status == 'failed' %}
+          <form method="post" action="/jobs/{{ job.id }}/retry" class="inline-form">
+            <button type="submit" class="button button-ghost button-sm">Tentar novamente</button>
+          </form>
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td class="mono">{{ job.created_at | dt }}</td>
